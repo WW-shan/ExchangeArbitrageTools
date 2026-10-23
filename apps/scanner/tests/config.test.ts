@@ -1,0 +1,101 @@
+﻿import { describe, expect, it } from 'vitest';
+import { loadConfig } from '../src/config.js';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
+describe('scanner configuration', () => {
+  it('loads the checked-in safe defaults with the live gate closed', () => {
+    const config = loadConfig('config/default.toml');
+    expect(config.execution.liveEnabled).toBe(false);
+    expect(config.execution.killSwitch).toBe(true);
+    expect(config.scanner.baseAssets).toContain('CAKE');
+    expect(config.scanner.assetUniverseMode).toBe('top_volume');
+    expect(config.scanner.maxBaseAssets).toBe(100);
+    expect(config.scanner.quoteCurrencies).toEqual(['USDT', 'USDC']);
+    expect(config.scanner.fetchConcurrency).toBe(16);
+    expect(config.scanner.requestedNotional.toFixed()).toBe('30');
+    expect(config.bsc.enabled).toBe(false);
+  });
+
+  it('can run the scanner while the separate executor live flag is enabled', () => {
+    const directory = mkdtempSync(join(tmpdir(), 'arb-config-live-'));
+    const path = join(directory, 'live.toml');
+    try {
+      writeFileSync(
+        path,
+        readFileSync('config/default.toml', 'utf8').replace(
+          'live_enabled = false',
+          'live_enabled = true',
+        ),
+      );
+      const config = loadConfig(path);
+      expect(config.execution.liveEnabled).toBe(true);
+      expect(config.execution.manualConfirmation).toBe(true);
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects non-finite decimal configuration values', () => {
+    const directory = mkdtempSync(join(tmpdir(), 'arb-config-'));
+    const path = join(directory, 'invalid.toml');
+    try {
+      writeFileSync(
+        path,
+        `
+[scanner]
+max_order_notional = 'NaN'
+
+[execution]
+live_enabled = false
+kill_switch = true
+
+[database]
+path = ':memory:'
+
+[api]
+host = '127.0.0.1'
+port = 8787
+`,
+      );
+      expect(() => loadConfig(path)).toThrow(/must be finite/);
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it('parses per-venue fee overrides', () => {
+    const directory = mkdtempSync(join(tmpdir(), 'arb-config-fees-'));
+    const path = join(directory, 'fees.toml');
+    try {
+      writeFileSync(
+        path,
+        `
+[scanner]
+max_order_notional = '30'
+
+[execution]
+live_enabled = false
+kill_switch = true
+
+[database]
+path = ':memory:'
+
+[api]
+host = '127.0.0.1'
+port = 8787
+
+[fees.gateio]
+taker_bps = 2
+maker_bps = -1
+`,
+      );
+      const config = loadConfig(path);
+      expect(config.fees.gateio?.takerBps?.toFixed()).toBe('2');
+      expect(config.fees.gateio?.makerBps?.toFixed()).toBe('-1');
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+});

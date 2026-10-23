@@ -27,9 +27,11 @@ interface CexAdapter {
 ```ts
 interface MarketMetadata {
   venueId: string;
-  exchangeSymbol: string;
-  unifiedSymbol: string;      // BASE/QUOTE
-  base: string;
+  exchangeSymbol: string; // venue symbol used by orders and books
+  unifiedSymbol: string; // canonical BASE/QUOTE
+  base: string; // canonical base, e.g. PEPE for 1000PEPE/PEPE
+  exchangeBase?: string; // venue base when it differs, e.g. 1000PEPE
+  baseMultiplier?: Decimal; // canonical units per exchange base unit (1000)
   quote: string;
   active: boolean;
   pricePrecision: number;
@@ -42,13 +44,19 @@ interface MarketMetadata {
 }
 ```
 
+`base` is the canonical S1 asset. When a venue lists a 1000x denomination such as
+`kPEPE` or `1000PEPE`, adapters set `exchangeBase` and `baseMultiplier` but keep
+`exchangeSymbol` unchanged for market data and order submission. S1 books are
+normalized before evaluation; the executor converts canonical amounts and prices
+back to exchange units. See `docs/s1-base-multiplier-design.md`.
+
 ### OrderBookSnapshot
 
 ```ts
 interface OrderBookSnapshot {
   venueId: string;
   exchangeSymbol: string;
-  fetchedAt: number;          // local receive time
+  fetchedAt: number; // local receive time
   exchangeTimestamp?: number; // venue timestamp if reliable
   asks: Level[];
   bids: Level[];
@@ -71,14 +79,14 @@ interface CurrencyMetadata {
 }
 
 interface CurrencyNetwork {
-  network: string;            // normalized, e.g. BSC
-  nativeName: string;         // venue label, e.g. BNB Smart Chain (BEP20)
+  network: string; // normalized, e.g. BSC
+  nativeName: string; // venue label, e.g. BNB Smart Chain (BEP20)
   withdrawEnabled: boolean;
   depositEnabled: boolean;
   withdrawFee?: Decimal;
   minWithdrawAmount?: Decimal;
   minDepositAmount?: Decimal;
-  canArriveQuickly: boolean;  // heuristic until measured
+  canArriveQuickly: boolean; // heuristic until measured
 }
 ```
 
@@ -86,43 +94,43 @@ interface CurrencyNetwork {
 
 ### Tier S
 
-| Exchange | Adapter | Notes |
-|---|---|---|
-| Gate.io | CCXT | Core venue, public API already verified |
-| MEXC | CCXT | Core venue, public API already verified |
-| WEEX | CCXT | Supported by CCXT; verify trading capability before live use |
-| Hotcoin | Custom | No CCXT support found; read-only adapter first |
+| Exchange | Adapter | Notes                                                        |
+| -------- | ------- | ------------------------------------------------------------ |
+| Gate.io  | CCXT    | Core venue, public API already verified                      |
+| MEXC     | CCXT    | Core venue, public API already verified                      |
+| WEEX     | CCXT    | Supported by CCXT; verify trading capability before live use |
+| Hotcoin  | Custom  | No CCXT support found; read-only adapter first               |
 
 ### Tier A
 
 | Exchange | Adapter |
-|---|---|
-| Binance | CCXT |
-| OKX | CCXT |
-| Bybit | CCXT |
-| KuCoin | CCXT |
-| Bitget | CCXT |
-| HTX | CCXT |
+| -------- | ------- |
+| Binance  | CCXT    |
+| OKX      | CCXT    |
+| Bybit    | CCXT    |
+| KuCoin   | CCXT    |
+| Bitget   | CCXT    |
+| HTX      | CCXT    |
 
 ### Tier B
 
 | Exchange | Adapter |
-|---|---|
-| BitMart | CCXT |
-| Bitrue | CCXT |
-| CoinEx | CCXT |
-| Poloniex | CCXT |
-| LBank | CCXT |
-| AscendEX | CCXT |
-| XT | CCXT |
+| -------- | ------- |
+| BitMart  | CCXT    |
+| Bitrue   | CCXT    |
+| CoinEx   | CCXT    |
+| Poloniex | CCXT    |
+| LBank    | CCXT    |
+| AscendEX | CCXT    |
+| XT       | CCXT    |
 
 ### Tier C
 
-| Exchange | Adapter |
-|---|---|
-| Coinbase | CCXT |
-| Kraken | CCXT |
-| Crypto.com | CCXT |
+| Exchange   | Adapter |
+| ---------- | ------- |
+| Coinbase   | CCXT    |
+| Kraken     | CCXT    |
+| Crypto.com | CCXT    |
 
 Tier B and C venues are read-only by default.
 
@@ -173,17 +181,17 @@ Each venue is continuously scored.
 
 ### Metrics
 
-| Metric | Target |
-|---|---|
-| API success rate | > 99% over 15 minutes |
-| Median request latency | venue-specific baseline |
-| Order book age | < 3 seconds for active candidates |
-| Rate-limit events | no sustained 429s |
-| Market data completeness | > 95% for enabled pairs |
-| Currency metadata availability | required for CEX-DEX |
-| Test order support | preferred |
-| Balance fetch reliability | required for execution |
-| Order state consistency | required for execution |
+| Metric                         | Target                            |
+| ------------------------------ | --------------------------------- |
+| API success rate               | > 99% over 15 minutes             |
+| Median request latency         | venue-specific baseline           |
+| Order book age                 | < 3 seconds for active candidates |
+| Rate-limit events              | no sustained 429s                 |
+| Market data completeness       | > 95% for enabled pairs           |
+| Currency metadata availability | required for CEX-DEX              |
+| Test order support             | preferred                         |
+| Balance fetch reliability      | required for execution            |
+| Order state consistency        | required for execution            |
 
 ### Health states
 

@@ -1,0 +1,185 @@
+﻿# Arbitrage runtime configuration
+# All monetary values are decimal strings. Never place credentials in this file.
+
+[scanner]
+enabled_venues = [
+  'gateio',
+  'mexc',
+  'weex',
+  'binance',
+  'okx',
+  'bybit',
+  'bitget',
+  'kucoin',
+  'htx',
+  'bitrue',
+  'lbank',
+  'xt',
+  'coinbase',
+  'kraken',
+  'cryptocom',
+  'woo',
+  'backpack',
+  'poloniex',
+  'bingx',
+  'phemex',
+  'whitebit',
+  'upbit',
+  'bitstamp',
+  'gemini',
+  'bitfinex',
+  'blockchaincom',
+  'bigone',
+  'hitbtc',
+  'btse',
+  'cex',
+  'digifinex',
+  'p2b',
+  'deepcoin',
+  'hashkey',
+  'hyperliquid',
+  'lighter',
+  'aster',
+]
+quote_currency = "USDT"
+asset_universe_mode = "top_volume"
+max_base_assets = 100
+quote_currencies = ["USDT", "USDC"]
+min_24h_quote_volume_usd = "1000000"
+universe_refresh_ms = 3600000
+scan_interval_hot_ms = 30000
+scan_interval_top100_ms = 120000
+scan_interval_top500_ms = 600000
+signal_cooldown_ms = 300000
+fetch_concurrency = 16
+base_assets = ["CAKE", "BNB", "ETH", "BTC"]
+max_order_notional = "30"
+max_orderbook_age_ms = 3000
+max_feed_latency_ms = 500
+max_freeze_ms = 5000
+feed_mode = 'websocket'
+ws_max_book_age_ms = 2000
+ws_max_subscriptions = 1200
+ws_max_reconnect_attempts = 5
+ws_rest_fallback_per_venue = 8
+# Optional adaptive entry gate: admit only edges at/above a rolling percentile
+# of the same route's recent net-edge history. off | percentile
+entry_gate_mode = 'off'
+entry_percentile = 90
+entry_gate_window_ms = 3600000
+entry_gate_min_samples = 50
+# WS-vs-REST book cross-check; repeated disagreement blocks the venue/symbol.
+book_sanity_enabled = true
+book_sanity_interval_ms = 60000
+book_sanity_max_deviation_bps = 50
+book_sanity_required_failures = 3
+book_sanity_required_successes = 3
+book_sanity_cooldown_ms = 300000
+book_sanity_sample_size = 4
+# Cheap top-of-book filter before the Decimal depth walk, and version-aware
+# re-evaluation that skips bases whose books did not change and had no valid edge.
+prefilter_enabled = true
+prefilter_floor_bps = 0
+incremental_evaluation = true
+route_cooldown_ms = 60000
+# Event-driven S1 hot path: coalesce a burst of book updates for this long,
+# then evaluate only the affected base/quote groups. The 1s ws_scan_interval_ms
+# is only a fallback wake-up, not the detection cadence.
+hot_scan_debounce_ms = 25
+# Include this many levels per side in the dirty fingerprint. 1 = BBO only;
+# 3 also catches capacity changes in the next two levels without reacting to
+# every deep-book update.
+hot_depth_levels = 3
+# Soft time budget for one hot scan. Groups that do not fit are put back into
+# the dirty set for the next event, so a burst cannot starve the loop.
+hot_scan_budget_ms = 250
+# Promote a base to the hot subscription set when its best net edge is within
+# this many bps of the entry threshold, even if it is not valid yet.
+hot_near_miss_bps = 5
+hot_subscription_refresh_ms = 5000
+# At startup, promote routes that produced valid S1 in the recent past so they
+# get WS subscriptions and hot-path attention immediately.
+hot_seed_enabled = true
+hot_seed_lookback_ms = 604800000
+hot_seed_limit = 30
+hot_seed_ttl_ms = 3600000
+record_feed = false
+record_feed_dir = 'data/feed'
+ws_scan_interval_ms = 1000
+ws_reconnect_min_ms = 1000
+ws_reconnect_max_ms = 30000
+min_top_depth_qty = "0"
+liquidity_top_levels = 5
+liquidity_multiple = 1.5
+rebalance_cost_bps = 0
+execution_mode = 'taker_taker'
+maker_fill_probability = '0.5'
+max_price_deviation_bps = 500
+suspicious_spread_bps = 200
+max_pair_skew_ms = 1500
+min_reliability_score = '0.3'
+scan_interval_ms = 5000
+orderbook_depth = 20
+max_triangular_paths = 100
+max_candidates_per_cycle = 100
+max_hops = 5
+max_legs_per_currency = 4
+cross_venue_mode = "inventory"
+max_venue_switches = 1
+balance_max_age_ms = 300000
+require_balances_for_s1 = false
+optimal_sizing = true
+min_sizing_notional = "1"
+sizing_step = "0.01"
+max_sizing_candidates_per_cycle = 40
+sizing_samples = 16
+# Per-symbol account fees written by `npm run fees:fetch`. Missing file is ignored.
+fee_file = 'data/fees.json'
+min_net_profit_bps = 20
+safety_buffer_bps = 15
+min_profit_usd = "0.25"
+max_slippage_bps = 50
+max_gas_cost_usd = "0.50"
+max_transfer_tax_bps = 0
+min_pool_liquidity_usd = "50000"
+min_pool_24h_volume_usd = "50000"
+transfer_risk_buffer_bps = 0
+deposit_risk_buffer_bps = 0
+persist_snapshots = true
+
+[execution]
+live_enabled = false
+kill_switch = true
+manual_confirmation = true
+max_open_batches = 1
+daily_max_loss_usd = "20"
+handoff_max_age_ms = 15000
+ioc_venues = []
+fok_venues = []
+
+[database]
+path = "data/arbitrage.sqlite"
+
+# Per-venue fee overrides. Set these to your real account tier; CCXT market fees
+# are often generic. Negative maker_bps means a rebate.
+# [fees.gateio]
+# taker_bps = 10
+# maker_bps = 2
+# [fees.mexc]
+# taker_bps = 10
+# maker_bps = 2
+
+[api]
+host = "127.0.0.1"
+port = 8787
+
+[bsc]
+enabled = false
+primary_provider = "0x"
+backup_provider = "1inch"
+token_symbols = ["CAKE", "BNB", "USDT", "USDC"]
+bnb_usd = "600"
+slippage_bps = 10
+inventory_mode = true
+estimated_transfer_arrival_ms = 900000
+max_transfer_arrival_ms = 1800000

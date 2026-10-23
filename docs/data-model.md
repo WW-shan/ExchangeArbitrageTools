@@ -97,6 +97,11 @@ CREATE TABLE exchange_markets (
 );
 ```
 
+`base` stores the canonical asset (for example `PEPE` even when the venue lists
+`1000PEPE`); `exchange_symbol` remains the raw venue symbol. Denomination
+metadata (`exchangeBase`, `baseMultiplier`) is loaded from the adapter at runtime
+and is recorded in opportunity/execution metadata rather than this table.
+
 ### exchange_currencies
 
 ```sql

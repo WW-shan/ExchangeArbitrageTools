@@ -1,0 +1,262 @@
+﻿<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Arb Desk — Local Operations</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <div class="grain" aria-hidden="true"></div>
+    <header class="masthead">
+      <div class="masthead__rule">
+        <span>LOCAL OPS / READ-ONLY DEFI & CEX DESK</span>
+        <span id="clock">--:--:--</span>
+        <span class="edition">PAPER EDITION / NO. 01</span>
+      </div>
+      <div class="masthead__title">
+        <div class="wordmark">ARB<span>/</span>DESK</div>
+        <div class="masthead__note">
+          Cost-aware execution research<br />for thin edges and small capital.
+        </div>
+      </div>
+      <div class="ticker" id="ticker" aria-label="System state">LOADING OPERATIONAL STATE…</div>
+    </header>
+
+    <main>
+      <section class="hero-grid" aria-label="System metrics">
+        <div class="metric metric--primary">
+          <span class="eyebrow">Valid opportunities</span>
+          <strong id="metric-valid">—</strong>
+          <small>persisted candidates</small>
+        </div>
+        <div class="metric">
+          <span class="eyebrow">Paper closed</span>
+          <strong id="metric-paper">—</strong>
+          <small>simulated batches</small>
+        </div>
+        <div class="metric metric--profit">
+          <span class="eyebrow">Paper P&amp;L</span>
+          <strong id="metric-profit">—</strong>
+          <small>USDT / exact decimals</small>
+        </div>
+        <div class="metric metric--risk">
+          <span class="eyebrow">Unresolved</span>
+          <strong id="metric-recovery">—</strong>
+          <small>orders &amp; open batches</small>
+        </div>
+      </section>
+
+      <section class="panel panel--rollout" aria-label="Rollout diagnostics">
+        <div class="panel__head">
+          <h2>Rollout Diagnostics</h2>
+          <span class="stamp">PAPER + RECONCILED LIVE</span>
+        </div>
+        <div class="rollout-grid">
+          <div class="rollout-stat">
+            <span class="eyebrow">Full fill rate</span>
+            <strong id="rollout-fill">—</strong>
+            <small>closed with both legs filled</small>
+          </div>
+          <div class="rollout-stat">
+            <span class="eyebrow">First-leg partial</span>
+            <strong id="rollout-first-partial">—</strong>
+            <small>of batches with a first leg</small>
+          </div>
+          <div class="rollout-stat">
+            <span class="eyebrow">Second-leg failure</span>
+            <strong id="rollout-second-failure">—</strong>
+            <small>rejected / unknown / partial</small>
+          </div>
+          <div class="rollout-stat">
+            <span class="eyebrow">Unknown orders</span>
+            <strong id="rollout-unknown">—</strong>
+            <small>of submitted orders</small>
+          </div>
+          <div class="rollout-stat">
+            <span class="eyebrow">Query error rate</span>
+            <strong id="rollout-query-errors">—</strong>
+            <small>order reconciliation events</small>
+          </div>
+          <div class="rollout-stat">
+            <span class="eyebrow">Live realized P&amp;L</span>
+            <strong id="rollout-live-profit">—</strong>
+            <small>USDT / exact decimals</small>
+          </div>
+          <div class="rollout-stat">
+            <span class="eyebrow">Rebalance cost</span>
+            <strong id="rollout-rebalance">—</strong>
+            <small>USDT / cumulative</small>
+          </div>
+          <div class="rollout-stat">
+            <span class="eyebrow">Gas cost</span>
+            <strong id="rollout-gas">—</strong>
+            <small>USDT / paper simulations</small>
+          </div>
+          <div class="rollout-stat">
+            <span class="eyebrow">Inventory drift</span>
+            <strong id="rollout-inventory-drift">—</strong>
+            <small>absolute USD / snapshot pairs</small>
+          </div>
+          <div class="rollout-stat">
+            <span class="eyebrow">Max transfer tax</span>
+            <strong id="rollout-transfer-tax">—</strong>
+            <small>bps across mappings</small>
+          </div>
+          <div class="rollout-stat">
+            <span class="eyebrow">Risk events</span>
+            <strong id="rollout-risk">—</strong>
+            <small>last 24 hours</small>
+          </div>
+          <div class="rollout-stat">
+            <span class="eyebrow">Operator actions</span>
+            <strong id="rollout-operator">—</strong>
+            <small>last 24 hours</small>
+          </div>
+        </div>
+      </section>
+
+      <section class="desk-grid">
+        <article class="panel panel--venues">
+          <div class="panel__head">
+            <h2>Venue Pulse</h2>
+            <span class="stamp">15 MIN WINDOW</span>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Venue</th>
+                  <th>Tier</th>
+                  <th>State</th>
+                  <th>Success</th>
+                  <th>P95</th>
+                  <th>429s</th>
+                </tr>
+              </thead>
+              <tbody id="venues-body">
+                <tr>
+                  <td colspan="6" class="empty">Awaiting market data…</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </article>
+
+        <aside class="panel panel--safety">
+          <div class="panel__head">
+            <h2>Safety Rail</h2>
+            <span class="stamp stamp--hot">HARD STOP</span>
+          </div>
+          <div class="safety-state">
+            <span class="safety-state__label">KILL SWITCH</span>
+            <strong id="kill-state">UNKNOWN</strong>
+            <button id="kill-toggle" type="button">Toggle switch</button>
+          </div>
+          <dl class="safety-list">
+            <div>
+              <dt>Live execution</dt>
+              <dd id="live-state">DISABLED</dd>
+            </div>
+            <div>
+              <dt>Manual confirmation</dt>
+              <dd>REQUIRED</dd>
+            </div>
+            <div>
+              <dt>Concurrent batches</dt>
+              <dd>MAX 1</dd>
+            </div>
+            <div>
+              <dt>Unknown order policy</dt>
+              <dd>STOP + RECONCILE</dd>
+            </div>
+          </dl>
+          <p class="fineprint">
+            No page refresh calls a venue. Every value below is read from the local SQLite audit
+            store.
+          </p>
+        </aside>
+      </section>
+
+      <section class="panel panel--ledger">
+        <div class="panel__head">
+          <h2>Opportunity Ledger</h2>
+          <span class="stamp">NEWEST FIRST</span>
+        </div>
+        <div class="table-wrap">
+          <table class="ledger">
+            <thead>
+              <tr>
+                <th>Time</th>
+                <th>Strategy</th>
+                <th>Route</th>
+                <th>Notional</th>
+                <th>Depth net</th>
+                <th>Conservative</th>
+                <th>BPS</th>
+                <th>Status</th>
+              </tr>
+            </thead>
+            <tbody id="opportunities-body">
+              <tr>
+                <td colspan="8" class="empty">No opportunities persisted yet.</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="lower-grid">
+        <article class="panel">
+          <div class="panel__head">
+            <h2>Episode Tape</h2>
+            <span class="stamp">PERSISTENCE</span>
+          </div>
+          <div id="episodes-list" class="episode-list">
+            <p class="empty">No episodes recorded.</p>
+          </div>
+        </article>
+        <article class="panel">
+          <div class="panel__head">
+            <h2>Inventory</h2>
+            <span class="stamp">LATEST SNAPSHOTS</span>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Venue</th>
+                  <th>Asset</th>
+                  <th>Free</th>
+                  <th>Used</th>
+                  <th>Total</th>
+                  <th>USD</th>
+                  <th>Time</th>
+                </tr>
+              </thead>
+              <tbody id="inventory-body">
+                <tr>
+                  <td colspan="7" class="empty">No inventory snapshots yet.</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </article>
+        <article class="panel">
+          <div class="panel__head">
+            <h2>Risk Events</h2>
+            <span class="stamp stamp--hot">AUDIT</span>
+          </div>
+          <div id="risk-list" class="risk-list"><p class="empty">No risk events recorded.</p></div>
+        </article>
+      </section>
+    </main>
+
+    <footer>
+      <span>ARBITRAGE RESEARCH PLATFORM / LOCALHOST ONLY</span>
+      <span>exact decimal storage · UTC timestamps · fail closed</span>
+      <span id="footer-state">—</span>
+    </footer>
+    <script src="/app.js"></script>
+  </body>
+</html>

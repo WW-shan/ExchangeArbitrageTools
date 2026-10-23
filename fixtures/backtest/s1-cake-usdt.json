@@ -1,0 +1,716 @@
+{
+  "name": "S1 CAKE/USDT depth replay",
+  "kind": "synthetic-calibration",
+  "note": "Deterministic order-book replay for paper-engine regression and execution-path testing. Replace with a captured market fixture for venue-specific calibration.",
+  "generatedAt": "2026-10-21T00:00:00.000Z",
+  "base": "CAKE",
+  "quote": "USDT",
+  "requestedNotional": "30",
+  "settings": {
+    "minProfitUsd": "0.25",
+    "safetyBufferBps": "15",
+    "minNetProfitBps": "20",
+    "maxOrderbookAgeMs": 3000,
+    "maxSlippageBps": "50",
+    "maxGasCostUsd": "0.50",
+    "maxTransferTaxBps": "0"
+  },
+  "markets": {
+    "gateio": {
+      "venueId": "gateio",
+      "exchangeSymbol": "CAKE/USDT",
+      "unifiedSymbol": "CAKE/USDT",
+      "base": "CAKE",
+      "quote": "USDT",
+      "active": true,
+      "pricePrecision": 4,
+      "amountPrecision": 3,
+      "amountStep": "0.001",
+      "priceStep": "0.0001",
+      "minAmount": "0.01",
+      "minNotional": "1",
+      "feeTakerBps": "10",
+      "supportsIoc": true,
+      "supportsFok": false
+    },
+    "mexc": {
+      "venueId": "mexc",
+      "exchangeSymbol": "CAKE/USDT",
+      "unifiedSymbol": "CAKE/USDT",
+      "base": "CAKE",
+      "quote": "USDT",
+      "active": true,
+      "pricePrecision": 4,
+      "amountPrecision": 3,
+      "amountStep": "0.001",
+      "priceStep": "0.0001",
+      "minAmount": "0.01",
+      "minNotional": "1",
+      "feeTakerBps": "10",
+      "supportsIoc": true,
+      "supportsFok": false
+    }
+  },
+  "samples": [
+    {
+      "sampledAt": 1762000000000,
+      "gateio": {
+        "venueId": "gateio",
+        "exchangeSymbol": "CAKE/USDT",
+        "fetchedAt": 1762000000000,
+        "exchangeTimestamp": 1762000000000,
+        "asks": [
+          ["2.5000", "5"],
+          ["2.5005", "50"]
+        ],
+        "bids": [
+          ["2.4900", "5"],
+          ["2.4895", "50"]
+        ],
+        "source": "replay"
+      },
+      "mexc": {
+        "venueId": "mexc",
+        "exchangeSymbol": "CAKE/USDT",
+        "fetchedAt": 1762000000000,
+        "exchangeTimestamp": 1762000000000,
+        "asks": [
+          ["2.5700", "5"],
+          ["2.5705", "50"]
+        ],
+        "bids": [
+          ["2.5600", "5"],
+          ["2.5595", "50"]
+        ],
+        "source": "replay"
+      }
+    },
+    {
+      "sampledAt": 1762000005000,
+      "gateio": {
+        "venueId": "gateio",
+        "exchangeSymbol": "CAKE/USDT",
+        "fetchedAt": 1762000005000,
+        "exchangeTimestamp": 1762000005000,
+        "asks": [
+          ["2.5004", "5"],
+          ["2.5009", "50"]
+        ],
+        "bids": [
+          ["2.4904", "5"],
+          ["2.4899", "50"]
+        ],
+        "source": "replay"
+      },
+      "mexc": {
+        "venueId": "mexc",
+        "exchangeSymbol": "CAKE/USDT",
+        "fetchedAt": 1762000005000,
+        "exchangeTimestamp": 1762000005000,
+        "asks": [
+          ["2.5704", "5"],
+          ["2.5709", "50"]
+        ],
+        "bids": [
+          ["2.5604", "5"],
+          ["2.5599", "50"]
+        ],
+        "source": "replay"
+      }
+    },
+    {
+      "sampledAt": 1762000010000,
+      "gateio": {
+        "venueId": "gateio",
+        "exchangeSymbol": "CAKE/USDT",
+        "fetchedAt": 1762000010000,
+        "exchangeTimestamp": 1762000010000,
+        "asks": [
+          ["2.5008", "5"],
+          ["2.5013", "50"]
+        ],
+        "bids": [
+          ["2.4908", "5"],
+          ["2.4903", "50"]
+        ],
+        "source": "replay"
+      },
+      "mexc": {
+        "venueId": "mexc",
+        "exchangeSymbol": "CAKE/USDT",
+        "fetchedAt": 1762000010000,
+        "exchangeTimestamp": 1762000010000,
+        "asks": [
+          ["2.5708", "5"],
+          ["2.5713", "50"]
+        ],
+        "bids": [
+          ["2.5608", "5"],
+          ["2.5603", "50"]
+        ],
+        "source": "replay"
+      }
+    },
+    {
+      "sampledAt": 1762000015000,
+      "gateio": {
+        "venueId": "gateio",
+        "exchangeSymbol": "CAKE/USDT",
+        "fetchedAt": 1762000015000,
+        "exchangeTimestamp": 1762000015000,
+        "asks": [
+          ["2.5012", "5"],
+          ["2.5017", "50"]
+        ],
+        "bids": [
+          ["2.4912", "5"],
+          ["2.4907", "50"]
+        ],
+        "source": "replay"
+      },
+      "mexc": {
+        "venueId": "mexc",
+        "exchangeSymbol": "CAKE/USDT",
+        "fetchedAt": 1762000015000,
+        "exchangeTimestamp": 1762000015000,
+        "asks": [
+          ["2.5712", "5"],
+          ["2.5717", "50"]
+        ],
+        "bids": [
+          ["2.5612", "5"],
+          ["2.5607", "50"]
+        ],
+        "source": "replay"
+      }
+    },
+    {
+      "sampledAt": 1762000020000,
+      "gateio": {
+        "venueId": "gateio",
+        "exchangeSymbol": "CAKE/USDT",
+        "fetchedAt": 1762000020000,
+        "exchangeTimestamp": 1762000020000,
+        "asks": [
+          ["2.5016", "5"],
+          ["2.5021", "50"]
+        ],
+        "bids": [
+          ["2.4916", "5"],
+          ["2.4911", "50"]
+        ],
+        "source": "replay"
+      },
+      "mexc": {
+        "venueId": "mexc",
+        "exchangeSymbol": "CAKE/USDT",
+        "fetchedAt": 1762000020000,
+        "exchangeTimestamp": 1762000020000,
+        "asks": [
+          ["2.5716", "5"],
+          ["2.5721", "50"]
+        ],
+        "bids": [
+          ["2.5616", "5"],
+          ["2.5611", "50"]
+        ],
+        "source": "replay"
+      }
+    },
+    {
+      "sampledAt": 1762000025000,
+      "gateio": {
+        "venueId": "gateio",
+        "exchangeSymbol": "CAKE/USDT",
+        "fetchedAt": 1762000025000,
+        "exchangeTimestamp": 1762000025000,
+        "asks": [
+          ["2.5020", "5"],
+          ["2.5025", "50"]
+        ],
+        "bids": [
+          ["2.4920", "5"],
+          ["2.4915", "50"]
+        ],
+        "source": "replay"
+      },
+      "mexc": {
+        "venueId": "mexc",
+        "exchangeSymbol": "CAKE/USDT",
+        "fetchedAt": 1762000025000,
+        "exchangeTimestamp": 1762000025000,
+        "asks": [
+          ["2.5720", "5"],
+          ["2.5725", "50"]
+        ],
+        "bids": [
+          ["2.5620", "5"],
+          ["2.5615", "50"]
+        ],
+        "source": "replay"
+      }
+    },
+    {
+      "sampledAt": 1762000030000,
+      "gateio": {
+        "venueId": "gateio",
+        "exchangeSymbol": "CAKE/USDT",
+        "fetchedAt": 1762000030000,
+        "exchangeTimestamp": 1762000030000,
+        "asks": [
+          ["2.5024", "5"],
+          ["2.5029", "50"]
+        ],
+        "bids": [
+          ["2.4924", "5"],
+          ["2.4919", "50"]
+        ],
+        "source": "replay"
+      },
+      "mexc": {
+        "venueId": "mexc",
+        "exchangeSymbol": "CAKE/USDT",
+        "fetchedAt": 1762000030000,
+        "exchangeTimestamp": 1762000030000,
+        "asks": [
+          ["2.5724", "5"],
+          ["2.5729", "50"]
+        ],
+        "bids": [
+          ["2.5624", "5"],
+          ["2.5619", "50"]
+        ],
+        "source": "replay"
+      }
+    },
+    {
+      "sampledAt": 1762000035000,
+      "gateio": {
+        "venueId": "gateio",
+        "exchangeSymbol": "CAKE/USDT",
+        "fetchedAt": 1762000035000,
+        "exchangeTimestamp": 1762000035000,
+        "asks": [
+          ["2.5028", "5"],
+          ["2.5033", "50"]
+        ],
+        "bids": [
+          ["2.4928", "5"],
+          ["2.4923", "50"]
+        ],
+        "source": "replay"
+      },
+      "mexc": {
+        "venueId": "mexc",
+        "exchangeSymbol": "CAKE/USDT",
+        "fetchedAt": 1762000035000,
+        "exchangeTimestamp": 1762000035000,
+        "asks": [
+          ["2.5728", "5"],
+          ["2.5733", "50"]
+        ],
+        "bids": [
+          ["2.5628", "5"],
+          ["2.5623", "50"]
+        ],
+        "source": "replay"
+      }
+    },
+    {
+      "sampledAt": 1762000040000,
+      "gateio": {
+        "venueId": "gateio",
+        "exchangeSymbol": "CAKE/USDT",
+        "fetchedAt": 1762000040000,
+        "exchangeTimestamp": 1762000040000,
+        "asks": [
+          ["2.5032", "5"],
+          ["2.5037", "50"]
+        ],
+        "bids": [
+          ["2.4932", "5"],
+          ["2.4927", "50"]
+        ],
+        "source": "replay"
+      },
+      "mexc": {
+        "venueId": "mexc",
+        "exchangeSymbol": "CAKE/USDT",
+        "fetchedAt": 1762000040000,
+        "exchangeTimestamp": 1762000040000,
+        "asks": [
+          ["2.5732", "5"],
+          ["2.5737", "50"]
+        ],
+        "bids": [
+          ["2.5632", "5"],
+          ["2.5627", "50"]
+        ],
+        "source": "replay"
+      }
+    },
+    {
+      "sampledAt": 1762000045000,
+      "gateio": {
+        "venueId": "gateio",
+        "exchangeSymbol": "CAKE/USDT",
+        "fetchedAt": 1762000045000,
+        "exchangeTimestamp": 1762000045000,
+        "asks": [
+          ["2.5036", "5"],
+          ["2.5041", "50"]
+        ],
+        "bids": [
+          ["2.4936", "5"],
+          ["2.4931", "50"]
+        ],
+        "source": "replay"
+      },
+      "mexc": {
+        "venueId": "mexc",
+        "exchangeSymbol": "CAKE/USDT",
+        "fetchedAt": 1762000045000,
+        "exchangeTimestamp": 1762000045000,
+        "asks": [
+          ["2.5736", "5"],
+          ["2.5741", "50"]
+        ],
+        "bids": [
+          ["2.5636", "5"],
+          ["2.5631", "50"]
+        ],
+        "source": "replay"
+      }
+    },
+    {
+      "sampledAt": 1762000050000,
+      "gateio": {
+        "venueId": "gateio",
+        "exchangeSymbol": "CAKE/USDT",
+        "fetchedAt": 1762000050000,
+        "exchangeTimestamp": 1762000050000,
+        "asks": [
+          ["2.5040", "5"],
+          ["2.5045", "50"]
+        ],
+        "bids": [
+          ["2.4940", "5"],
+          ["2.4935", "50"]
+        ],
+        "source": "replay"
+      },
+      "mexc": {
+        "venueId": "mexc",
+        "exchangeSymbol": "CAKE/USDT",
+        "fetchedAt": 1762000050000,
+        "exchangeTimestamp": 1762000050000,
+        "asks": [
+          ["2.5740", "5"],
+          ["2.5745", "50"]
+        ],
+        "bids": [
+          ["2.5640", "5"],
+          ["2.5635", "50"]
+        ],
+        "source": "replay"
+      }
+    },
+    {
+      "sampledAt": 1762000055000,
+      "gateio": {
+        "venueId": "gateio",
+        "exchangeSymbol": "CAKE/USDT",
+        "fetchedAt": 1762000055000,
+        "exchangeTimestamp": 1762000055000,
+        "asks": [
+          ["2.5044", "5"],
+          ["2.5049", "50"]
+        ],
+        "bids": [
+          ["2.4944", "5"],
+          ["2.4939", "50"]
+        ],
+        "source": "replay"
+      },
+      "mexc": {
+        "venueId": "mexc",
+        "exchangeSymbol": "CAKE/USDT",
+        "fetchedAt": 1762000055000,
+        "exchangeTimestamp": 1762000055000,
+        "asks": [
+          ["2.5744", "5"],
+          ["2.5749", "50"]
+        ],
+        "bids": [
+          ["2.5644", "5"],
+          ["2.5639", "50"]
+        ],
+        "source": "replay"
+      }
+    },
+    {
+      "sampledAt": 1762000060000,
+      "gateio": {
+        "venueId": "gateio",
+        "exchangeSymbol": "CAKE/USDT",
+        "fetchedAt": 1762000060000,
+        "exchangeTimestamp": 1762000060000,
+        "asks": [
+          ["2.5048", "5"],
+          ["2.5053", "50"]
+        ],
+        "bids": [
+          ["2.4948", "5"],
+          ["2.4943", "50"]
+        ],
+        "source": "replay"
+      },
+      "mexc": {
+        "venueId": "mexc",
+        "exchangeSymbol": "CAKE/USDT",
+        "fetchedAt": 1762000060000,
+        "exchangeTimestamp": 1762000060000,
+        "asks": [
+          ["2.5748", "5"],
+          ["2.5753", "50"]
+        ],
+        "bids": [
+          ["2.5648", "5"],
+          ["2.5643", "50"]
+        ],
+        "source": "replay"
+      }
+    },
+    {
+      "sampledAt": 1762000065000,
+      "gateio": {
+        "venueId": "gateio",
+        "exchangeSymbol": "CAKE/USDT",
+        "fetchedAt": 1762000065000,
+        "exchangeTimestamp": 1762000065000,
+        "asks": [
+          ["2.5052", "5"],
+          ["2.5057", "50"]
+        ],
+        "bids": [
+          ["2.4952", "5"],
+          ["2.4947", "50"]
+        ],
+        "source": "replay"
+      },
+      "mexc": {
+        "venueId": "mexc",
+        "exchangeSymbol": "CAKE/USDT",
+        "fetchedAt": 1762000065000,
+        "exchangeTimestamp": 1762000065000,
+        "asks": [
+          ["2.5752", "5"],
+          ["2.5757", "50"]
+        ],
+        "bids": [
+          ["2.5652", "5"],
+          ["2.5647", "50"]
+        ],
+        "source": "replay"
+      }
+    },
+    {
+      "sampledAt": 1762000070000,
+      "gateio": {
+        "venueId": "gateio",
+        "exchangeSymbol": "CAKE/USDT",
+        "fetchedAt": 1762000070000,
+        "exchangeTimestamp": 1762000070000,
+        "asks": [
+          ["2.5056", "5"],
+          ["2.5061", "50"]
+        ],
+        "bids": [
+          ["2.4956", "5"],
+          ["2.4951", "50"]
+        ],
+        "source": "replay"
+      },
+      "mexc": {
+        "venueId": "mexc",
+        "exchangeSymbol": "CAKE/USDT",
+        "fetchedAt": 1762000070000,
+        "exchangeTimestamp": 1762000070000,
+        "asks": [
+          ["2.5756", "5"],
+          ["2.5761", "50"]
+        ],
+        "bids": [
+          ["2.5656", "5"],
+          ["2.5651", "50"]
+        ],
+        "source": "replay"
+      }
+    },
+    {
+      "sampledAt": 1762000075000,
+      "gateio": {
+        "venueId": "gateio",
+        "exchangeSymbol": "CAKE/USDT",
+        "fetchedAt": 1762000075000,
+        "exchangeTimestamp": 1762000075000,
+        "asks": [
+          ["2.5060", "5"],
+          ["2.5065", "50"]
+        ],
+        "bids": [
+          ["2.4960", "5"],
+          ["2.4955", "50"]
+        ],
+        "source": "replay"
+      },
+      "mexc": {
+        "venueId": "mexc",
+        "exchangeSymbol": "CAKE/USDT",
+        "fetchedAt": 1762000075000,
+        "exchangeTimestamp": 1762000075000,
+        "asks": [
+          ["2.5760", "5"],
+          ["2.5765", "50"]
+        ],
+        "bids": [
+          ["2.5660", "5"],
+          ["2.5655", "50"]
+        ],
+        "source": "replay"
+      }
+    },
+    {
+      "sampledAt": 1762000080000,
+      "gateio": {
+        "venueId": "gateio",
+        "exchangeSymbol": "CAKE/USDT",
+        "fetchedAt": 1762000080000,
+        "exchangeTimestamp": 1762000080000,
+        "asks": [
+          ["2.5064", "5"],
+          ["2.5069", "50"]
+        ],
+        "bids": [
+          ["2.4964", "5"],
+          ["2.4959", "50"]
+        ],
+        "source": "replay"
+      },
+      "mexc": {
+        "venueId": "mexc",
+        "exchangeSymbol": "CAKE/USDT",
+        "fetchedAt": 1762000080000,
+        "exchangeTimestamp": 1762000080000,
+        "asks": [
+          ["2.5764", "5"],
+          ["2.5769", "50"]
+        ],
+        "bids": [
+          ["2.5664", "5"],
+          ["2.5659", "50"]
+        ],
+        "source": "replay"
+      }
+    },
+    {
+      "sampledAt": 1762000085000,
+      "gateio": {
+        "venueId": "gateio",
+        "exchangeSymbol": "CAKE/USDT",
+        "fetchedAt": 1762000085000,
+        "exchangeTimestamp": 1762000085000,
+        "asks": [
+          ["2.5068", "5"],
+          ["2.5073", "50"]
+        ],
+        "bids": [
+          ["2.4968", "5"],
+          ["2.4963", "50"]
+        ],
+        "source": "replay"
+      },
+      "mexc": {
+        "venueId": "mexc",
+        "exchangeSymbol": "CAKE/USDT",
+        "fetchedAt": 1762000085000,
+        "exchangeTimestamp": 1762000085000,
+        "asks": [
+          ["2.5768", "5"],
+          ["2.5773", "50"]
+        ],
+        "bids": [
+          ["2.5668", "5"],
+          ["2.5663", "50"]
+        ],
+        "source": "replay"
+      }
+    },
+    {
+      "sampledAt": 1762000090000,
+      "gateio": {
+        "venueId": "gateio",
+        "exchangeSymbol": "CAKE/USDT",
+        "fetchedAt": 1762000090000,
+        "exchangeTimestamp": 1762000090000,
+        "asks": [
+          ["2.5072", "5"],
+          ["2.5077", "50"]
+        ],
+        "bids": [
+          ["2.4972", "5"],
+          ["2.4967", "50"]
+        ],
+        "source": "replay"
+      },
+      "mexc": {
+        "venueId": "mexc",
+        "exchangeSymbol": "CAKE/USDT",
+        "fetchedAt": 1762000090000,
+        "exchangeTimestamp": 1762000090000,
+        "asks": [
+          ["2.5772", "5"],
+          ["2.5777", "50"]
+        ],
+        "bids": [
+          ["2.5672", "5"],
+          ["2.5667", "50"]
+        ],
+        "source": "replay"
+      }
+    },
+    {
+      "sampledAt": 1762000095000,
+      "gateio": {
+        "venueId": "gateio",
+        "exchangeSymbol": "CAKE/USDT",
+        "fetchedAt": 1762000095000,
+        "exchangeTimestamp": 1762000095000,
+        "asks": [
+          ["2.5076", "5"],
+          ["2.5081", "50"]
+        ],
+        "bids": [
+          ["2.4976", "5"],
+          ["2.4971", "50"]
+        ],
+        "source": "replay"
+      },
+      "mexc": {
+        "venueId": "mexc",
+        "exchangeSymbol": "CAKE/USDT",
+        "fetchedAt": 1762000095000,
+        "exchangeTimestamp": 1762000095000,
+        "asks": [
+          ["2.5776", "5"],
+          ["2.5781", "50"]
+        ],
+        "bids": [
+          ["2.5676", "5"],
+          ["2.5671", "50"]
+        ],
+        "source": "replay"
+      }
+    }
+  ]
+}

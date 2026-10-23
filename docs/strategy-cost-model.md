@@ -2,12 +2,12 @@
 
 ## Strategies
 
-| ID | Strategy | MVP status |
-|---|---|---|
-| S1 | CEX-CEX spot arbitrage | Read-only, paper, then small live |
-| S2 | Intra-CEX triangular arbitrage | Read-only and paper only |
-| S3 | BSC CEX-DEX arbitrage | Read-only, then manual live |
-| S4 | BSC DEX-DEX arbitrage | Read-only only |
+| ID  | Strategy                       | MVP status                        |
+| --- | ------------------------------ | --------------------------------- |
+| S1  | CEX-CEX spot arbitrage         | Read-only, paper, then small live |
+| S2  | Intra-CEX triangular arbitrage | Read-only and paper only          |
+| S3  | BSC CEX-DEX arbitrage          | Read-only, then manual live       |
+| S4  | BSC DEX-DEX arbitrage          | Read-only only                    |
 
 ## Common concepts
 

@@ -1,0 +1,98 @@
+# Live-test profile: small manual batches only.
+# Fill [fees.<venue>] with your real account tier before running.
+# live_enabled MUST stay false until the operator explicitly flips it.
+
+[scanner]
+enabled_venues = ['gateio', 'mexc', 'weex']
+quote_currency = "USDT"
+asset_universe_mode = "explicit"
+base_assets = ["CAKE", "ETH", "BTC"]
+quote_currencies = ["USDT"]
+max_base_assets = 3
+fetch_concurrency = 4
+scan_interval_hot_ms = 30000
+scan_interval_top100_ms = 120000
+scan_interval_top500_ms = 600000
+signal_cooldown_ms = 60000
+max_order_notional = "10"
+max_orderbook_age_ms = 3000
+max_feed_latency_ms = 500
+max_freeze_ms = 5000
+feed_mode = 'websocket'
+ws_max_book_age_ms = 2000
+ws_max_subscriptions = 200
+ws_max_reconnect_attempts = 5
+ws_rest_fallback_per_venue = 4
+ws_scan_interval_ms = 1000
+orderbook_depth = 20
+min_net_profit_bps = 5
+safety_buffer_bps = 2
+min_profit_usd = "0.005"
+max_slippage_bps = 30
+max_gas_cost_usd = "0.50"
+max_transfer_tax_bps = 0
+max_pair_skew_ms = 1500
+min_reliability_score = '0.3'
+max_price_deviation_bps = 500
+suspicious_spread_bps = 200
+rebalance_cost_bps = 0
+execution_mode = 'taker_taker'
+maker_fill_probability = '0.5'
+optimal_sizing = true
+min_sizing_notional = "1"
+sizing_step = "0.01"
+max_sizing_candidates_per_cycle = 20
+sizing_samples = 12
+persist_snapshots = true
+scan_interval_ms = 5000
+max_triangular_paths = 0
+max_candidates_per_cycle = 20
+max_hops = 3
+max_legs_per_currency = 2
+cross_venue_mode = "off"
+max_venue_switches = 1
+balance_max_age_ms = 300000
+require_balances_for_s1 = true
+min_top_depth_qty = "0"
+liquidity_top_levels = 5
+
+[execution]
+live_enabled = false
+kill_switch = true
+manual_confirmation = true
+max_open_batches = 1
+daily_max_loss_usd = "5"
+handoff_max_age_ms = 15000
+ioc_venues = []
+fok_venues = []
+
+[database]
+path = "data/live-test.sqlite"
+
+[api]
+host = "127.0.0.1"
+port = 8788
+
+[bsc]
+enabled = false
+primary_provider = "0x"
+backup_provider = "1inch"
+token_symbols = ["CAKE", "BNB", "USDT", "USDC"]
+bnb_usd = "600"
+slippage_bps = 10
+inventory_mode = true
+estimated_transfer_arrival_ms = 900000
+max_transfer_arrival_ms = 1800000
+
+# Real fee tiers are REQUIRED. Uncomment and replace with your account rates.
+# Negative maker_bps means a rebate. Until these are set, the readiness gate
+# reports generic CCXT fees and some venues fail closed with fee_not_configured.
+# [fees.gateio]
+# taker_bps = 10
+# maker_bps = 2
+# [fees.mexc]
+# taker_bps = 10
+# maker_bps = 2
+# [fees.weex]
+# taker_bps = 10
+# maker_bps = 2

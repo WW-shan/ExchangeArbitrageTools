@@ -1,0 +1,81 @@
+# Read-only S1 soak profile: two low-latency venues over SOCKS proxy.
+
+[scanner]
+enabled_venues = ['mexc', 'weex']
+quote_currency = 'USDT'
+asset_universe_mode = 'explicit'
+max_base_assets = 10
+quote_currencies = ['USDT']
+base_assets = ['APT', 'INJ', 'SUI', 'BNB', 'DOGE', 'ETH', 'BTC', 'SOL', 'XRP', 'LINK']
+min_24h_quote_volume_usd = '0'
+universe_refresh_ms = 3600000
+scan_interval_hot_ms = 0
+scan_interval_top100_ms = 0
+scan_interval_top500_ms = 0
+signal_cooldown_ms = 60000
+fetch_concurrency = 4
+max_order_notional = '30'
+max_orderbook_age_ms = 3000
+max_feed_latency_ms = 3000
+max_freeze_ms = 10000
+feed_mode = 'websocket'
+ws_max_book_age_ms = 3000
+ws_max_subscriptions = 40
+record_feed = true
+record_feed_dir = 'data/feed-soak'
+ws_scan_interval_ms = 1000
+ws_reconnect_min_ms = 1000
+ws_reconnect_max_ms = 30000
+min_top_depth_qty = '0'
+liquidity_top_levels = 5
+rebalance_cost_bps = 0
+execution_mode = 'taker_taker'
+maker_fill_probability = '0.5'
+max_price_deviation_bps = 500
+suspicious_spread_bps = 200
+max_pair_skew_ms = 2000
+min_reliability_score = '0.3'
+scan_interval_ms = 1000
+min_net_profit_bps = 1
+safety_buffer_bps = 0
+min_profit_usd = '0'
+max_slippage_bps = 50
+max_gas_cost_usd = '0.50'
+max_transfer_tax_bps = 0
+orderbook_depth = 20
+max_triangular_paths = 0
+max_candidates_per_cycle = 10
+max_hops = 2
+max_legs_per_currency = 2
+cross_venue_mode = 'off'
+max_venue_switches = 1
+balance_max_age_ms = 300000
+require_balances_for_s1 = false
+optimal_sizing = true
+min_sizing_notional = '1'
+sizing_step = '0.01'
+max_sizing_candidates_per_cycle = 20
+sizing_samples = 8
+persist_snapshots = false
+
+[execution]
+live_enabled = false
+kill_switch = true
+manual_confirmation = true
+max_open_batches = 1
+max_daily_loss_usd = '20'
+
+[database]
+path = 'data/s1-soak.sqlite'
+
+[api]
+host = '127.0.0.1'
+port = 8787
+
+[fees.mexc]
+taker_bps = 2
+maker_bps = -1
+
+[fees.weex]
+taker_bps = 2
+maker_bps = -1

@@ -8,14 +8,14 @@ The project should reuse proven open-source components where possible, but reuse
 
 Use as a library or package.
 
-| Component | License | Purpose |
-|---|---|---|
-| CCXT | MIT | Exchange market data, markets, order books, trading where supported |
-| ethers.js | MIT | BSC RPC reads, token metadata, decimals, transfer-tax checks |
-| Fastify | MIT | Local API server |
-| better-sqlite3 | MIT | Local persistence |
-| Decimal.js | MIT | Monetary and quantity arithmetic |
-| Vitest | MIT | Testing |
+| Component      | License | Purpose                                                             |
+| -------------- | ------- | ------------------------------------------------------------------- |
+| CCXT           | MIT     | Exchange market data, markets, order books, trading where supported |
+| ethers.js      | MIT     | BSC RPC reads, token metadata, decimals, transfer-tax checks        |
+| Fastify        | MIT     | Local API server                                                    |
+| better-sqlite3 | MIT     | Local persistence                                                   |
+| Decimal.js     | MIT     | Monetary and quantity arithmetic                                    |
+| Vitest         | MIT     | Testing                                                             |
 
 These packages are appropriate dependencies because they have clear permissive licenses and maintain a stable public API.
 
@@ -23,10 +23,10 @@ These packages are appropriate dependencies because they have clear permissive l
 
 Study design and selectively implement equivalent behavior. Do not vendor source unless the license is explicitly verified.
 
-| Project | License | What to reuse |
-|---|---|---|
+| Project    | License    | What to reuse                                                                                                  |
+| ---------- | ---------- | -------------------------------------------------------------------------------------------------------------- |
 | Hummingbot | Apache-2.0 | Order tracker, in-flight order model, trading rule validation, rate limiter, cross-exchange strategy structure |
-| CCXT | MIT | Exchange response normalization, precision handling, market metadata conventions |
+| CCXT       | MIT        | Exchange response normalization, precision handling, market metadata conventions                               |
 
 Apache-2.0 and MIT permit code reuse under their terms, but Hummingbot is large and mostly useful as an architectural reference. Copying entire modules would add maintenance burden.
 
@@ -34,12 +34,12 @@ Apache-2.0 and MIT permit code reuse under their terms, but Hummingbot is large 
 
 Do not copy code.
 
-| Project | License | Useful ideas |
-|---|---|---|
-| m1amgn/cex_dex_arbitrager | None found | Unified venue abstraction, tiered scanning, cost-aware thresholds, token verification, signal deduplication |
-| solidquant/whack-a-mole | None found | CEX-DEX research framing, AMM simulation concepts |
-| hzjken/crypto-arbitrage-framework | None found | Path optimization and amount optimization for triangular arbitrage |
-| rexonelo/barbotine-arbitrage-bot | Non-standard | Orderbook-depth opportunity simulation and fake-money mode |
+| Project                           | License      | Useful ideas                                                                                                |
+| --------------------------------- | ------------ | ----------------------------------------------------------------------------------------------------------- |
+| m1amgn/cex_dex_arbitrager         | None found   | Unified venue abstraction, tiered scanning, cost-aware thresholds, token verification, signal deduplication |
+| solidquant/whack-a-mole           | None found   | CEX-DEX research framing, AMM simulation concepts                                                           |
+| hzjken/crypto-arbitrage-framework | None found   | Path optimization and amount optimization for triangular arbitrage                                          |
+| rexonelo/barbotine-arbitrage-bot  | Non-standard | Orderbook-depth opportunity simulation and fake-money mode                                                  |
 
 Projects without a clear license are not safe to copy. We may independently implement the same ideas, but must not reproduce their source.
 

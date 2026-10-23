@@ -1,0 +1,12 @@
+﻿{
+  "files": [],
+  "references": [
+    { "path": "./packages/core" },
+    { "path": "./packages/storage" },
+    { "path": "./packages/venues/cex" },
+    { "path": "./packages/venues/bsc" },
+    { "path": "./apps/scanner" },
+    { "path": "./apps/executor" },
+    { "path": "./apps/dashboard" }
+  ]
+}

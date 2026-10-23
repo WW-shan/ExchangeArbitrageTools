@@ -1,0 +1,63 @@
+{
+  "name": "exchange-arbitrage-tools",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Cost-aware CEX, triangular, and BSC arbitrage scanner with safe paper execution",
+  "engines": {
+    "node": ">=22.5"
+  },
+  "workspaces": [
+    "packages/core",
+    "packages/storage",
+    "packages/venues/cex",
+    "packages/venues/bsc",
+    "apps/scanner",
+    "apps/executor",
+    "apps/dashboard"
+  ],
+  "scripts": {
+    "build": "tsc -b tsconfig.build.json",
+    "typecheck": "tsc -b tsconfig.build.json --pretty false",
+    "test:types": "tsc -p tsconfig.tests.json --pretty false",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "coverage": "vitest run --coverage",
+    "lint": "npm run typecheck && npm run test:types && npm run format:check",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "backtest": "tsx scripts/backtest.ts",
+    "capture:fixture": "tsx scripts/capture-fixture.ts",
+    "replay": "tsx scripts/replay.ts",
+    "verify:tokens": "tsx scripts/verify-tokens.ts",
+    "scanner": "tsx apps/scanner/src/main.ts",
+    "api": "tsx apps/dashboard/src/main.ts",
+    "executor": "tsx apps/executor/src/main.ts",
+    "executor:secrets": "tsx apps/executor/src/secrets-cli.ts",
+    "executor:venue": "tsx apps/executor/src/venue-cli.ts",
+    "executor:balances": "tsx apps/executor/src/balance-cli.ts",
+    "check": "npm run lint && npm run test && npm run backtest",
+    "probe:venues": "tsx scripts/probe-venues.ts",
+    "live:readiness": "tsx scripts/live-readiness.ts",
+    "fees:fetch": "tsx scripts/fetch-fees.ts",
+    "analyze:feed": "tsx scripts/analyze-feed.ts",
+    "replay:feed": "tsx scripts/replay-feed.ts",
+    "rebalance:plan": "tsx scripts/rebalance-plan.ts",
+    "routes:stats": "tsx scripts/route-stats.ts",
+    "smoke:s1": "tsx scripts/smoke-s1.ts"
+  },
+  "devDependencies": {
+    "@types/node": "^24.10.0",
+    "@vitest/coverage-v8": "^4.0.9",
+    "prettier": "^3.6.2",
+    "tsx": "^4.20.6",
+    "typescript": "^5.9.3",
+    "vitest": "^4.0.9"
+  },
+  "dependencies": {
+    "http-proxy-agent": "^9.1.0",
+    "https-proxy-agent": "^9.1.0",
+    "protobufjs": "^7.6.6",
+    "socks-proxy-agent": "^10.1.0"
+  }
+}

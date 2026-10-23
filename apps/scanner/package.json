@@ -1,0 +1,17 @@
+{
+  "name": "@arb/scanner",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.js",
+  "scripts": {
+    "build": "tsc -b"
+  },
+  "dependencies": {
+    "@arb/core": "0.1.0",
+    "@arb/storage": "0.1.0",
+    "@arb/venues-bsc": "0.1.0",
+    "@arb/venues-cex": "0.1.0",
+    "smol-toml": "^1.9.1"
+  }
+}
