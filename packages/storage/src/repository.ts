@@ -530,6 +530,23 @@ export class ArbitrageRepository {
       .run(input.id, input.type, input.name, input.tier, input.executionEnabled ? 1 : 0, now, now);
   }
 
+  ensureVenue(input: {
+    id: string;
+    type: 'cex' | 'dex' | 'aggregator' | 'chain';
+    name: string;
+    tier: 'S' | 'A' | 'B' | 'C';
+    now?: number;
+  }): void {
+    const now = input.now ?? Date.now();
+    this.db
+      .prepare(
+        `INSERT OR IGNORE INTO venues(
+          id, type, name, tier, execution_enabled, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, 0, ?, ?)`,
+      )
+      .run(input.id, input.type, input.name, input.tier, now, now);
+  }
+
   venueExecutionEnabled(venueId: string): boolean {
     const row = this.db
       .prepare('SELECT execution_enabled FROM venues WHERE id = ?')
@@ -2523,6 +2540,164 @@ export class ArbitrageRepository {
     return rows.reduce((total, row) => total.plus(new Decimal(row.amount)), new Decimal(0));
   }
 
+  applyTransferPreflight(input: {
+    id: string;
+    status: string;
+    safeModeReason: string | null;
+    now: number;
+    legs: Array<{
+      legNumber: number;
+      status: string;
+      error: string | null;
+      fee?: Decimal;
+      metadata: unknown;
+    }>;
+  }): boolean {
+    this.db.exec('BEGIN IMMEDIATE');
+    let applied = false;
+    try {
+      const row = this.db
+        .prepare(
+          `SELECT status, execution_token, execution_lease_until
+           FROM transfer_batches WHERE id = ?`,
+        )
+        .get(input.id) as
+        | { status: string; execution_token: string | null; execution_lease_until: number | null }
+        | undefined;
+      if (!row) throw new Error(`transfer batch not found: ${input.id}`);
+      const idle =
+        ['PLANNED', 'READY', 'BLOCKED'].includes(row.status) &&
+        !(row.execution_token !== null && (row.execution_lease_until ?? 0) > input.now);
+      if (idle) {
+        for (const leg of input.legs) {
+          const fields = ['status = ?', 'error = ?', 'metadata_json = ?', 'updated_at = ?'];
+          const values: Array<string | number | null> = [
+            leg.status,
+            leg.error,
+            json(leg.metadata),
+            input.now,
+          ];
+          if (leg.fee !== undefined) {
+            fields.push('fee = ?');
+            values.push(leg.fee.toFixed());
+          }
+          const result = this.db
+            .prepare(
+              `UPDATE transfer_legs SET ${fields.join(', ')}
+               WHERE batch_id = ? AND leg_number = ?`,
+            )
+            .run(...values, input.id, leg.legNumber) as { changes: number | bigint };
+          if (Number(result.changes) !== 1) {
+            throw new Error(`transfer leg not found: ${input.id}:${leg.legNumber}`);
+          }
+        }
+        this.db
+          .prepare(
+            `UPDATE transfer_batches
+             SET status = ?, safe_mode_reason = ?, updated_at = ?
+             WHERE id = ?`,
+          )
+          .run(input.status, input.safeModeReason, input.now, input.id);
+        applied = true;
+      }
+      this.db.exec('COMMIT');
+    } catch (error) {
+      this.db.exec('ROLLBACK');
+      throw error;
+    }
+    return applied;
+  }
+
+  claimTransferExecution(input: {
+    id: string;
+    token: string;
+    now: number;
+    leaseUntil: number;
+    confirmation?: string | null;
+  }): { claimed: boolean; reason?: string } {
+    if (!input.token.trim()) throw new Error('transfer execution token is required');
+    if (!Number.isFinite(input.leaseUntil) || input.leaseUntil <= input.now) {
+      throw new Error('transfer execution lease must end after now');
+    }
+    this.db.exec('BEGIN IMMEDIATE');
+    let result: { claimed: boolean; reason?: string };
+    try {
+      const row = this.db
+        .prepare(
+          `SELECT status, execution_token, execution_lease_until
+           FROM transfer_batches WHERE id = ?`,
+        )
+        .get(input.id) as
+        | { status: string; execution_token: string | null; execution_lease_until: number | null }
+        | undefined;
+      if (!row) throw new Error(`transfer batch not found: ${input.id}`);
+      if (row.status === 'SAFE_STOP') {
+        result = { claimed: false, reason: 'batch_safe_stop' };
+      } else if (['COMPLETED', 'BLOCKED', 'DRY_RUN'].includes(row.status)) {
+        result = { claimed: false, reason: `batch_terminal:${row.status}` };
+      } else if (
+        !['PLANNED', 'READY', 'EXECUTING', 'WITHDRAWING', 'WITHDRAWN', 'WAITING_DEPOSIT'].includes(
+          row.status,
+        )
+      ) {
+        result = { claimed: false, reason: `batch_not_executable:${row.status}` };
+      } else if (
+        row.execution_token !== null &&
+        row.execution_token !== input.token &&
+        (row.execution_lease_until ?? 0) > input.now
+      ) {
+        result = { claimed: false, reason: 'batch_execution_locked' };
+      } else {
+        const placeholders = ACTIVE_TRANSFER_STATUSES.map(() => '?').join(', ');
+        const other = this.db
+          .prepare(
+            `SELECT COUNT(*) AS count FROM transfer_batches
+             WHERE status IN (${placeholders}) AND id <> ?`,
+          )
+          .get(...ACTIVE_TRANSFER_STATUSES, input.id) as { count: number | bigint };
+        if (Number(other.count) > 0) {
+          result = { claimed: false, reason: 'another_transfer_batch_active' };
+        } else {
+          const updated = this.db
+            .prepare(
+              `UPDATE transfer_batches
+               SET status = 'EXECUTING', confirmation = COALESCE(?, confirmation),
+                   dry_run = 0, execution_token = ?, execution_lease_until = ?,
+                   safe_mode_reason = NULL, updated_at = ?
+               WHERE id = ?`,
+            )
+            .run(
+              input.confirmation ?? null,
+              input.token,
+              input.leaseUntil,
+              input.now,
+              input.id,
+            ) as { changes: number | bigint };
+          if (Number(updated.changes) !== 1) {
+            throw new Error(`transfer batch claim did not update: ${input.id}`);
+          }
+          result = { claimed: true };
+        }
+      }
+      this.db.exec('COMMIT');
+    } catch (error) {
+      this.db.exec('ROLLBACK');
+      throw error;
+    }
+    return result;
+  }
+
+  releaseTransferExecution(id: string, token: string, now = Date.now()): boolean {
+    const result = this.db
+      .prepare(
+        `UPDATE transfer_batches
+         SET execution_token = NULL, execution_lease_until = NULL, updated_at = ?
+         WHERE id = ? AND execution_token = ?`,
+      )
+      .run(now, id, token) as { changes: number | bigint };
+    return Number(result.changes) > 0;
+  }
+
   updateTransferBatch(
     id: string,
     input: {
@@ -2553,9 +2728,13 @@ export class ArbitrageRepository {
     }
     fields.push('updated_at = ?');
     values.push(input.updatedAt ?? Date.now());
-    this.db
+    const result = this.db
       .prepare(`UPDATE transfer_batches SET ${fields.join(', ')} WHERE id = ?`)
-      .run(...values, id);
+      .run(...values, id) as { changes: number | bigint };
+    if (Number(result.changes) === 0) {
+      const exists = this.db.prepare('SELECT 1 FROM transfer_batches WHERE id = ?').get(id);
+      if (!exists) throw new Error(`transfer batch not found: ${id}`);
+    }
   }
 
   updateTransferLeg(batchId: string, legNumber: number, input: TransferLegUpdate): void {
@@ -2590,11 +2769,17 @@ export class ArbitrageRepository {
     }
     fields.push('updated_at = ?');
     values.push(input.updatedAt ?? Date.now());
-    this.db
+    const result = this.db
       .prepare(
         `UPDATE transfer_legs SET ${fields.join(', ')} WHERE batch_id = ? AND leg_number = ?`,
       )
-      .run(...values, batchId, legNumber);
+      .run(...values, batchId, legNumber) as { changes: number | bigint };
+    if (Number(result.changes) === 0) {
+      const exists = this.db
+        .prepare('SELECT 1 FROM transfer_legs WHERE batch_id = ? AND leg_number = ?')
+        .get(batchId, legNumber);
+      if (!exists) throw new Error(`transfer leg not found: ${batchId}:${legNumber}`);
+    }
   }
 
   private transferBatchFromRow(row: TransferBatchRow): TransferBatchRecord {

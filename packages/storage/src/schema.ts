@@ -465,4 +465,14 @@
         ON transfer_legs(from_venue, asset, requested_at);
     `,
   },
+  {
+    version: 9,
+    name: 'transfer_execution_lease',
+    sql: `
+      ALTER TABLE transfer_batches ADD COLUMN execution_token TEXT;
+      ALTER TABLE transfer_batches ADD COLUMN execution_lease_until INTEGER;
+      CREATE INDEX transfer_batches_execution_idx
+        ON transfer_batches(execution_token, execution_lease_until);
+    `,
+  },
 ] as const;

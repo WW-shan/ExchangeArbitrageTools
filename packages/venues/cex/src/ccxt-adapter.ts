@@ -33,6 +33,7 @@ import {
   networksMatch,
   normalizeAddressTag,
   normalizeCurrencyNetwork,
+  normalizeTransferCurrency,
   transactionIdsMatch,
 } from './transfer-network.js';
 
@@ -64,6 +65,13 @@ const PRO_ID_ALIASES: Record<string, string> = { gateio: 'gate' };
 
 function proExchangeId(exchangeId: string): string {
   return PRO_ID_ALIASES[exchangeId] ?? exchangeId;
+}
+
+function ccxtNetworkCode(exchangeId: string, network: string): string {
+  // CCXT's Gate deposit-address selector is indexed by unified network code
+  // (BEP20), while our transfer layer normalizes the same chain to BSC.
+  if (exchangeId === 'gate' && normalizeCurrencyNetwork(network) === 'BSC') return 'BEP20';
+  return network;
 }
 
 export function isCcxtShutdownError(error: unknown): boolean {
@@ -153,6 +161,12 @@ function normalizeCcxtTransfer(
 }
 
 function transferMatchesQuery(record: TransferRecord, query: TransferQuery): boolean {
+  if (
+    query.currency &&
+    normalizeTransferCurrency(record.currency) !== normalizeTransferCurrency(query.currency)
+  ) {
+    return false;
+  }
   if (query.id && record.id !== query.id) return false;
   if (query.txId && !transactionIdsMatch(record.txId, query.txId)) return false;
   if (query.network && !networksMatch(record.network, query.network)) return false;
@@ -726,9 +740,10 @@ export class CcxtCexAdapter implements CexAdapter {
       throw new Error(`${this.venueId} deposit-address API is not available`);
     }
     this.setCredentials(keys);
+    const requestNetwork = ccxtNetworkCode(this.#exchangeId, network);
     const response = await this.call(
       true,
-      () => this.#exchange.fetchDepositAddress(currency, { network }),
+      () => this.#exchange.fetchDepositAddress(currency, { network: requestNetwork }),
       'execution',
     );
     const record = response as unknown as Record<string, unknown>;
@@ -799,8 +814,9 @@ export class CcxtCexAdapter implements CexAdapter {
     }
     this.setCredentials(keys);
     const tag = normalizeAddressTag(request.tag);
+    const requestNetwork = ccxtNetworkCode(this.#exchangeId, request.network);
     const params: Record<string, unknown> = {
-      network: request.network,
+      network: requestNetwork,
       ...(tag ? { tag } : {}),
     };
     const response = await this.call(

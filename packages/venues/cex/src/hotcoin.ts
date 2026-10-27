@@ -29,7 +29,12 @@ import type {
   WithdrawalRequest,
   WithdrawalSubmission,
 } from './types.js';
-import { networksMatch, normalizeAddressTag, transactionIdsMatch } from './transfer-network.js';
+import {
+  networksMatch,
+  normalizeAddressTag,
+  normalizeTransferCurrency,
+  transactionIdsMatch,
+} from './transfer-network.js';
 
 interface HotcoinSymbol {
   baseCurrency: string;
@@ -357,28 +362,32 @@ function normalizeHotcoinTransferStatus(
     .trim()
     .toLowerCase();
   if (!text) return 'unknown';
+  const numeric = /^\d+/.test(text) ? Number.parseInt(text, 10) : undefined;
+  if (numeric !== undefined) {
+    if (direction === 'deposit') {
+      if (numeric === 0) return 'pending';
+      if (numeric === 1 || numeric === 2) return 'processing';
+      if (numeric === 3) return 'completed';
+      if (numeric === 4 || numeric === 5) return 'failed';
+      return 'unknown';
+    }
+    if (numeric === 1) return 'pending';
+    if (numeric === 2 || numeric === 5 || numeric === 6) return 'processing';
+    if (numeric === 3) return 'completed';
+    if (numeric === 4) return 'canceled';
+    if (numeric === 7 || numeric === 8) return 'failed';
+    return 'unknown';
+  }
   if (text.startsWith('0') || text.includes('confirm')) return 'pending';
   if (text.startsWith('3') || text.includes('completed') || text.includes('success')) {
     return 'completed';
   }
-  if (text.startsWith('4') && direction === 'withdrawal') return 'canceled';
   if (text.includes('revok') || text.includes('cancel')) return 'canceled';
-  if (
-    text.startsWith('4') ||
-    text.startsWith('5') ||
-    text.startsWith('7') ||
-    text.startsWith('8') ||
-    text.includes('fail') ||
-    text.includes('reject') ||
-    text.includes('risk')
-  ) {
+  if (text.includes('fail') || text.includes('reject') || text.includes('risk')) {
     return 'failed';
   }
-  if (text.startsWith('1') || text.includes('pending')) return 'pending';
-  if (text.startsWith('2') || text.startsWith('5') || text.includes('processing')) {
-    return 'processing';
-  }
-  if (text.startsWith('6') || text.includes('remit')) return 'processing';
+  if (text.includes('pending')) return 'pending';
+  if (text.includes('processing') || text.includes('remit')) return 'processing';
   return 'unknown';
 }
 
@@ -416,6 +425,12 @@ function normalizeHotcoinTransfer(
 }
 
 function hotcoinTransferMatches(record: TransferRecord, query: TransferQuery): boolean {
+  if (
+    query.currency &&
+    normalizeTransferCurrency(record.currency) !== normalizeTransferCurrency(query.currency)
+  ) {
+    return false;
+  }
   if (query.id && record.id !== query.id) return false;
   if (query.txId && !transactionIdsMatch(record.txId, query.txId)) return false;
   if (query.network && !networksMatch(record.network, query.network)) return false;
@@ -970,12 +985,22 @@ export class HotcoinAdapter implements CexAdapter {
     if (candidates.length === 0) {
       throw new Error(`Hotcoin has no deposit address for ${currency} on ${network}`);
     }
-    const selected = candidates.find((row) => row.selected === true) ?? candidates[0]!;
-    const address = firstString(selected, ['address']);
+    const selected = candidates.find(
+      (row) =>
+        row.selected === true ||
+        row.selected === 1 ||
+        String(row.selected ?? '').toLowerCase() === 'true' ||
+        String(row.selected ?? '') === '1',
+    );
+    if (!selected && candidates.length > 1) {
+      throw new Error(`Hotcoin deposit address is ambiguous for ${currency} on ${network}`);
+    }
+    const row = selected ?? candidates[0]!;
+    const address = firstString(row, ['address']);
     if (!address) throw new Error('Hotcoin deposit address response is missing address');
-    const chain = firstString(selected, ['chain', 'network']);
+    const chain = firstString(row, ['chain', 'network']);
     if (!chain) throw new Error('Hotcoin deposit address response is missing chain');
-    const tag = firstString(selected, ['addressTag', 'tag', 'memo']);
+    const tag = firstString(row, ['addressTag', 'tag', 'memo']);
     return {
       venueId: this.venueId,
       currency: currency.toUpperCase(),
@@ -983,7 +1008,7 @@ export class HotcoinAdapter implements CexAdapter {
       address,
       ...(tag ? { tag: normalizeAddressTag(tag) } : {}),
       fetchedAt: this.#clock(),
-      raw: selected,
+      raw: row,
     };
   }
 

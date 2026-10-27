@@ -701,6 +701,39 @@ describe('Hotcoin transfer adapter', () => {
     expect(decodeURIComponent(request.url)).toContain('remark=batch-1');
   });
 
+  it('keeps withdrawal status 5-processing pending and treats deposit 5-risk as failed', async () => {
+    const { client } = clientWith((request) => {
+      if (request.url.includes('/v1/asset/deposit/history')) {
+        return {
+          code: 200,
+          msg: 'succeed',
+          time: now,
+          data: [{ id: 1, currency: 'INC', chain: 'BSC', amount: '10', status: '5-risk frozen' }],
+        };
+      }
+      if (request.url.includes('/v1/asset/withdrawal/history')) {
+        return {
+          code: 200,
+          msg: 'succeed',
+          time: now,
+          data: [{ id: 2, currency: 'INC', chain: 'BSC', amount: '10', status: '5-processing' }],
+        };
+      }
+      throw new Error(`unexpected URL ${request.url}`);
+    });
+    const adapter = new HotcoinAdapter({
+      httpClient: client,
+      credentials: keys,
+      readOnly: false,
+      clock: () => now,
+    });
+
+    const deposits = await adapter.fetchDeposits({ currency: 'INC' }, keys);
+    expect(deposits[0]?.status).toBe('failed');
+    const withdrawals = await adapter.fetchWithdrawals({ currency: 'INC' }, keys);
+    expect(withdrawals[0]?.status).toBe('processing');
+  });
+
   it('fails closed when no deposit address matches the requested network or on read-only withdrawal', async () => {
     const { client } = clientWith(() => ({
       code: 200,
@@ -727,5 +760,24 @@ describe('Hotcoin transfer adapter', () => {
         keys,
       ),
     ).rejects.toThrow(/read-only/);
+  });
+
+  it('rejects ambiguous same-chain deposit addresses when none is selected', async () => {
+    const { client } = clientWith(() => ({
+      code: 200,
+      msg: 'succeed',
+      time: now,
+      data: [
+        { chain: 'BSC', address: '0xaaa', selected: false },
+        { chain: 'BSC', address: '0xbbb', selected: false },
+      ],
+    }));
+    const adapter = new HotcoinAdapter({
+      httpClient: client,
+      credentials: keys,
+      readOnly: false,
+      clock: () => now,
+    });
+    await expect(adapter.fetchDepositAddress('INC', 'BSC', keys)).rejects.toThrow(/ambiguous/);
   });
 });

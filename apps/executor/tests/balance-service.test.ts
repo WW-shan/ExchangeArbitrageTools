@@ -52,7 +52,6 @@ function balance(venueId: string, currency: string, free: string): BalanceSnapsh
 describe('automatic balance refresh', () => {
   it('persists fetched balances and exposes the latest value with an age limit', async () => {
     const repository = new ArbitrageRepository(openDatabase(':memory:'));
-    repository.upsertVenue({ id: 'gateio', type: 'cex', name: 'Gate.io', tier: 'S', now });
     const result = await refreshBalances(
       repository,
       [

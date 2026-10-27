@@ -55,7 +55,15 @@ The first supported pair is:
 - Gate.io (CCXT exchange id `gate`)
 - Hotcoin (native adapter)
 - spot assets quoted in USDT
-- BSC/BEP20 transfers when both venues expose the same chain
+- matching networks when both venues expose the same chain (BSC/BEP20 is preferred for speed, but never assumed)
+
+Network selection is per asset. The adapter compares the live
+`fetchCurrencies()` result and the destination deposit address before creating a
+withdrawal. As of 2026-10-28, Gate's live public currency data lists `INC` only
+on ERC20, `TBK`/`HTX` only on TRC20, and `CAKE`/`ETH`/`USDT` on BSC/BEP20.
+Therefore an `INC/BSC` allowlist entry is invalid for Gate even if the two
+venues both list INC. The first live route must be an asset/network pair that
+both venues actually expose.
 
 The route is data-driven. Adding another pair requires an allowlist entry and
 adapter support; it does not change the state machine.
@@ -142,6 +150,11 @@ CCXT 4.5.89 / Gate exposes:
 - `fetchWithdrawals(code, since, limit, params)`
 - `withdraw(code, amount, address, { network, tag })`
 
+Gate's CCXT deposit-address selector is indexed by unified network code
+(`BEP20`), not the raw chain id (`BSC`). The adapter translates the normalized
+transfer network back to `BEP20` before calling CCXT; withdraw responses are
+normalized back to the same transfer-network alias.
+
 The adapter normalizes CCXT transaction statuses:
 
 ```text
@@ -189,13 +202,22 @@ Hotcoin requires `XH-PASSPHRASE` on the withdrawal-apply endpoint. The
 adapter uses the existing signed-query implementation and does not put secrets
 in logs.
 
+Hotcoin does not currently expose a public currency-network metadata method in
+this adapter. Source withdrawal enablement, minimum amount and fee therefore
+cannot all be re-read from Hotcoin at preflight time. The allowlist fee and
+manual checks are mandatory, and the destination deposit address is still
+validated live.
+
 ## 5. Planning
 
 The operator supplies target free balances, for example:
 
 ```text
-gateio:INC=40,hotcoin:INC=40,gateio:USDT=100,hotcoin:USDT=100
+gateio:CAKE=40,hotcoin:CAKE=40,gateio:USDT=100,hotcoin:USDT=100
 ```
+
+`CAKE` is only a structural example. Replace it with the traded base after
+checking the destination venue's live deposit address and network.
 
 The planner:
 
@@ -340,12 +362,12 @@ deposit_timeout_ms = 1800000
 [[transfers.allowlist]]
 from_venue = "gateio"
 to_venue = "hotcoin"
-asset = "INC"
+asset = "CAKE"
 network = "BSC"
 address = "0x..."
 address_tag = ""
 # Optional when the venue withdrawal endpoint requires a chain-qualified code.
-venue_currency = "INC(BSC)"
+venue_currency = "CAKE(BSC)"
 min_amount = "15"
 max_amount = "200"
 daily_max_amount = "400"
@@ -381,11 +403,16 @@ before live use.
 | T-7  | Second leg waits for first leg arrival                                   | two-leg test                   |
 | T-8  | Source completion alone is insufficient                                  | arrival test                   |
 | T-9  | Batch and leg states are persisted atomically                            | repository tests               |
-| T-10 | Daily and per-transfer caps are enforced                                 | preflight test                 |
+| T-10 | Cumulative daily caps are enforced across legs in one batch              | planning/preflight tests       |
 | T-11 | Gate methods are normalized from CCXT transactions                       | CCXT adapter tests             |
 | T-12 | Hotcoin methods sign and parse official payloads                         | Hotcoin adapter tests          |
 | T-13 | `enabled=false`, `kill_switch=true`, manual confirmation remain defaults | config tests                   |
 | T-14 | Dry-run/preflight performs no withdrawal call                            | transfer-service test          |
+| T-15 | One atomic execution claim prevents two processes from submitting        | migration v9; lease tests      |
+| T-16 | Preflight cannot overwrite an executing batch                            | atomic preflight tests         |
+| T-17 | Source withdrawal record identity is rechecked                           | transfer-service test          |
+| T-18 | Withdrawal/deposit timeouts are independent; stale balances are not zero | timeout/stale-balance tests    |
+| T-19 | Gate BSC maps to CCXT BEP20 and live network data is checked             | adapter tests; live probe      |
 
 ## 12. Live rollout
 
@@ -399,7 +426,8 @@ before live use.
 
 - Add separate withdrawal keys with no IP mismatch.
 - Fetch both deposit addresses; compare against allowlist.
-- Fetch both currency networks and withdrawal fees.
+- Fetch both currency networks and withdrawal fees where the venue exposes
+  them; otherwise require manual attestation and a configured fee.
 - Do not submit a withdrawal.
 
 ### Phase C: one-leg live test
@@ -426,9 +454,10 @@ before live use.
 - Withdrawal-enabled API keys for Gate.io and Hotcoin, separate from trade
   keys, with IP allowlist.
 - Hotcoin API passphrase.
-- Verified BSC deposit addresses for both venues.
+- Verified deposit addresses for the exact asset/network pair on both venues.
 - Verified withdrawal fee and minimum for each asset/network.
-- Confirmation that both venues still support the exact asset contract on BSC.
+- Confirmation that both venues still support the exact asset contract on that
+  network (BSC is not valid for Gate INC/TBK/HTX as of 2026-10-28).
 - A small funded test balance.
 
 Until these are supplied, the implementation remains in mock/preflight mode.

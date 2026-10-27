@@ -65,6 +65,7 @@ interface FakeVenueOptions {
   depositAddresses: Record<string, string>;
   deposits?: TransferRecord[];
   withdrawalStatus?: 'pending' | 'completed' | 'failed';
+  withdrawalAddress?: string;
   failWithdrawal?: boolean;
 }
 
@@ -166,7 +167,7 @@ function fakeVenue(options: FakeVenueOptions): {
         direction: 'withdrawal',
         currency: request.currency.toUpperCase(),
         network: request.network,
-        address: request.address,
+        address: options.withdrawalAddress ?? request.address,
         amount: request.amount,
         fee: new Decimal('1'),
         txId,
@@ -226,8 +227,11 @@ function venueAccess(adapter: CexAdapter): TransferVenue {
 function setup(
   options: {
     hotcoinAddress?: string;
+    arrivalAmount?: string;
     noHotcoinDeposit?: boolean;
     failGateWithdrawal?: boolean;
+    gateWithdrawalStatus?: 'pending' | 'completed' | 'failed';
+    gateWithdrawalAddress?: string;
   } = {},
 ) {
   const repository = new ArbitrageRepository(openDatabase(':memory:'));
@@ -247,7 +251,7 @@ function setup(
           asset: 'INC',
           address: options.hotcoinAddress ?? '0xabc',
           txId: 'tx-gateio-INC',
-          amount: '19',
+          amount: options.arrivalAmount ?? '19',
         }),
       ];
   const gateDeposits = [
@@ -268,6 +272,8 @@ function setup(
     depositAddresses: { INC: '0xabc', USDT: '0xdef' },
     deposits: gateDeposits,
     failWithdrawal: options.failGateWithdrawal ?? false,
+    ...(options.gateWithdrawalStatus ? { withdrawalStatus: options.gateWithdrawalStatus } : {}),
+    ...(options.gateWithdrawalAddress ? { withdrawalAddress: options.gateWithdrawalAddress } : {}),
   });
   const hotcoin = fakeVenue({
     venueId: 'hotcoin',
@@ -494,6 +500,280 @@ describe('automated inventory transfer service', () => {
       expect(hotcoin.attempts).toBe(0);
       expect(repository.getTransferBatch(batch.id)?.legs[0]?.status).toBe(
         TRANSFER_LEG_STATUS.DEPOSIT_TIMEOUT,
+      );
+    } finally {
+      repository.close();
+    }
+  });
+
+  it('marks a stuck source withdrawal UNKNOWN at the withdrawal timeout', async () => {
+    const { repository, gate, hotcoin, venues } = setup({ gateWithdrawalStatus: 'pending' });
+    try {
+      const config = transferConfig({
+        maxLegsPerBatch: 1,
+        withdrawalTimeoutMs: 5,
+        depositTimeoutMs: 1_000,
+        allowlist: [allowlistEntry()],
+      });
+      const batch = planTransferBatch({
+        repository,
+        config,
+        targets: [
+          { venueId: 'gateio', currency: 'INC', targetFree: new Decimal('30') },
+          { venueId: 'hotcoin', currency: 'INC', targetFree: new Decimal('30') },
+        ],
+        now,
+      });
+      let clock = now;
+      const result = await executeTransferBatch({
+        repository,
+        config,
+        venues,
+        batchId: batch.id,
+        liveEnabled: true,
+        killSwitch: false,
+        confirmBatchId: batch.id,
+        now: () => clock,
+        sleep: async (ms) => {
+          clock += ms;
+        },
+      });
+      expect(result.status).toBe(TRANSFER_BATCH_STATUS.SAFE_STOP);
+      expect(gate.attempts).toBe(1);
+      expect(hotcoin.attempts).toBe(0);
+      expect(repository.getTransferBatch(batch.id)?.legs[0]?.status).toBe(
+        TRANSFER_LEG_STATUS.UNKNOWN,
+      );
+      expect(repository.getTransferBatch(batch.id)?.legs[0]?.error).toContain(
+        'transfer_timeout:WITHDRAWING',
+      );
+    } finally {
+      repository.close();
+    }
+  });
+
+  it('rejects a source withdrawal record whose address differs from the plan', async () => {
+    const { repository, gate, hotcoin, venues } = setup({
+      gateWithdrawalAddress: '0xdifferent',
+    });
+    try {
+      const config = transferConfig({
+        maxLegsPerBatch: 1,
+        allowlist: [allowlistEntry()],
+      });
+      const batch = planTransferBatch({
+        repository,
+        config,
+        targets: [
+          { venueId: 'gateio', currency: 'INC', targetFree: new Decimal('30') },
+          { venueId: 'hotcoin', currency: 'INC', targetFree: new Decimal('30') },
+        ],
+        now,
+      });
+      const result = await executeTransferBatch({
+        repository,
+        config,
+        venues,
+        batchId: batch.id,
+        liveEnabled: true,
+        killSwitch: false,
+        confirmBatchId: batch.id,
+        now: () => now,
+      });
+      expect(result.status).toBe(TRANSFER_BATCH_STATUS.SAFE_STOP);
+      expect(gate.attempts).toBe(1);
+      expect(hotcoin.attempts).toBe(0);
+      expect(repository.getTransferBatch(batch.id)?.legs[0]?.status).toBe(
+        TRANSFER_LEG_STATUS.UNKNOWN,
+      );
+      expect(repository.getTransferBatch(batch.id)?.legs[0]?.error).toContain(
+        'source_record_address_mismatch',
+      );
+    } finally {
+      repository.close();
+    }
+  });
+
+  it('treats a missing target currency as zero when the venue has fresh balances', () => {
+    const repository = new ArbitrageRepository(openDatabase(':memory:'));
+    try {
+      repository.upsertVenue({ id: 'gateio', type: 'cex', name: 'Gate.io', tier: 'S', now });
+      repository.upsertVenue({ id: 'hotcoin', type: 'cex', name: 'Hotcoin', tier: 'S', now });
+      recordBalances(repository, [
+        { venueId: 'gateio', currency: 'INC', free: '60' },
+        { venueId: 'hotcoin', currency: 'USDT', free: '100' },
+      ]);
+      const config = transferConfig({
+        maxLegsPerBatch: 1,
+        allowlist: [allowlistEntry()],
+      });
+      const batch = planTransferBatch({
+        repository,
+        config,
+        targets: [
+          { venueId: 'gateio', currency: 'INC', targetFree: new Decimal('30') },
+          { venueId: 'hotcoin', currency: 'INC', targetFree: new Decimal('30') },
+        ],
+        now,
+      });
+      expect(batch.status).toBe(TRANSFER_BATCH_STATUS.PLANNED);
+      expect(batch.legs[0]?.amount.toFixed()).toBe('30');
+    } finally {
+      repository.close();
+    }
+  });
+
+  it('refuses to treat a stale target-currency balance as zero', () => {
+    const repository = new ArbitrageRepository(openDatabase(':memory:'));
+    try {
+      repository.upsertVenue({ id: 'gateio', type: 'cex', name: 'Gate.io', tier: 'S', now });
+      repository.upsertVenue({ id: 'hotcoin', type: 'cex', name: 'Hotcoin', tier: 'S', now });
+      recordBalances(repository, [
+        { venueId: 'gateio', currency: 'INC', free: '60' },
+        { venueId: 'hotcoin', currency: 'USDT', free: '100' },
+      ]);
+      repository.recordBalance({
+        venueId: 'hotcoin',
+        accountId: 'default',
+        currency: 'INC',
+        free: new Decimal('10'),
+        used: new Decimal(0),
+        total: new Decimal('10'),
+        fetchedAt: now - 1_000_000,
+      });
+      const config = transferConfig({ maxLegsPerBatch: 1, allowlist: [allowlistEntry()] });
+      expect(() =>
+        planTransferBatch({
+          repository,
+          config,
+          targets: [
+            { venueId: 'gateio', currency: 'INC', targetFree: new Decimal('30') },
+            { venueId: 'hotcoin', currency: 'INC', targetFree: new Decimal('30') },
+          ],
+          now,
+        }),
+      ).toThrow(/stale/);
+    } finally {
+      repository.close();
+    }
+  });
+
+  it('aggregates the daily limit across same-source legs in one plan', () => {
+    const repository = new ArbitrageRepository(openDatabase(':memory:'));
+    try {
+      for (const [id, name] of [
+        ['gateio', 'Gate.io'],
+        ['hotcoin', 'Hotcoin'],
+        ['mexc', 'MEXC'],
+      ] as const) {
+        repository.upsertVenue({ id, type: 'cex', name, tier: 'S', now });
+      }
+      recordBalances(repository, [
+        { venueId: 'gateio', currency: 'INC', free: '120' },
+        { venueId: 'hotcoin', currency: 'USDT', free: '10' },
+        { venueId: 'mexc', currency: 'USDT', free: '10' },
+      ]);
+      const config = transferConfig({
+        maxLegsPerBatch: 2,
+        allowlist: [
+          allowlistEntry({ dailyMaxAmount: new Decimal('100') }),
+          allowlistEntry({
+            fromVenue: 'gateio',
+            toVenue: 'mexc',
+            address: '0xmexc',
+            dailyMaxAmount: new Decimal('100'),
+          }),
+        ],
+      });
+      const batch = planTransferBatch({
+        repository,
+        config,
+        targets: [
+          { venueId: 'gateio', currency: 'INC', targetFree: new Decimal('0') },
+          { venueId: 'hotcoin', currency: 'INC', targetFree: new Decimal('60') },
+          { venueId: 'mexc', currency: 'INC', targetFree: new Decimal('60') },
+        ],
+        now,
+      });
+      expect(batch.status).toBe(TRANSFER_BATCH_STATUS.BLOCKED);
+      expect(batch.safeModeReason).toContain('daily_allowlist_limit_exceeded');
+    } finally {
+      repository.close();
+    }
+  });
+
+  it('aggregates the daily limit across legs during preflight', async () => {
+    const { repository, venues } = setup();
+    try {
+      const config = transferConfig({
+        maxLegsPerBatch: 2,
+        allowlist: [allowlistEntry({ dailyMaxAmount: new Decimal('30') })],
+      });
+      repository.createTransferBatch({
+        id: 'xfer-daily-preflight',
+        status: TRANSFER_BATCH_STATUS.PLANNED,
+        plan: {},
+        dryRun: false,
+        createdAt: now,
+        legs: [1, 2].map((legNumber) => ({
+          legNumber,
+          fromVenue: 'gateio',
+          toVenue: 'hotcoin',
+          asset: 'INC',
+          network: 'BSC',
+          amount: new Decimal('20'),
+          address: '0xabc',
+          status: TRANSFER_LEG_STATUS.PLANNED,
+        })),
+      });
+      const result = await preflightTransferBatch({
+        repository,
+        config,
+        venues,
+        batchId: 'xfer-daily-preflight',
+        now,
+      });
+      expect(result.status).toBe(TRANSFER_BATCH_STATUS.BLOCKED);
+      expect(
+        result.legs.every((leg) => leg.reasons.includes('daily_allowlist_limit_exceeded')),
+      ).toBe(true);
+    } finally {
+      repository.close();
+    }
+  });
+
+  it('fails arrival when the received amount is below requested minus fee', async () => {
+    const { repository, gate, hotcoin, venues } = setup({ arrivalAmount: '5' });
+    try {
+      const config = transferConfig({
+        maxLegsPerBatch: 1,
+        allowlist: [allowlistEntry()],
+      });
+      const batch = planTransferBatch({
+        repository,
+        config,
+        targets: [
+          { venueId: 'gateio', currency: 'INC', targetFree: new Decimal('30') },
+          { venueId: 'hotcoin', currency: 'INC', targetFree: new Decimal('30') },
+        ],
+        now,
+      });
+      const result = await executeTransferBatch({
+        repository,
+        config,
+        venues,
+        batchId: batch.id,
+        liveEnabled: true,
+        killSwitch: false,
+        confirmBatchId: batch.id,
+        now: () => now,
+      });
+      expect(result.status).toBe(TRANSFER_BATCH_STATUS.SAFE_STOP);
+      expect(result.withdrawalsSubmitted).toBe(1);
+      expect(gate.attempts).toBe(1);
+      expect(hotcoin.attempts).toBe(0);
+      expect(repository.getTransferBatch(batch.id)?.legs[0]?.status).toBe(
+        TRANSFER_LEG_STATUS.DEPOSIT_FAILED,
       );
     } finally {
       repository.close();

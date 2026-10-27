@@ -30,6 +30,10 @@ export function normalizeAddressTag(tag: string | undefined | null): string {
   return (tag ?? '').trim();
 }
 
+export function normalizeTransferCurrency(currency: string): string {
+  return currency.trim().toUpperCase().replace(/\(.*$/, '').trim();
+}
+
 /**
  * EVM addresses are case-insensitive. Non-EVM addresses keep exact case.
  */
@@ -54,8 +58,10 @@ export function transactionIdsMatch(
   const a = (left ?? '').trim();
   const b = (right ?? '').trim();
   if (!a || !b) return false;
-  if (/^0x[0-9a-f]{64}$/i.test(a) && /^0x[0-9a-f]{64}$/i.test(b)) {
-    return a.toLowerCase() === b.toLowerCase();
+  const hashA = a.replace(/^0x/i, '');
+  const hashB = b.replace(/^0x/i, '');
+  if (/^[0-9a-f]{64}$/i.test(hashA) && /^[0-9a-f]{64}$/i.test(hashB)) {
+    return hashA.toLowerCase() === hashB.toLowerCase();
   }
   return a === b;
 }

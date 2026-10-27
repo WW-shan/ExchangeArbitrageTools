@@ -4,6 +4,9 @@
 之间如何自动执行两个方向的提币、如何确认目标站到账，以及第一笔真实资金必须
 经过哪些人工闸门。
 
+逐层审计和当前实盘缺口见
+`docs/automated-inventory-transfer-audit-2026-10-28.md`。
+
 ## 1. 当前边界
 
 - 自动调拨不是原子跨所转账。每条腿分别跟踪源站提币和目标站充值。
@@ -35,7 +38,9 @@ withdrawal: 提币、提币历史，禁止下单；单独 API key
 
 另外需要人工确认：
 
-- 同一币种在 Gate.io 与 Hotcoin 使用同一网络（首批只接受 BSC/BEP20）；
+- 同一币种在 Gate.io 与 Hotcoin 使用同一网络；首批优先 BSC/BEP20，但必须按资产逐一核对。
+  2026-10-28 的 Gate 公共数据中，INC 只有 ERC20，TBK/HTX 只有 TRC20，
+  CAKE/ETH/USDT 才有 BSC/BEP20；不能把 INC/BSC 当成可用路线；
 - 两个方向的目标充值地址；
 - 网络是否需要 memo/tag；
 - 提币费、最小提币额、最小充值额；
@@ -130,11 +135,11 @@ deposit_timeout_ms = 1800000
 [[transfers.allowlist]]
 from_venue = 'gateio'
 to_venue = 'hotcoin'
-asset = 'INC'
+asset = 'CAKE'
 network = 'BSC'
 address = '0x目标地址'
 address_tag = ''
-venue_currency = 'INC(BSC)' # optional; use when the venue withdrawal endpoint requires a chain-qualified code
+venue_currency = 'CAKE(BSC)' # optional; use when the venue withdrawal endpoint requires a chain-qualified code
 min_amount = '15'
 max_amount = '200'
 daily_max_amount = '400'
@@ -155,6 +160,7 @@ withdraw_fee = '1'
 
 注意：
 
+- `CAKE` 只是结构示例；Hotcoin 是否开放同一网络的充提必须在真实 key 下确认。
 - 首批只保留一条腿，确认后再加入第二条。
 - `withdraw_fee` 是保守预留，必须与交易所实际费用一致。
 - `max_amount` 和 `daily_max_amount` 是币种数量，不是 USDT 市值。
@@ -176,7 +182,7 @@ npm run executor:balances
 ### 5.2 生成计划（不联网、不提币）
 
 ```powershell
-npm run rebalance:execute -- --targets gateio:INC=30,hotcoin:INC=30
+npm run rebalance:execute -- --targets gateio:CAKE=30,hotcoin:CAKE=30
 ```
 
 输出包含 `batchId`、每条腿的金额、方向和 `status`。如果状态是 `BLOCKED`，
@@ -289,7 +295,7 @@ npm run rebalance:execute -- --batch <batchId> --resolve --status BLOCKED --reas
 | ------------------------ | ----------------------- |
 | 批次号                   | `xfer-...`              |
 | 方向                     | Gate.io -> Hotcoin      |
-| 币种/网络                | INC / BSC               |
+| 币种/网络                | CAKE / BSC              |
 | 提币金额/手续费          | 15 / 1                  |
 | 源站提币 ID              | `...`                   |
 | txId                     | `0x...`                 |
@@ -302,7 +308,10 @@ npm run rebalance:execute -- --batch <batchId> --resolve --status BLOCKED --reas
 ## 8. 仍未完成的外部条件
 
 - Gate.io 与 Hotcoin 的真实提现 key（独立、IP 白名单、无多余权限）。
-- 两个方向的真实充值地址、网络、tag、手续费和最小额。
+- 两个方向的真实充值地址、网络、tag、手续费和最小额；Gate 当前 INC/TBK/HTX
+  不在 BSC，不能直接套用示例资产。
+- Hotcoin 适配器没有公开的币种网络/最小额元数据接口，必须用真实 key 返回的
+  充值地址和提币记录人工确认；预检只能检查地址、链、余额和 allowlist。
 - 第一笔单腿真实提币。
 - 第一轮双方向真实调拨。
 - 多轮到账延迟、失败率、手续费和人工审核观察。

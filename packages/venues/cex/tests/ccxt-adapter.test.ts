@@ -8,6 +8,7 @@ import {
   isCcxtShutdownError,
   normalizeCurrencyNetwork,
   normalizeExchangeTimestamp,
+  normalizeTransferCurrency,
   transactionIdsMatch,
   parseRetryAfterMs,
   resolveCcxtExchangeId,
@@ -53,9 +54,11 @@ describe('CCXT adapter construction', () => {
   it('matches EVM transaction hashes case-insensitively', () => {
     const lower = '0x' + 'ab'.repeat(32);
     expect(transactionIdsMatch(lower, lower.toUpperCase())).toBe(true);
+    expect(transactionIdsMatch(lower, lower.slice(2))).toBe(true);
     expect(transactionIdsMatch('12345', '12345')).toBe(true);
     expect(transactionIdsMatch('12345', '12346')).toBe(false);
     expect(transactionIdsMatch(undefined, lower)).toBe(false);
+    expect(normalizeTransferCurrency('USDT(TRC20)')).toBe('USDT');
   });
 
   it('normalizes exchange timestamps from seconds, microseconds, and nanoseconds', () => {
@@ -128,11 +131,15 @@ describe('ccxt transfer adapter', () => {
     const originalWithdrawals = prototype.fetchWithdrawals;
     const originalWithdraw = prototype.withdraw;
     let withdrawParams: unknown;
-    prototype.fetchDepositAddress = async () => ({
-      address: '0xAbC0000000000000000000000000000000000001',
-      network: 'BSC',
-      tag: '',
-    });
+    let addressParams: unknown;
+    prototype.fetchDepositAddress = async (_code: string, params: unknown) => {
+      addressParams = params;
+      return {
+        address: '0xAbC0000000000000000000000000000000000001',
+        network: 'BEP20',
+        tag: '',
+      };
+    };
     prototype.fetchDeposits = async () => [
       {
         id: 'd1',
@@ -183,9 +190,10 @@ describe('ccxt transfer adapter', () => {
       expect(adapter.capabilities.withdrawalHistory).toBe(true);
       expect(adapter.capabilities.createWithdrawal).toBe(true);
 
-      const address = await adapter.fetchDepositAddress!('INC', 'BEP20', keys);
-      expect(address.network).toBe('BSC');
+      const address = await adapter.fetchDepositAddress!('INC', 'BSC', keys);
+      expect(address.network).toBe('BEP20');
       expect(address.address).toBe('0xAbC0000000000000000000000000000000000001');
+      expect(addressParams).toMatchObject({ network: 'BEP20' });
 
       const deposits = await adapter.fetchDeposits!({ currency: 'INC', network: 'BSC' }, keys);
       expect(deposits[0]).toMatchObject({
@@ -209,7 +217,7 @@ describe('ccxt transfer adapter', () => {
         keys,
       );
       expect(submission.id).toBe('w2');
-      expect(withdrawParams).toMatchObject({ network: 'BSC' });
+      expect(withdrawParams).toMatchObject({ network: 'BEP20' });
     } finally {
       prototype.fetchDepositAddress = originalAddress;
       prototype.fetchDeposits = originalDeposits;

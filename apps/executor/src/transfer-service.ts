@@ -4,11 +4,14 @@ import type { ArbitrageRepository, TransferBatchRecord, TransferLegRecord } from
 import {
   networksMatch,
   normalizeAddressTag,
+  normalizeCurrencyNetwork,
+  normalizeTransferCurrency,
   transactionIdsMatch,
   transferAddressesMatch,
   type ApiCredentials,
   type CexAdapter,
   type DepositAddress,
+  type TransferRecord,
 } from '@arb/venues-cex';
 import type { TransferAllowlistEntry, TransferConfig } from './config.js';
 
@@ -167,6 +170,31 @@ function metadataObject(value: unknown): Record<string, unknown> {
     : {};
 }
 
+function sourceRecordIdentityReasons(
+  record: TransferRecord,
+  leg: TransferLegRecord,
+  allowlist: TransferAllowlistEntry | undefined,
+): string[] {
+  const reasons: string[] = [];
+  const expectedCurrency = normalizeTransferCurrency(allowlist?.venueCurrency ?? leg.asset);
+  if (record.currency && normalizeTransferCurrency(record.currency) !== expectedCurrency) {
+    reasons.push('source_record_currency_mismatch');
+  }
+  if (record.address && !transferAddressesMatch(record.address, leg.address)) {
+    reasons.push('source_record_address_mismatch');
+  }
+  if (record.tag && normalizeAddressTag(record.tag) !== normalizeAddressTag(leg.addressTag)) {
+    reasons.push('source_record_tag_mismatch');
+  }
+  if (record.network && !networksMatch(record.network, leg.network)) {
+    reasons.push('source_record_network_mismatch');
+  }
+  if (!record.amount.isFinite() || !record.amount.gt(0)) {
+    reasons.push('source_record_amount_invalid');
+  }
+  return reasons;
+}
+
 function findAllowlistEntry(
   config: TransferConfig,
   leg: Pick<TransferLegRecord, 'fromVenue' | 'toVenue' | 'asset' | 'network'>,
@@ -178,6 +206,12 @@ function findAllowlistEntry(
       entry.asset === leg.asset.toUpperCase() &&
       networksMatch(entry.network, leg.network),
   );
+}
+
+function dailyLimitKey(
+  entry: Pick<TransferAllowlistEntry, 'fromVenue' | 'asset' | 'network'>,
+): string {
+  return `${entry.fromVenue}\u0000${entry.asset.toUpperCase()}\u0000${normalizeCurrencyNetwork(entry.network)}`;
 }
 
 function sourceAccess(venues: TransferVenues, venueId: string): TransferVenueAccess | undefined {
@@ -214,15 +248,28 @@ export function planTransferBatch(options: PlanTransferBatchOptions): TransferBa
   }
   if (options.targets.length === 0) throw new Error('at least one transfer target is required');
   const balances = repository.latestBalances({ maxAgeMs: config.maxBalanceAgeMs, now });
+  const allBalances = repository.latestBalances({ now });
+  for (const venueId of new Set(options.targets.map((target) => target.venueId))) {
+    const found = balances.some((balance) => balance.venueId === venueId);
+    if (!found) {
+      throw new Error(`fresh balance is missing for ${venueId}; run executor:balances first`);
+    }
+  }
   for (const target of options.targets) {
-    const found = balances.some(
+    const fresh = balances.some(
       (balance) =>
         balance.venueId === target.venueId &&
         balance.currency.toUpperCase() === target.currency.toUpperCase(),
     );
-    if (!found) {
+    if (fresh) continue;
+    const stale = allBalances.some(
+      (balance) =>
+        balance.venueId === target.venueId &&
+        balance.currency.toUpperCase() === target.currency.toUpperCase(),
+    );
+    if (stale) {
       throw new Error(
-        `fresh balance is missing for ${target.venueId}/${target.currency}; run executor:balances first`,
+        `balance history is stale for ${target.venueId}/${target.currency}; run executor:balances first`,
       );
     }
   }
@@ -249,6 +296,7 @@ export function planTransferBatch(options: PlanTransferBatchOptions): TransferBa
       `shortfall:${shortfall.venueId}:${shortfall.currency}:${shortfall.missing.toFixed()}`,
     );
   }
+  const plannedDaily = new Map<string, Decimal>();
   const legs = plan.transfers.map((transfer, index) => {
     const candidates = config.allowlist.filter(
       (entry) =>
@@ -264,12 +312,15 @@ export function planTransferBatch(options: PlanTransferBatchOptions): TransferBa
     if (entry) {
       if (transfer.amount.lt(entry.minAmount)) reasons.push('amount_below_allowlist_minimum');
       if (transfer.amount.gt(entry.maxAmount)) reasons.push('amount_above_allowlist_maximum');
+      const key = dailyLimitKey(entry);
+      const batchAmount = (plannedDaily.get(key) ?? new Decimal(0)).plus(transfer.amount);
+      plannedDaily.set(key, batchAmount);
       const spent = repository.dailyTransferAmount(
         transfer.fromVenue,
-        transfer.currency,
+        entry.asset,
         startOfUtcDay(now),
       );
-      if (spent.plus(transfer.amount).gt(entry.dailyMaxAmount)) {
+      if (spent.plus(batchAmount).gt(entry.dailyMaxAmount)) {
         reasons.push('daily_allowlist_limit_exceeded');
       }
     }
@@ -343,6 +394,7 @@ async function preflightLeg(input: {
   batch: TransferBatchRecord;
   leg: TransferLegRecord;
   now: number;
+  dailyAmount?: Decimal;
 }): Promise<PreflightLegResult> {
   const { repository, config, venues, batch, leg, now } = input;
   const reasons: string[] = [];
@@ -362,11 +414,17 @@ async function preflightLeg(input: {
   }
   if (leg.amount.lt(allowlist.minAmount)) reasons.push('amount_below_allowlist_minimum');
   if (leg.amount.gt(allowlist.maxAmount)) reasons.push('amount_above_allowlist_maximum');
-  const dailySpent = repository.dailyTransferAmount(leg.fromVenue, leg.asset, startOfUtcDay(now));
-  if (dailySpent.plus(leg.amount).gt(allowlist.dailyMaxAmount)) {
+  const dailySpent = repository.dailyTransferAmount(
+    allowlist.fromVenue,
+    allowlist.asset,
+    startOfUtcDay(now),
+  );
+  const dailyAmount = input.dailyAmount ?? leg.amount;
+  if (dailySpent.plus(dailyAmount).gt(allowlist.dailyMaxAmount)) {
     reasons.push('daily_allowlist_limit_exceeded');
   }
   metadata.dailySpent = dailySpent.toFixed();
+  metadata.dailyBatchAmount = dailyAmount.toFixed();
   metadata.allowlistAddress = allowlist.address;
   metadata.allowlistTag = allowlist.addressTag ?? '';
 
@@ -560,11 +618,36 @@ export async function preflightTransferBatch(
   if (batch.legs.length > config.maxLegsPerBatch) {
     reasons.push('batch_exceeds_max_legs');
   }
-  const legs: TransferPreflightLegResult[] = [];
+  const batchDaily = new Map<string, Decimal>();
   for (const leg of batch.legs) {
-    const result = await preflightLeg({ repository, config, venues, batch, leg, now });
+    const entry = findAllowlistEntry(config, leg);
+    if (!entry) continue;
+    const key = dailyLimitKey(entry);
+    batchDaily.set(key, (batchDaily.get(key) ?? new Decimal(0)).plus(leg.amount));
+  }
+  const legs: TransferPreflightLegResult[] = [];
+  const legUpdates: Array<{
+    legNumber: number;
+    status: string;
+    error: string | null;
+    fee?: Decimal;
+    metadata: unknown;
+  }> = [];
+  for (const leg of batch.legs) {
+    const entry = findAllowlistEntry(config, leg);
+    const dailyAmount = entry ? batchDaily.get(dailyLimitKey(entry)) : undefined;
+    const result = await preflightLeg({
+      repository,
+      config,
+      venues,
+      batch,
+      leg,
+      now,
+      ...(dailyAmount !== undefined ? { dailyAmount } : {}),
+    });
     const status = result.ok ? TRANSFER_LEG_STATUS.READY : TRANSFER_LEG_STATUS.BLOCKED;
-    repository.updateTransferLeg(batchId, leg.legNumber, {
+    legUpdates.push({
+      legNumber: leg.legNumber,
       status,
       error: result.ok ? null : result.reasons.join(','),
       metadata: {
@@ -573,7 +656,6 @@ export async function preflightTransferBatch(
         preflightReasons: result.reasons,
       },
       ...(result.fee !== undefined ? { fee: result.fee } : {}),
-      updatedAt: now,
     });
     legs.push({
       legNumber: leg.legNumber,
@@ -585,11 +667,37 @@ export async function preflightTransferBatch(
     if (!result.ok) reasons.push(`leg${leg.legNumber}:${result.reasons.join(',')}`);
   }
   const status = reasons.length === 0 ? TRANSFER_BATCH_STATUS.READY : TRANSFER_BATCH_STATUS.BLOCKED;
-  repository.updateTransferBatch(batchId, {
+  const applied = repository.applyTransferPreflight({
+    id: batchId,
     status,
     safeModeReason: reasons.length === 0 ? null : reasons.join('; '),
-    updatedAt: now,
+    now,
+    legs: legUpdates,
   });
+  if (!applied) {
+    const current = repository.getTransferBatch(batchId)!;
+    const concurrentReasons = [
+      'batch_became_active_during_preflight',
+      ...(current.safeModeReason ? [current.safeModeReason] : []),
+    ];
+    repository.recordRiskEvent(
+      'warning',
+      'transfer_preflight_superseded',
+      concurrentReasons.join('; '),
+      { batchId, currentStatus: current.status },
+      now,
+    );
+    return {
+      batchId,
+      status: current.status,
+      reasons: concurrentReasons,
+      legs: current.legs.map((leg) => ({
+        legNumber: leg.legNumber,
+        status: leg.status,
+        reasons: leg.error ? [leg.error] : [],
+      })),
+    };
+  }
   if (reasons.length > 0) {
     repository.recordRiskEvent(
       'warning',
@@ -615,6 +723,8 @@ async function settleLegOnce(input: {
   let leg = input.leg;
   const source = sourceAccess(venues, leg.fromVenue);
   const destination = destinationAccess(venues, leg.toVenue);
+  const allowlist = findAllowlistEntry(input.config, leg);
+  const withdrawalCurrency = allowlist?.venueCurrency ?? leg.asset;
   if (
     !source ||
     typeof source.adapter.fetchWithdrawals !== 'function' ||
@@ -633,11 +743,13 @@ async function settleLegOnce(input: {
     try {
       const since = Math.max(0, (leg.requestedAt ?? batch.createdAt) - 5 * 60_000);
       const rows = await source.adapter.fetchWithdrawals(
-        { currency: leg.asset, network: leg.network, since, limit: 100 },
+        { currency: withdrawalCurrency, network: leg.network, since, limit: 100 },
         source.credentials,
       );
       const candidates = rows.filter(
         (row) =>
+          normalizeTransferCurrency(row.currency) ===
+            normalizeTransferCurrency(withdrawalCurrency) &&
           transferAddressesMatch(row.address ?? '', leg.address) &&
           row.amount.eq(leg.amount) &&
           (!row.network || networksMatch(row.network, leg.network)),
@@ -674,7 +786,7 @@ async function settleLegOnce(input: {
   let sourceRecord;
   try {
     const rows = await source.adapter.fetchWithdrawals(
-      { currency: leg.asset, id: leg.sourceRecordId, limit: 100 },
+      { currency: withdrawalCurrency, id: leg.sourceRecordId, limit: 100 },
       source.credentials,
     );
     sourceRecord = rows.find((row) => row.id === leg.sourceRecordId);
@@ -687,6 +799,16 @@ async function settleLegOnce(input: {
       updatedAt: now,
     });
     return { status: leg.status, reasons: [] };
+  }
+  const identityReasons = sourceRecordIdentityReasons(sourceRecord, leg, allowlist);
+  if (identityReasons.length > 0) {
+    repository.updateTransferLeg(batch.id, leg.legNumber, {
+      status: TRANSFER_LEG_STATUS.UNKNOWN,
+      error: identityReasons.join(','),
+      sourceObservedAt: now,
+      updatedAt: now,
+    });
+    return { status: TRANSFER_LEG_STATUS.UNKNOWN, reasons: identityReasons };
   }
 
   if (sourceRecord.status === 'failed' || sourceRecord.status === 'canceled') {
@@ -836,6 +958,22 @@ async function settleLegOnce(input: {
       reasons: ['destination_deposit_amount_not_positive'],
     };
   }
+  const expectedFee = sourceRecord.fee ?? leg.fee ?? new Decimal(0);
+  const minimumReceived = Decimal.max(0, leg.amount.minus(expectedFee));
+  if (deposit.amount.lt(minimumReceived)) {
+    repository.updateTransferLeg(batch.id, leg.legNumber, {
+      status: TRANSFER_LEG_STATUS.DEPOSIT_FAILED,
+      destinationRecordId: deposit.id,
+      destinationTxId: deposit.txId ?? null,
+      destinationObservedAt: now,
+      error: `destination_deposit_amount_below_expected:${deposit.amount.toFixed()}<${minimumReceived.toFixed()}`,
+      updatedAt: now,
+    });
+    return {
+      status: TRANSFER_LEG_STATUS.DEPOSIT_FAILED,
+      reasons: ['destination_deposit_amount_below_expected'],
+    };
+  }
   repository.updateTransferLeg(batch.id, leg.legNumber, {
     status: TRANSFER_LEG_STATUS.ARRIVED,
     destinationRecordId: deposit.id,
@@ -881,31 +1019,49 @@ async function waitForLeg(input: {
   sleep: (ms: number) => Promise<void>;
 }): Promise<SettleLegResult> {
   const startedAt = input.leg.requestedAt ?? input.now();
-  const deadline = startedAt + input.config.withdrawalTimeoutMs + input.config.depositTimeoutMs;
+  const withdrawalDeadline = startedAt + input.config.withdrawalTimeoutMs;
+  let depositDeadline: number | undefined;
   let last: SettleLegResult = { status: input.leg.status, reasons: [] };
   while (true) {
+    const observedAt = input.now();
     last = await settleLegOnce({
       repository: input.repository,
       config: input.config,
       venues: input.venues,
       batch: input.batch,
       leg: input.leg,
-      now: input.now(),
+      now: observedAt,
     });
     if (last.status === TRANSFER_LEG_STATUS.ARRIVED || FINAL_LEG_FAILURES.has(last.status)) {
       return last;
     }
-    if (input.now() >= deadline) {
-      const status =
-        last.status === TRANSFER_LEG_STATUS.WITHDRAWING
-          ? TRANSFER_LEG_STATUS.UNKNOWN
-          : TRANSFER_LEG_STATUS.DEPOSIT_TIMEOUT;
+    if (last.status === TRANSFER_LEG_STATUS.WITHDRAWING && observedAt >= withdrawalDeadline) {
       input.repository.updateTransferLeg(input.batch.id, input.leg.legNumber, {
-        status,
+        status: TRANSFER_LEG_STATUS.UNKNOWN,
         error: `transfer_timeout:${last.status}`,
-        updatedAt: input.now(),
+        updatedAt: observedAt,
       });
-      return { status, reasons: [`transfer_timeout:${last.status}`] };
+      return {
+        status: TRANSFER_LEG_STATUS.UNKNOWN,
+        reasons: [`transfer_timeout:${last.status}`],
+      };
+    }
+    if (
+      last.status === TRANSFER_LEG_STATUS.WITHDRAWN ||
+      last.status === TRANSFER_LEG_STATUS.WAITING_DEPOSIT
+    ) {
+      depositDeadline ??= observedAt + input.config.depositTimeoutMs;
+      if (observedAt >= depositDeadline) {
+        input.repository.updateTransferLeg(input.batch.id, input.leg.legNumber, {
+          status: TRANSFER_LEG_STATUS.DEPOSIT_TIMEOUT,
+          error: `transfer_timeout:${last.status}`,
+          updatedAt: observedAt,
+        });
+        return {
+          status: TRANSFER_LEG_STATUS.DEPOSIT_TIMEOUT,
+          reasons: [`transfer_timeout:${last.status}`],
+        };
+      }
     }
     await input.sleep(input.config.pollIntervalMs);
   }
@@ -1050,13 +1206,28 @@ export async function executeTransferBatch(
     }
   }
 
-  repository.updateTransferBatch(batchId, {
-    status: TRANSFER_BATCH_STATUS.EXECUTING,
-    dryRun: false,
+  const executionToken = randomUUID();
+  const claim = repository.claimTransferExecution({
+    id: batchId,
+    token: executionToken,
+    now: now(),
+    leaseUntil:
+      now() +
+      config.withdrawalTimeoutMs +
+      config.depositTimeoutMs +
+      config.pollIntervalMs * 2 +
+      300_000,
     confirmation: options.operator ?? 'operator',
-    safeModeReason: null,
-    updatedAt: now(),
   });
+  if (!claim.claimed) {
+    return {
+      batchId,
+      status: TRANSFER_BATCH_STATUS.BLOCKED,
+      reasons: [claim.reason ?? 'transfer_execution_claim_failed'],
+      withdrawalsSubmitted: 0,
+      legs: executionLegs(repository.getTransferBatch(batchId)!),
+    };
+  }
   repository.recordAudit(
     options.operator ?? 'operator',
     'transfer_execute_confirmed',
@@ -1066,59 +1237,21 @@ export async function executeTransferBatch(
   batch = repository.getTransferBatch(batchId)!;
   let withdrawalsSubmitted = 0;
 
-  for (const initialLeg of batch.legs) {
-    const currentBatch = repository.getTransferBatch(batchId)!;
-    let leg = currentBatch.legs.find((candidate) => candidate.legNumber === initialLeg.legNumber)!;
-    if (leg.status === TRANSFER_LEG_STATUS.ARRIVED) continue;
-    if (leg.status === TRANSFER_LEG_STATUS.BLOCKED) {
-      const reason = `leg${leg.legNumber}_blocked:${leg.error ?? 'preflight blocked'}`;
-      repository.updateTransferBatch(batchId, {
-        status: TRANSFER_BATCH_STATUS.BLOCKED,
-        safeModeReason: reason,
-        updatedAt: now(),
-      });
-      return {
-        batchId,
-        status: TRANSFER_BATCH_STATUS.BLOCKED,
-        reasons: [reason],
-        withdrawalsSubmitted,
-        legs: executionLegs(repository.getTransferBatch(batchId)!),
-      };
-    }
-    if (FINAL_LEG_FAILURES.has(leg.status)) {
-      const reason = `leg${leg.legNumber}_already_${leg.status}`;
-      markSafeStop(repository, batchId, reason, now());
-      return {
-        batchId,
-        status: TRANSFER_BATCH_STATUS.SAFE_STOP,
-        reasons: [reason],
-        withdrawalsSubmitted,
-        legs: executionLegs(repository.getTransferBatch(batchId)!),
-      };
-    }
-
-    const partialBatch =
-      leg.requestedAt !== null ||
-      currentBatch.legs.some(
-        (candidate) =>
-          candidate.requestedAt !== null || candidate.status === TRANSFER_LEG_STATUS.ARRIVED,
-      );
-    if (leg.status === TRANSFER_LEG_STATUS.READY || leg.status === TRANSFER_LEG_STATUS.PLANNED) {
-      const check = await preflightLeg({
-        repository,
-        config,
-        venues,
-        batch: repository.getTransferBatch(batchId)!,
-        leg,
-        now: now(),
-      });
-      if (!check.ok) {
-        const reason = `leg${leg.legNumber}_recheck_failed:${check.reasons.join(',')}`;
-        repository.updateTransferLeg(batchId, leg.legNumber, {
-          status: TRANSFER_LEG_STATUS.BLOCKED,
-          error: reason,
-          updatedAt: now(),
-        });
+  try {
+    for (const initialLeg of batch.legs) {
+      const currentBatch = repository.getTransferBatch(batchId)!;
+      let leg = currentBatch.legs.find(
+        (candidate) => candidate.legNumber === initialLeg.legNumber,
+      )!;
+      if (leg.status === TRANSFER_LEG_STATUS.ARRIVED) continue;
+      const partialBatch =
+        leg.requestedAt !== null ||
+        currentBatch.legs.some(
+          (candidate) =>
+            candidate.requestedAt !== null || candidate.status === TRANSFER_LEG_STATUS.ARRIVED,
+        );
+      if (leg.status === TRANSFER_LEG_STATUS.BLOCKED) {
+        const reason = `leg${leg.legNumber}_blocked:${leg.error ?? 'preflight blocked'}`;
         if (partialBatch) markSafeStop(repository, batchId, reason, now());
         else {
           repository.updateTransferBatch(batchId, {
@@ -1135,54 +1268,123 @@ export async function executeTransferBatch(
           legs: executionLegs(repository.getTransferBatch(batchId)!),
         };
       }
-      const fee = check.fee;
-      repository.updateTransferLeg(batchId, leg.legNumber, {
-        status: TRANSFER_LEG_STATUS.WITHDRAWING,
-        requestedAt: now(),
-        error: null,
-        ...(fee !== undefined ? { fee } : {}),
-        updatedAt: now(),
-      });
-      const source = sourceAccess(venues, leg.fromVenue)!;
-      const allowlist = findAllowlistEntry(config, leg);
-      const withdrawalCurrency = allowlist?.venueCurrency ?? leg.asset;
-      try {
-        const submission = await source.adapter.createWithdrawal!(
-          {
-            currency: withdrawalCurrency,
-            network: leg.network,
-            amount: leg.amount,
-            address: leg.address,
-            ...(leg.addressTag ? { tag: leg.addressTag } : {}),
-            remark: `${batchId}:${leg.legNumber}`,
-          },
-          source.credentials,
-        );
-        if (!submission.id) {
-          throw new Error('withdrawal response is missing a record id');
+      if (FINAL_LEG_FAILURES.has(leg.status)) {
+        const reason = `leg${leg.legNumber}_already_${leg.status}`;
+        markSafeStop(repository, batchId, reason, now());
+        return {
+          batchId,
+          status: TRANSFER_BATCH_STATUS.SAFE_STOP,
+          reasons: [reason],
+          withdrawalsSubmitted,
+          legs: executionLegs(repository.getTransferBatch(batchId)!),
+        };
+      }
+
+      if (leg.status === TRANSFER_LEG_STATUS.READY || leg.status === TRANSFER_LEG_STATUS.PLANNED) {
+        const check = await preflightLeg({
+          repository,
+          config,
+          venues,
+          batch: repository.getTransferBatch(batchId)!,
+          leg,
+          now: now(),
+        });
+        if (!check.ok) {
+          const reason = `leg${leg.legNumber}_recheck_failed:${check.reasons.join(',')}`;
+          repository.updateTransferLeg(batchId, leg.legNumber, {
+            status: TRANSFER_LEG_STATUS.BLOCKED,
+            error: reason,
+            updatedAt: now(),
+          });
+          if (partialBatch) markSafeStop(repository, batchId, reason, now());
+          else {
+            repository.updateTransferBatch(batchId, {
+              status: TRANSFER_BATCH_STATUS.BLOCKED,
+              safeModeReason: reason,
+              updatedAt: now(),
+            });
+          }
+          return {
+            batchId,
+            status: partialBatch ? TRANSFER_BATCH_STATUS.SAFE_STOP : TRANSFER_BATCH_STATUS.BLOCKED,
+            reasons: [reason],
+            withdrawalsSubmitted,
+            legs: executionLegs(repository.getTransferBatch(batchId)!),
+          };
         }
+        const fee = check.fee;
         repository.updateTransferLeg(batchId, leg.legNumber, {
           status: TRANSFER_LEG_STATUS.WITHDRAWING,
-          sourceRecordId: submission.id,
-          sourceTxId: submission.txId ?? null,
-          ...(submission.fee !== undefined ? { fee: submission.fee } : {}),
+          requestedAt: now(),
           error: null,
+          ...(fee !== undefined ? { fee } : {}),
           updatedAt: now(),
         });
-        withdrawalsSubmitted += 1;
-        repository.recordAudit(
-          options.operator ?? 'operator',
-          'transfer_withdrawal_submitted',
-          { batchId, legNumber: leg.legNumber, sourceRecordId: submission.id },
-          now(),
-        );
-      } catch (error) {
-        const reason = `withdrawal_unknown:${errorMessage(error)}`;
-        repository.updateTransferLeg(batchId, leg.legNumber, {
-          status: TRANSFER_LEG_STATUS.UNKNOWN,
-          error: reason,
-          updatedAt: now(),
-        });
+        const source = sourceAccess(venues, leg.fromVenue)!;
+        const allowlist = findAllowlistEntry(config, leg);
+        const withdrawalCurrency = allowlist?.venueCurrency ?? leg.asset;
+        try {
+          const submission = await source.adapter.createWithdrawal!(
+            {
+              currency: withdrawalCurrency,
+              network: leg.network,
+              amount: leg.amount,
+              address: leg.address,
+              ...(leg.addressTag ? { tag: leg.addressTag } : {}),
+              remark: `${batchId}:${leg.legNumber}`,
+            },
+            source.credentials,
+          );
+          if (!submission.id) {
+            throw new Error('withdrawal response is missing a record id');
+          }
+          repository.updateTransferLeg(batchId, leg.legNumber, {
+            status: TRANSFER_LEG_STATUS.WITHDRAWING,
+            sourceRecordId: submission.id,
+            sourceTxId: submission.txId ?? null,
+            ...(submission.fee !== undefined ? { fee: submission.fee } : {}),
+            error: null,
+            updatedAt: now(),
+          });
+          withdrawalsSubmitted += 1;
+          repository.recordAudit(
+            options.operator ?? 'operator',
+            'transfer_withdrawal_submitted',
+            { batchId, legNumber: leg.legNumber, sourceRecordId: submission.id },
+            now(),
+          );
+        } catch (error) {
+          const reason = `withdrawal_unknown:${errorMessage(error)}`;
+          repository.updateTransferLeg(batchId, leg.legNumber, {
+            status: TRANSFER_LEG_STATUS.UNKNOWN,
+            error: reason,
+            updatedAt: now(),
+          });
+          markSafeStop(repository, batchId, reason, now());
+          return {
+            batchId,
+            status: TRANSFER_BATCH_STATUS.SAFE_STOP,
+            reasons: [reason],
+            withdrawalsSubmitted,
+            legs: executionLegs(repository.getTransferBatch(batchId)!),
+          };
+        }
+      }
+
+      leg = repository
+        .getTransferBatch(batchId)!
+        .legs.find((candidate) => candidate.legNumber === leg.legNumber)!;
+      const settled = await waitForLeg({
+        repository,
+        config,
+        venues,
+        batch: repository.getTransferBatch(batchId)!,
+        leg,
+        now,
+        sleep,
+      });
+      if (settled.status !== TRANSFER_LEG_STATUS.ARRIVED) {
+        const reason = `leg${leg.legNumber}_${settled.status}:${settled.reasons.join(',')}`;
         markSafeStop(repository, batchId, reason, now());
         return {
           batchId,
@@ -1194,44 +1396,22 @@ export async function executeTransferBatch(
       }
     }
 
-    leg = repository
-      .getTransferBatch(batchId)!
-      .legs.find((candidate) => candidate.legNumber === leg.legNumber)!;
-    const settled = await waitForLeg({
-      repository,
-      config,
-      venues,
-      batch: repository.getTransferBatch(batchId)!,
-      leg,
-      now,
-      sleep,
+    repository.updateTransferBatch(batchId, {
+      status: TRANSFER_BATCH_STATUS.COMPLETED,
+      safeModeReason: null,
+      updatedAt: now(),
     });
-    if (settled.status !== TRANSFER_LEG_STATUS.ARRIVED) {
-      const reason = `leg${leg.legNumber}_${settled.status}:${settled.reasons.join(',')}`;
-      markSafeStop(repository, batchId, reason, now());
-      return {
-        batchId,
-        status: TRANSFER_BATCH_STATUS.SAFE_STOP,
-        reasons: [reason],
-        withdrawalsSubmitted,
-        legs: executionLegs(repository.getTransferBatch(batchId)!),
-      };
-    }
+    repository.recordAudit('system', 'transfer_completed', { batchId }, now());
+    return {
+      batchId,
+      status: TRANSFER_BATCH_STATUS.COMPLETED,
+      reasons: [],
+      withdrawalsSubmitted,
+      legs: executionLegs(repository.getTransferBatch(batchId)!),
+    };
+  } finally {
+    repository.releaseTransferExecution(batchId, executionToken, now());
   }
-
-  repository.updateTransferBatch(batchId, {
-    status: TRANSFER_BATCH_STATUS.COMPLETED,
-    safeModeReason: null,
-    updatedAt: now(),
-  });
-  repository.recordAudit('system', 'transfer_completed', { batchId }, now());
-  return {
-    batchId,
-    status: TRANSFER_BATCH_STATUS.COMPLETED,
-    reasons: [],
-    withdrawalsSubmitted,
-    legs: executionLegs(repository.getTransferBatch(batchId)!),
-  };
 }
 
 export async function reconcileTransferBatch(

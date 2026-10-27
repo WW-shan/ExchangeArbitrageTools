@@ -205,6 +205,16 @@ function resolveBatch(
   const batch = repository.getTransferBatch(batchId);
   if (!batch) throw new Error(`transfer batch not found: ${batchId}`);
   if (
+    new Set<string>([
+      TRANSFER_BATCH_STATUS.EXECUTING,
+      TRANSFER_BATCH_STATUS.WITHDRAWING,
+      TRANSFER_BATCH_STATUS.WITHDRAWN,
+      TRANSFER_BATCH_STATUS.WAITING_DEPOSIT,
+    ]).has(batch.status)
+  ) {
+    throw new Error('cannot resolve an in-flight transfer; wait or use --reconcile first');
+  }
+  if (
     batch.status === TRANSFER_BATCH_STATUS.COMPLETED ||
     batch.status === TRANSFER_BATCH_STATUS.BLOCKED
   ) {

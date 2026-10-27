@@ -25,6 +25,13 @@ export async function refreshBalances(
     }
     try {
       const balances = await venue.adapter.fetchBalances(venue.credentials);
+      repository.ensureVenue({
+        id: venue.adapter.venueId,
+        type: 'cex',
+        name: venue.adapter.venueId,
+        tier: venue.adapter.tier,
+        now,
+      });
       for (const balance of balances) {
         const fetchedAt = balance.fetchedAt > 0 ? balance.fetchedAt : now;
         repository.recordBalance({ ...balance, fetchedAt });
