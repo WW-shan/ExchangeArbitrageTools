@@ -638,7 +638,7 @@ describe('SQLite storage', () => {
       .all() as Array<{
       version: number;
     }>;
-    expect(versions.map((row) => row.version)).toEqual([1, 2, 3, 4, 5, 6, 7]);
+    expect(versions.map((row) => row.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8]);
     const columns = db.prepare('PRAGMA table_info(unhedged_inventory)').all() as Array<{
       name: string;
     }>;

@@ -415,4 +415,54 @@
         CHECK (direction IN ('long', 'short'));
     `,
   },
+  {
+    version: 8,
+    name: 'automated_inventory_transfers',
+    sql: `
+      CREATE TABLE transfer_batches (
+        id TEXT PRIMARY KEY,
+        status TEXT NOT NULL,
+        plan_json TEXT NOT NULL,
+        confirmation TEXT,
+        dry_run INTEGER NOT NULL DEFAULT 1,
+        safe_mode_reason TEXT,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+      );
+
+      CREATE INDEX transfer_batches_status_idx ON transfer_batches(status, updated_at DESC);
+      CREATE INDEX transfer_batches_created_idx ON transfer_batches(created_at DESC);
+
+      CREATE TABLE transfer_legs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        batch_id TEXT NOT NULL,
+        leg_number INTEGER NOT NULL,
+        from_venue TEXT NOT NULL,
+        to_venue TEXT NOT NULL,
+        asset TEXT NOT NULL,
+        network TEXT NOT NULL,
+        amount TEXT NOT NULL,
+        fee TEXT,
+        address TEXT NOT NULL,
+        address_tag TEXT,
+        status TEXT NOT NULL,
+        source_record_id TEXT,
+        source_tx_id TEXT,
+        destination_record_id TEXT,
+        destination_tx_id TEXT,
+        requested_at INTEGER,
+        source_observed_at INTEGER,
+        destination_observed_at INTEGER,
+        error TEXT,
+        metadata_json TEXT NOT NULL DEFAULT '{}',
+        updated_at INTEGER NOT NULL,
+        UNIQUE (batch_id, leg_number),
+        FOREIGN KEY (batch_id) REFERENCES transfer_batches(id) ON DELETE CASCADE
+      );
+
+      CREATE INDEX transfer_legs_batch_idx ON transfer_legs(batch_id, leg_number);
+      CREATE INDEX transfer_legs_route_idx
+        ON transfer_legs(from_venue, asset, requested_at);
+    `,
+  },
 ] as const;

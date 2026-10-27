@@ -18,6 +18,42 @@ interface EpisodeRow {
   sample_count: number;
 }
 
+interface TransferBatchRow {
+  id: string;
+  status: string;
+  plan_json: string;
+  confirmation: string | null;
+  dry_run: number;
+  safe_mode_reason: string | null;
+  created_at: number;
+  updated_at: number;
+}
+
+interface TransferLegRow {
+  id: number;
+  batch_id: string;
+  leg_number: number;
+  from_venue: string;
+  to_venue: string;
+  asset: string;
+  network: string;
+  amount: string;
+  fee: string | null;
+  address: string;
+  address_tag: string | null;
+  status: string;
+  source_record_id: string | null;
+  source_tx_id: string | null;
+  destination_record_id: string | null;
+  destination_tx_id: string | null;
+  requested_at: number | null;
+  source_observed_at: number | null;
+  destination_observed_at: number | null;
+  error: string | null;
+  metadata_json: string;
+  updated_at: number;
+}
+
 export interface StoredOpportunity {
   id: number;
   episodeId: number | null;
@@ -179,6 +215,83 @@ export interface UnhedgedInventoryRecord {
   createdAt?: number;
 }
 
+export interface TransferLegRecord {
+  id: number;
+  batchId: string;
+  legNumber: number;
+  fromVenue: string;
+  toVenue: string;
+  asset: string;
+  network: string;
+  amount: Decimal;
+  fee: Decimal | null;
+  address: string;
+  addressTag: string | null;
+  status: string;
+  sourceRecordId: string | null;
+  sourceTxId: string | null;
+  destinationRecordId: string | null;
+  destinationTxId: string | null;
+  requestedAt: number | null;
+  sourceObservedAt: number | null;
+  destinationObservedAt: number | null;
+  error: string | null;
+  metadata: unknown;
+  updatedAt: number;
+}
+
+export interface TransferBatchRecord {
+  id: string;
+  status: string;
+  plan: unknown;
+  confirmation: string | null;
+  dryRun: boolean;
+  safeModeReason: string | null;
+  createdAt: number;
+  updatedAt: number;
+  legs: TransferLegRecord[];
+}
+
+export interface TransferLegInput {
+  legNumber: number;
+  fromVenue: string;
+  toVenue: string;
+  asset: string;
+  network: string;
+  amount: Decimal;
+  fee?: Decimal;
+  address: string;
+  addressTag?: string;
+  status: string;
+  error?: string;
+  metadata?: unknown;
+}
+
+export interface TransferLegUpdate {
+  status?: string;
+  fee?: Decimal | null;
+  sourceRecordId?: string | null;
+  sourceTxId?: string | null;
+  destinationRecordId?: string | null;
+  destinationTxId?: string | null;
+  requestedAt?: number | null;
+  sourceObservedAt?: number | null;
+  destinationObservedAt?: number | null;
+  error?: string | null;
+  metadata?: unknown;
+  updatedAt?: number;
+}
+
+export const ACTIVE_TRANSFER_STATUSES = [
+  'PLANNED',
+  'READY',
+  'EXECUTING',
+  'WITHDRAWING',
+  'WITHDRAWN',
+  'WAITING_DEPOSIT',
+  'SAFE_STOP',
+] as const;
+
 export interface VenueBackoffRecord {
   venueId: string;
   backoffUntil: number;
@@ -240,6 +353,14 @@ export interface ExecutionRecoveryRecord {
 
 function json(value: unknown): string {
   return JSON.stringify(value);
+}
+
+function parseJsonColumn(value: string): unknown {
+  try {
+    return JSON.parse(value) as unknown;
+  } catch {
+    return {};
+  }
 }
 
 function ratio(part: number, total: number): number {
@@ -2265,6 +2386,260 @@ export class ArbitrageRepository {
       path: outputPath,
       executions: records.length,
       bytes: Buffer.byteLength(body, 'utf8'),
+    };
+  }
+
+  createTransferBatch(input: {
+    id: string;
+    status: string;
+    plan: unknown;
+    dryRun: boolean;
+    confirmation?: string | null;
+    safeModeReason?: string | null;
+    createdAt?: number;
+    legs: TransferLegInput[];
+  }): void {
+    if (!input.id.trim()) throw new Error('transfer batch id is required');
+    if (input.legs.length === 0) throw new Error('transfer batch requires at least one leg');
+    const now = input.createdAt ?? Date.now();
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      this.db
+        .prepare(
+          `INSERT INTO transfer_batches(
+            id, status, plan_json, confirmation, dry_run, safe_mode_reason, created_at, updated_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        )
+        .run(
+          input.id,
+          input.status,
+          json(input.plan),
+          input.confirmation ?? null,
+          input.dryRun ? 1 : 0,
+          input.safeModeReason ?? null,
+          now,
+          now,
+        );
+      const insertLeg = this.db.prepare(
+        `INSERT INTO transfer_legs(
+          batch_id, leg_number, from_venue, to_venue, asset, network, amount, fee,
+          address, address_tag, status, error, metadata_json, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      );
+      for (const leg of input.legs) {
+        if (!Number.isInteger(leg.legNumber) || leg.legNumber <= 0) {
+          throw new Error('transfer leg number must be a positive integer');
+        }
+        if (!leg.amount.isFinite() || leg.amount.lte(0)) {
+          throw new Error('transfer leg amount must be finite and positive');
+        }
+        insertLeg.run(
+          input.id,
+          leg.legNumber,
+          leg.fromVenue,
+          leg.toVenue,
+          leg.asset.toUpperCase(),
+          leg.network.toUpperCase(),
+          leg.amount.toFixed(),
+          leg.fee?.toFixed() ?? null,
+          leg.address,
+          leg.addressTag ?? null,
+          leg.status,
+          leg.error ?? null,
+          json(leg.metadata ?? {}),
+          now,
+        );
+      }
+      this.db.exec('COMMIT');
+    } catch (error) {
+      this.db.exec('ROLLBACK');
+      throw error;
+    }
+  }
+
+  getTransferBatch(id: string): TransferBatchRecord | undefined {
+    const row = this.db
+      .prepare(
+        `SELECT id, status, plan_json, confirmation, dry_run, safe_mode_reason,
+                created_at, updated_at
+         FROM transfer_batches WHERE id = ?`,
+      )
+      .get(id) as TransferBatchRow | undefined;
+    return row ? this.transferBatchFromRow(row) : undefined;
+  }
+
+  listTransferBatches(limit = 20): TransferBatchRecord[] {
+    if (!Number.isInteger(limit) || limit <= 0) {
+      throw new Error('transfer batch limit must be a positive integer');
+    }
+    const rows = this.db
+      .prepare(
+        `SELECT id, status, plan_json, confirmation, dry_run, safe_mode_reason,
+                created_at, updated_at
+         FROM transfer_batches ORDER BY created_at DESC, id DESC LIMIT ?`,
+      )
+      .all(limit) as unknown as TransferBatchRow[];
+    return rows.map((row) => this.transferBatchFromRow(row));
+  }
+
+  activeTransferBatches(): TransferBatchRecord[] {
+    const placeholders = ACTIVE_TRANSFER_STATUSES.map(() => '?').join(', ');
+    const rows = this.db
+      .prepare(
+        `SELECT id, status, plan_json, confirmation, dry_run, safe_mode_reason,
+                created_at, updated_at
+         FROM transfer_batches
+         WHERE status IN (${placeholders})
+         ORDER BY created_at ASC, id ASC`,
+      )
+      .all(...ACTIVE_TRANSFER_STATUSES) as unknown as TransferBatchRow[];
+    return rows.map((row) => this.transferBatchFromRow(row));
+  }
+
+  countActiveTransferBatches(excludeBatchId?: string): number {
+    const placeholders = ACTIVE_TRANSFER_STATUSES.map(() => '?').join(', ');
+    const row = this.db
+      .prepare(
+        `SELECT COUNT(*) AS count FROM transfer_batches
+         WHERE status IN (${placeholders}) AND (? IS NULL OR id <> ?)`,
+      )
+      .get(...ACTIVE_TRANSFER_STATUSES, excludeBatchId ?? null, excludeBatchId ?? null) as {
+      count: number | bigint;
+    };
+    return Number(row.count);
+  }
+
+  dailyTransferAmount(fromVenue: string, asset: string, since: number): Decimal {
+    const rows = this.db
+      .prepare(
+        `SELECT l.amount FROM transfer_legs l
+         JOIN transfer_batches b ON b.id = l.batch_id
+         WHERE l.from_venue = ? AND l.asset = ?
+           AND l.status NOT IN ('BLOCKED', 'DRY_RUN')
+           AND l.requested_at IS NOT NULL
+           AND l.requested_at >= ?`,
+      )
+      .all(fromVenue, asset.toUpperCase(), since) as Array<{ amount: string }>;
+    return rows.reduce((total, row) => total.plus(new Decimal(row.amount)), new Decimal(0));
+  }
+
+  updateTransferBatch(
+    id: string,
+    input: {
+      status?: string;
+      confirmation?: string | null;
+      dryRun?: boolean;
+      safeModeReason?: string | null;
+      updatedAt?: number;
+    },
+  ): void {
+    const fields: string[] = [];
+    const values: Array<string | number | null> = [];
+    if (input.status !== undefined) {
+      fields.push('status = ?');
+      values.push(input.status);
+    }
+    if (input.confirmation !== undefined) {
+      fields.push('confirmation = ?');
+      values.push(input.confirmation);
+    }
+    if (input.dryRun !== undefined) {
+      fields.push('dry_run = ?');
+      values.push(input.dryRun ? 1 : 0);
+    }
+    if (input.safeModeReason !== undefined) {
+      fields.push('safe_mode_reason = ?');
+      values.push(input.safeModeReason);
+    }
+    fields.push('updated_at = ?');
+    values.push(input.updatedAt ?? Date.now());
+    this.db
+      .prepare(`UPDATE transfer_batches SET ${fields.join(', ')} WHERE id = ?`)
+      .run(...values, id);
+  }
+
+  updateTransferLeg(batchId: string, legNumber: number, input: TransferLegUpdate): void {
+    const fields: string[] = [];
+    const values: Array<string | number | null> = [];
+    const setText = (column: string, value: string | null | undefined): void => {
+      if (value === undefined) return;
+      fields.push(`${column} = ?`);
+      values.push(value);
+    };
+    const setNumber = (column: string, value: number | null | undefined): void => {
+      if (value === undefined) return;
+      fields.push(`${column} = ?`);
+      values.push(value);
+    };
+    setText('status', input.status);
+    if (input.fee !== undefined) {
+      fields.push('fee = ?');
+      values.push(input.fee?.toFixed() ?? null);
+    }
+    setText('source_record_id', input.sourceRecordId);
+    setText('source_tx_id', input.sourceTxId);
+    setText('destination_record_id', input.destinationRecordId);
+    setText('destination_tx_id', input.destinationTxId);
+    setNumber('requested_at', input.requestedAt);
+    setNumber('source_observed_at', input.sourceObservedAt);
+    setNumber('destination_observed_at', input.destinationObservedAt);
+    setText('error', input.error);
+    if (input.metadata !== undefined) {
+      fields.push('metadata_json = ?');
+      values.push(json(input.metadata));
+    }
+    fields.push('updated_at = ?');
+    values.push(input.updatedAt ?? Date.now());
+    this.db
+      .prepare(
+        `UPDATE transfer_legs SET ${fields.join(', ')} WHERE batch_id = ? AND leg_number = ?`,
+      )
+      .run(...values, batchId, legNumber);
+  }
+
+  private transferBatchFromRow(row: TransferBatchRow): TransferBatchRecord {
+    const legs = this.db
+      .prepare(
+        `SELECT id, batch_id, leg_number, from_venue, to_venue, asset, network, amount, fee,
+                address, address_tag, status, source_record_id, source_tx_id,
+                destination_record_id, destination_tx_id, requested_at,
+                source_observed_at, destination_observed_at, error, metadata_json, updated_at
+         FROM transfer_legs WHERE batch_id = ? ORDER BY leg_number ASC`,
+      )
+      .all(row.id) as unknown as TransferLegRow[];
+    return {
+      id: row.id,
+      status: row.status,
+      plan: parseJsonColumn(row.plan_json),
+      confirmation: row.confirmation,
+      dryRun: row.dry_run === 1,
+      safeModeReason: row.safe_mode_reason,
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+      legs: legs.map((leg) => ({
+        id: leg.id,
+        batchId: leg.batch_id,
+        legNumber: leg.leg_number,
+        fromVenue: leg.from_venue,
+        toVenue: leg.to_venue,
+        asset: leg.asset,
+        network: leg.network,
+        amount: new Decimal(leg.amount),
+        fee: leg.fee === null ? null : new Decimal(leg.fee),
+        address: leg.address,
+        addressTag: leg.address_tag,
+        status: leg.status,
+        sourceRecordId: leg.source_record_id,
+        sourceTxId: leg.source_tx_id,
+        destinationRecordId: leg.destination_record_id,
+        destinationTxId: leg.destination_tx_id,
+        requestedAt: leg.requested_at,
+        sourceObservedAt: leg.source_observed_at,
+        destinationObservedAt: leg.destination_observed_at,
+        error: leg.error,
+        metadata: parseJsonColumn(leg.metadata_json),
+        updatedAt: leg.updated_at,
+      })),
     };
   }
 
