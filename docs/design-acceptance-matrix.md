@@ -67,6 +67,7 @@ does not mean the system is live-ready.
 | S1-11 | Expand the read-only universe with real tickers and expose near misses.        | Hotcoin `/v1/market/ticker`; `config/discovery.toml`; `topGrossRows`         | [x]    |
 | S1-12 | Build a shared low-volume universe and report depth-walk capacity.             | `buildLongTailUniverse`; `analyzeS1Capacity`; low-liquidity tests; real scan | [x]    |
 | S1-13 | Bound the reported capacity by actual sell-venue inventory and buy-venue cash. | Requires private balance API/key; current curve is market-depth only         | [~]    |
+| S1-14 | Measure whether a spread persists long enough to be actionable.                | `spread-tracking.ts`; `track-spread.ts`; tracker tests; TBK smoke            | [x]    |
 | S1-E1 | Real API keys with no withdrawal permission and encrypted storage.             | requires user credentials and secret-store setup                             | [!]    |
 | S1-E2 | 24-hour read-only soak with all configured venues healthy.                     | requires time and live public endpoints                                      | [!]    |
 | S1-E3 | 10 manually confirmed live batches with 80% full reconciliation.               | requires real capital, operator, and opportunities                           | [!]    |

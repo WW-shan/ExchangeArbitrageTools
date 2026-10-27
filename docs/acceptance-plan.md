@@ -50,9 +50,10 @@ evidence are both verified. The clause-by-clause record lives in
 Internal verification is 34/34 (100%). Including external acceptance items, completion
 is 34/43 (79.1%). No strategy is accepted for live trading yet.
 
-The matrix also tracks follow-up S1-12 (low-volume capacity discovery, verified) and
-S1-13 (balance-aware capacity, partial). The table above counts the original acceptance
-scope only; those follow-up rows are not folded into the 34/34 total.
+The matrix also tracks follow-up S1-12 (low-volume capacity discovery, verified),
+S1-13 (balance-aware capacity, partial), and S1-14 (spread persistence tracking,
+verified). The table above counts the original acceptance scope only; those follow-up
+rows are not folded into the 34/34 total.
 
 ## Current blocker policy
 

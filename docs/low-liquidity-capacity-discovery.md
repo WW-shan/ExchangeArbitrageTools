@@ -239,3 +239,8 @@ maxEligible 为空，虽然毛边仍有约 34 bps。
 - 两腿盘口在确认窗口内仍然存在；
 - 实际下单数量不超过容量曲线；
 - 失败时能安全停止并记录未对冲库存。
+
+两腿执行顺序、库存要求和“价差是否会回归”的完整说明见
+`docs/s1-two-leg-execution-and-convergence.md`。短期存活时间可用
+`npm run track:spread -- --base TBK --duration-ms 300000 --interval-ms 3000`
+观察；它只描述历史持续性，不保证未来回归。

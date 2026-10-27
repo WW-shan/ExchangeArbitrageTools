@@ -8,9 +8,9 @@ Last verified: 2026-10-27 (Asia/Hong_Kong). The clause-by-clause audit is in
 
 ## Verification Baseline
 
-- [x] `npm run check` passed: lint, 49 test files / 272 tests, and backtest.
-- [x] `npm run coverage` passed with 81.66% statements, 72.18% branches, 78.68% functions,
-      and 85.44% lines.
+- [x] `npm run check` passed: lint, 50 test files / 274 tests, and backtest.
+- [x] `npm run coverage` passed with 81.79% statements, 72.23% branches, 79.02% functions,
+      and 85.58% lines.
 - [x] Focused regression set after the S3/S4 and zero-fee fixes passed: 46 tests across
       strategy, adapter, and executor files.
 - [x] Synthetic calibration passed: 20/20 actionable samples, 20/20 consecutive paper
@@ -98,10 +98,18 @@ Last verified: 2026-10-27 (Asia/Hong_Kong). The clause-by-clause audit is in
       ticker spread and volume, and emits both directions with a depth-walk capacity curve.
 - [x] Capacity analysis reports fee break-even, safety-adjusted profitability, eligible
       notional, visible depth exhaustion, and the binding reason for every route.
+- [x] Spread persistence tracking records eligible ratio, longest eligible streak, time
+      to first loss, p50/p95 gross edge, and maximum capacity per direction.
+- [x] The two-leg execution order is documented and verified in code: leg 1 buy, reconcile,
+      refresh leg 2 book, recalculate post-fill profit, then leg 2 sell from actual fill.
+- [x] One-leg-only and partial outcomes enter SAFE_STOP and persist unhedged inventory;
+      no automatic convergence assumption or automatic flatten is used.
 - [~] Capacity is not yet bounded by actual sell-venue inventory. A clean price curve can
   still be untradable if the destination venue lacks the base asset.
 - [~] Low-volume candidates have been confirmed with repeated REST snapshots, but not yet
   with a sustained WebSocket subscription and persistence/lifetime statistics.
+- [~] Simultaneous two-leg and sell-first execution modes are not implemented. Real
+  Gate/Hotcoin IOC/FOK behaviour still requires private API verification.
 - [!] 24-hour read-only soak and 10 manually confirmed live batches require real
   credentials, an operator, and actual market opportunities.
 
