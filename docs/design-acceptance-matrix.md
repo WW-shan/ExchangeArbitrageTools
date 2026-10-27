@@ -148,13 +148,13 @@ claim of live readiness.
 
 | Goal          | Internal evidence | External evidence | Overall accounting                                   |
 | ------------- | ----------------- | ----------------- | ---------------------------------------------------- |
-| S1 CEX-CEX    | 10/10 (100%)      | 0/4               | 10/14 (71.4%); all live gates remain                 |
+| S1 CEX-CEX    | 11/11 (100%)      | 0/4               | 11/15 (73.3%); all live gates remain                 |
 | S2 Triangular | 7/7 (100%)        | 0/0               | 7/7 (100%); paper/read-only scope only               |
 | S3 CEX-DEX    | 11/11 (100%)      | 0/4               | 11/15 (73.3%); real BSC data and live batches remain |
 | S4 DEX-DEX    | 6/6 (100%)        | 0/1               | 6/7 (85.7%); real provider validation remains        |
-| Total         | 34/34 (100%)      | 0/9               | 34/43 (79.1%)                                        |
+| Total         | 35/35 (100%)      | 0/9               | 35/44 (79.5%)                                        |
 
-The important distinction is: all 34 internal design items now have code plus automated
+The important distinction is: all 35 internal design items now have code plus automated
 evidence. None of the 9 external/live items has been executed, so no strategy is accepted
 against the live rollout plan yet.
 
