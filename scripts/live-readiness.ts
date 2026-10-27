@@ -195,6 +195,16 @@ async function main(): Promise<void> {
         ? 'all enabled venues have a verified IOC or FOK mode'
         : `no IOC/FOK mode yet for: ${missingTimeInForce.join(',')}`,
     );
+    if (executor.legMode === 'parallel_fok') {
+      const missingFok = enabled.filter((venue) => !executor.fokVenues.includes(venue));
+      add(
+        'execution.parallel_fok_venues',
+        missingFok.length === 0 ? 'pass' : config.execution.liveEnabled ? 'block' : 'warn',
+        missingFok.length === 0
+          ? 'parallel_fok mode has verified FOK flags for every enabled venue'
+          : `parallel_fok needs verified FOK on every venue: ${missingFok.join(',')}`,
+      );
+    }
   }
 
   const proxy =

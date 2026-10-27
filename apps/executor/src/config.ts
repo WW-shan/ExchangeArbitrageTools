@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 import { Decimal, type RiskLimits } from '@arb/core';
 import type { VenueFeeOverride } from '@arb/venues-cex';
 import { parse } from 'smol-toml';
-import type { CexLiveExecutorOptions } from './coordinator.js';
+import type { CexLiveExecutorOptions, LegExecutionMode } from './coordinator.js';
 
 export interface ExecutorConfig {
   databasePath: string;
@@ -12,6 +12,7 @@ export interface ExecutorConfig {
   manualConfirmation: boolean;
   maxOpenBatches: 1;
   handoffMaxAgeMs: number;
+  legMode: LegExecutionMode;
   iocVenues: string[];
   fokVenues: string[];
   feeFile: string;
@@ -67,6 +68,14 @@ function stringArray(source: Table, key: string, fallback: string[]): string[] {
     throw new Error(`config value ${key} must be a string array`);
   }
   return (value as string[]).map((item) => item.trim()).filter((item) => item.length > 0);
+}
+
+function legModeValue(source: Table, key: string, fallback: LegExecutionMode): LegExecutionMode {
+  const value = source[key] ?? fallback;
+  if (value !== 'serial' && value !== 'parallel_fok') {
+    throw new Error(`config value ${key} must be serial or parallel_fok`);
+  }
+  return value;
 }
 
 function feeOverrides(value: unknown): Record<string, VenueFeeOverride> {
@@ -149,6 +158,7 @@ export function loadExecutorConfig(
     manualConfirmation,
     maxOpenBatches: 1,
     handoffMaxAgeMs: numberValue(execution, 'handoff_max_age_ms', 15_000),
+    legMode: legModeValue(execution, 'leg_mode', 'serial'),
     iocVenues: stringArray(execution, 'ioc_venues', []),
     fokVenues: stringArray(execution, 'fok_venues', []),
     feeFile: typeof scanner.fee_file === 'string' ? scanner.fee_file : '',

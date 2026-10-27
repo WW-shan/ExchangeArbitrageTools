@@ -10,7 +10,7 @@ import {
   calculateBuyDepthByQuote,
   calculateSellDepthByBase,
 } from './depth.js';
-import { alignAmountDown, isAligned } from './precision.js';
+import { alignAmountDown, commonAmountStep, isAligned } from './precision.js';
 import { bookReceivedAt, validateOrderBook } from './orderbook.js';
 import { searchOptimalNotional } from './optimal.js';
 import type {
@@ -80,23 +80,6 @@ function validateMarketRules(market: MarketMetadata, reasons: RejectionReason[])
   if (market.minNotional && (!finiteNonNegative(market.minNotional) || market.minNotional.lt(0))) {
     reasons.push('invalid_request');
   }
-}
-
-function commonStep(steps: Decimal[]): Decimal {
-  const valid = steps.filter((step) => step.gt(0));
-  if (valid.length === 0) return new Decimal('1e-8');
-  const decimals = Math.max(
-    ...valid.map((step) => {
-      const fixed = step.toFixed();
-      const dot = fixed.indexOf('.');
-      return dot === -1 ? 0 : fixed.length - dot - 1;
-    }),
-  );
-  const scale = new Decimal(10).pow(decimals);
-  const units = valid.map((step) => BigInt(step.mul(scale).toFixed(0)));
-  const gcd = (a: bigint, b: bigint): bigint => (b === 0n ? a : gcd(b, a % b));
-  const lcm = units.reduce((a, b) => (a / gcd(a, b)) * b);
-  return new Decimal(lcm.toString()).div(scale);
 }
 
 export function evaluateS1Direction(input: S1EvaluationInput): OpportunityResult {
@@ -288,7 +271,7 @@ export function evaluateS1Direction(input: S1EvaluationInput): OpportunityResult
   const amountSteps = [buyMarket.amountStep, sellMarket.amountStep].filter(
     (step): step is Decimal => step !== undefined,
   );
-  const step = commonStep(amountSteps);
+  const step = amountSteps.length > 0 ? commonAmountStep(...amountSteps) : new Decimal('1e-8');
   const initialBuy = calculateBuyDepthByQuote(buyValidation.book, requestedNotional);
   if (initialBuy.insufficientDepth) {
     baseResult.rejectionReasons = uniqueReasons([...reasons, 'insufficient_depth']);

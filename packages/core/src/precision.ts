@@ -54,10 +54,20 @@ export function isAligned(value: Decimal, step: Decimal): boolean {
   return value.div(step).isInteger();
 }
 
+/** Smallest decimal step on which every supplied venue step is aligned. */
+export function commonAmountStep(...steps: Decimal[]): Decimal {
+  const valid = steps.filter((step) => step.isFinite() && step.gt(0));
+  if (valid.length === 0) throw new Error('at least one positive step is required');
+  const scale = Math.max(...valid.map((step) => step.decimalPlaces()));
+  const factor = new Decimal(10).pow(scale);
+  const units = valid.map((step) => BigInt(step.mul(factor).toFixed(0)));
+  const gcd = (left: bigint, right: bigint): bigint =>
+    right === 0n ? left : gcd(right, left % right);
+  const lcm = units.reduce((left, right) => (left / gcd(left, right)) * right);
+  return new Decimal(lcm.toString()).div(factor);
+}
+
 export function alignToCommonAmountStep(amount: Decimal, ...steps: Decimal[]): Decimal {
-  let aligned = amount;
-  for (const step of steps) {
-    aligned = alignAmountDown(aligned, step);
-  }
-  return aligned;
+  if (steps.length === 0) return amount;
+  return alignAmountDown(amount, commonAmountStep(...steps));
 }

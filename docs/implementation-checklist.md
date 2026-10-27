@@ -102,14 +102,19 @@ Last verified: 2026-10-27 (Asia/Hong_Kong). The clause-by-clause audit is in
       to first loss, p50/p95 gross edge, and maximum capacity per direction.
 - [x] The two-leg execution order is documented and verified in code: leg 1 buy, reconcile,
       refresh leg 2 book, recalculate post-fill profit, then leg 2 sell from actual fill.
+- [x] An explicit `leg_mode=parallel_fok` path submits both FOK legs concurrently, uses a
+      shared canonical quantity, reconciles both orders, and records submission skew. The
+      default remains serial and the parallel path has only mock evidence.
 - [x] One-leg-only and partial outcomes enter SAFE_STOP and persist unhedged inventory;
       no automatic convergence assumption or automatic flatten is used.
+- [x] Unhedged inventory records `direction=long|short`; `rebalance:plan` hedges only long
+      inventory and reports short inventory separately.
 - [~] Capacity is not yet bounded by actual sell-venue inventory. A clean price curve can
   still be untradable if the destination venue lacks the base asset.
 - [~] Low-volume candidates have been confirmed with repeated REST snapshots, but not yet
   with a sustained WebSocket subscription and persistence/lifetime statistics.
-- [~] Simultaneous two-leg and sell-first execution modes are not implemented. Real
-  Gate/Hotcoin IOC/FOK behaviour still requires private API verification.
+- [~] Sell-first execution is not implemented. Real Gate/Hotcoin IOC/FOK behaviour still
+  requires private API verification before either parallel or sell-first mode is enabled.
 - [!] 24-hour read-only soak and 10 manually confirmed live batches require real
   credentials, an operator, and actual market opportunities.
 

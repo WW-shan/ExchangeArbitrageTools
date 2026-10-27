@@ -87,6 +87,13 @@ describe('precision', () => {
         new Decimal('0.005'),
       ).toFixed(),
     ).toBe('1.23');
+    expect(
+      alignToCommonAmountStep(
+        new Decimal('10'),
+        new Decimal('0.002'),
+        new Decimal('0.003'),
+      ).toFixed(),
+    ).toBe('9.996');
     expect(isAligned(new Decimal('1.23'), new Decimal('0.01'))).toBe(true);
     expect(isAligned(new Decimal('1.231'), new Decimal('0.01'))).toBe(false);
     expect(() => alignAmountDown(new Decimal(1), new Decimal(0))).toThrow(/step must be positive/);

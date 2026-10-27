@@ -64,6 +64,10 @@ liquidity_top_levels = 5
 live_enabled = false
 kill_switch = true
 manual_confirmation = true
+# serial = buy leg, reconcile, then sell leg.
+# parallel_fok = submit both FOK legs concurrently. It is still NOT atomic
+# across venues. Keep serial until both private FOK paths are verified.
+leg_mode = 'serial'
 max_open_batches = 1
 daily_max_loss_usd = "5"
 handoff_max_age_ms = 15000

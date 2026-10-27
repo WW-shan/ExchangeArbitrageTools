@@ -406,4 +406,13 @@
       CREATE INDEX market_universe_quote_idx ON market_universe(venue_id, quote, tier);
     `,
   },
+  {
+    version: 7,
+    name: 'unhedged_inventory_direction',
+    sql: `
+      ALTER TABLE unhedged_inventory
+        ADD COLUMN direction TEXT NOT NULL DEFAULT 'long'
+        CHECK (direction IN ('long', 'short'));
+    `,
+  },
 ] as const;

@@ -6,7 +6,7 @@
 
 - `config/live-test.toml`：`enabled_venues=['gateio','hotcoin']`、`max_order_notional=20`、`min_sizing_notional=15`、`min_profit_usd=0.01`、`feed_mode='websocket'`。
 - 行情门槛：`max_feed_latency_ms=3000`、`ws_max_book_age_ms=3000`、`max_pair_skew_ms=2500`。Gate.io 经代理的 WS feed latency 可能接近 2.5 秒，不能沿用 500ms 门槛。
-- 默认安全状态：`live_enabled=false`、`kill_switch=true`、`ioc_venues=[]`、`fok_venues=[]`、`manual_confirmation=true`。
+- 默认安全状态：`live_enabled=false`、`kill_switch=true`、`leg_mode='serial'`、`ioc_venues=[]`、`fok_venues=[]`、`manual_confirmation=true`。
 - 公开链路已验证：Gate.io 与 Hotcoin 的 REST、WS 均可通过 `socks5://127.0.0.1:10808` 连接；Hotcoin 深度 WS 为 gzip 推送，约 1–3 秒更新一次。
 - 私有链路尚未验证：余额、下单、撤单、订单状态、FOK/IOC 都需要真实 API key。
 - Hotcoin 目标交易对的最小名义额为 15 USDT，因此扫描器最小 sizing 与执行器最小下单额都必须不低于 15。
@@ -118,6 +118,7 @@ npm run live:readiness
 - `secrets.hotcoin_passphrase` 覆盖 Hotcoin 的 read_only 与 trade 凭证；
 - `database.open_executions` 没有未对账执行；
 - `execution.ioc_fok_venues` 在 API key 实测完成前允许 warn；`live_enabled=true` 时会 block。
+- 若显式切换到 `leg_mode='parallel_fok'`，`execution.parallel_fok_venues` 要求两个场所都已写入 `fok_venues`；真实 API 验证前不得切换。
 
 ## 6. 公开行情 smoke（不需要 key）
 

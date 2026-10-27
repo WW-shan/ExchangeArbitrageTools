@@ -364,6 +364,7 @@ async function main(): Promise<void> {
       gate,
       limits: config.riskLimits,
       liveEnabled: config.liveEnabled,
+      legMode: config.legMode,
       settings: config.settings,
     });
     const result = await runS1Handoff({

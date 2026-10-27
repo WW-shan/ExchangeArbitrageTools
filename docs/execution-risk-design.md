@@ -40,6 +40,32 @@ LEG2_RECONCILING
 CLOSED
 ```
 
+The optional `parallel_fok` mode replaces the serial branch with:
+
+```text
+PREFLIGHT_CHECK
+  v
+PARALLEL_SUBMITTING
+  v
+PARALLEL_RECONCILING
+  v
+CLOSED | PARALLEL_REJECTED | SAFE_STOP
+```
+
+Requirements for `parallel_fok`:
+
+- both venues explicitly advertise FOK;
+- both orders use the same canonical base quantity;
+- both orders are prepared before either request is sent;
+- both requests are issued concurrently and recorded with start/response timestamps;
+- both orders are reconciled concurrently;
+- any unknown, partial, open, mismatched, or unconfirmed-cancel state enters
+  `SAFE_STOP`;
+- only two complete fills with equal canonical quantity may enter `CLOSED`.
+
+FOK is all-or-none per venue, never across venues. The mode must not be enabled
+based only on documentation or mock tests; real private-API FOK evidence is required.
+
 ## Exception states
 
 ```text
@@ -50,6 +76,7 @@ LEG1_UNKNOWN
 LEG2_REJECTED
 LEG2_PARTIAL
 LEG2_UNKNOWN
+PARALLEL_REJECTED
 BALANCE_MISMATCH
 SAFE_STOP
 ```

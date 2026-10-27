@@ -4,6 +4,7 @@ import {
   ExecutionGate,
   ZERO,
   alignAmountDown,
+  alignToCommonAmountStep,
   canonicalAmountFromExchange,
   canonicalMarketForEvaluation,
   canonicalPriceFromExchange,
@@ -43,7 +44,9 @@ export interface LiveExecutionRequest {
 }
 
 export type LiveExecutionOutcome =
-  'BLOCKED' | 'PREFLIGHT_FAILED' | 'LEG1_REJECTED' | 'CLOSED' | 'SAFE_STOP';
+  'BLOCKED' | 'PREFLIGHT_FAILED' | 'LEG1_REJECTED' | 'PARALLEL_REJECTED' | 'CLOSED' | 'SAFE_STOP';
+
+export type LegExecutionMode = 'serial' | 'parallel_fok';
 
 export interface LiveExecutionResult {
   batchId: string;
@@ -55,11 +58,38 @@ export interface LiveExecutionResult {
   ordersSubmitted: number;
 }
 
+interface PreparedLimitOrder {
+  symbol: string;
+  side: 'buy' | 'sell';
+  type: 'limit';
+  amount: Decimal;
+  price: Decimal;
+  timeInForce: 'IOC' | 'FOK';
+  clientOrderId: string;
+}
+
+interface ParallelFokPlan {
+  request: LiveExecutionRequest;
+  executionId: number;
+  preflightAt: number;
+  buyPrice: Decimal;
+  sellPrice: Decimal;
+  buyAmount: Decimal;
+  sellAmount: Decimal;
+  buyMultiplier: Decimal;
+  sellMultiplier: Decimal;
+  transition: (to: BatchState) => void;
+  safeStop: (reason: string) => LiveExecutionResult;
+  outcome: (value: LiveExecutionOutcome, realized?: Decimal) => LiveExecutionResult;
+  states: () => readonly BatchState[];
+}
+
 export interface CexLiveExecutorOptions {
   repository: ArbitrageRepository;
   gate: ExecutionGate;
   limits: RiskLimits;
   liveEnabled: boolean;
+  legMode?: LegExecutionMode;
   settings: {
     maxOrderbookAgeMs: number;
     minNetProfitBps: Decimal;
@@ -131,6 +161,7 @@ export class CexLiveExecutor {
   readonly #repository: ArbitrageRepository;
   readonly #gate: ExecutionGate;
   readonly #liveEnabled: boolean;
+  readonly #legMode: LegExecutionMode;
   readonly #settings: CexLiveExecutorOptions['settings'];
   readonly #sleep: (ms: number) => Promise<void>;
   readonly #clock: () => number;
@@ -139,6 +170,7 @@ export class CexLiveExecutor {
     this.#repository = options.repository;
     this.#gate = options.gate;
     this.#liveEnabled = options.liveEnabled;
+    this.#legMode = options.legMode ?? 'serial';
     this.#settings = options.settings;
     this.#sleep = options.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
     this.#clock = options.clock ?? Date.now;
@@ -307,30 +339,69 @@ export class CexLiveExecutor {
       transition('PREFLIGHT_FAILED');
       return outcome('PREFLIGHT_FAILED');
     }
+    const parallelFok = this.#legMode === 'parallel_fok';
+    if (parallelFok && (!request.buy.market.supportsFok || !request.sell.market.supportsFok)) {
+      reasons.push('parallel_fok_unsupported');
+      transition('PREFLIGHT_FAILED');
+      return outcome('PREFLIGHT_FAILED');
+    }
     const plannedBase = refreshed.buyDepth?.executableBaseAmount ?? ZERO;
-    const plannedQuote = refreshed.buyDepth?.executableQuoteAmount ?? refreshed.requestedNotional;
-    const plannedLeg1Amount = alignAmountDown(
+    let plannedLeg1Amount = alignAmountDown(
       exchangeAmountFromCanonical(plannedBase, buyMultiplier),
       request.buy.market.amountStep!,
     );
-    const plannedLeg2Amount = alignAmountDown(
+    let plannedLeg2Amount = alignAmountDown(
       exchangeAmountFromCanonical(plannedBase, sellMultiplier),
       request.sell.market.amountStep!,
     );
+    if (parallelFok) {
+      const commonCanonical = alignToCommonAmountStep(
+        Decimal.min(
+          canonicalAmountFromExchange(plannedLeg1Amount, buyMultiplier),
+          canonicalAmountFromExchange(plannedLeg2Amount, sellMultiplier),
+        ),
+        buyEvalMarket.amountStep!,
+        sellEvalMarket.amountStep!,
+      );
+      plannedLeg1Amount = alignAmountDown(
+        exchangeAmountFromCanonical(commonCanonical, buyMultiplier),
+        request.buy.market.amountStep,
+      );
+      plannedLeg2Amount = alignAmountDown(
+        exchangeAmountFromCanonical(commonCanonical, sellMultiplier),
+        request.sell.market.amountStep,
+      );
+    }
+    const plannedBuyCanonical = canonicalAmountFromExchange(plannedLeg1Amount, buyMultiplier);
+    const plannedSellCanonical = canonicalAmountFromExchange(plannedLeg2Amount, sellMultiplier);
+    const plannedBuyNotional = plannedLeg1Amount.mul(leg1Price);
+    const plannedSellNotional = plannedSellCanonical.mul(plannedSellPrice);
+    if (parallelFok && !plannedBuyCanonical.eq(plannedSellCanonical)) {
+      reasons.push('parallel_amount_mismatch');
+      transition('PREFLIGHT_FAILED');
+      return outcome('PREFLIGHT_FAILED');
+    }
     if (
       !plannedLeg1Amount.gt(0) ||
       !plannedLeg2Amount.gt(0) ||
       (request.buy.market.minAmount && plannedLeg1Amount.lt(request.buy.market.minAmount)) ||
       (request.sell.market.minAmount && plannedLeg2Amount.lt(request.sell.market.minAmount)) ||
-      (request.buy.market.minNotional && plannedQuote.lt(request.buy.market.minNotional))
+      (request.buy.market.minNotional && plannedBuyNotional.lt(request.buy.market.minNotional)) ||
+      (request.sell.market.minNotional && plannedSellNotional.lt(request.sell.market.minNotional))
     ) {
       reasons.push('below_min_notional');
       transition('PREFLIGHT_FAILED');
       return outcome('PREFLIGHT_FAILED');
     }
     const buyFeeBps = request.buy.market.feeTakerBps ?? ZERO;
-    const requiredQuote = plannedQuote.mul(new Decimal(1).plus(buyFeeBps.div(10_000))).mul('1.01');
-    const balances = await this.fetchBalances(request, requiredQuote, plannedBase);
+    const requiredQuote = plannedBuyNotional
+      .mul(new Decimal(1).plus(buyFeeBps.div(10_000)))
+      .mul('1.01');
+    const balances = await this.fetchBalances(
+      request,
+      requiredQuote,
+      parallelFok ? plannedSellCanonical : plannedBase,
+    );
     if (!balances.ok) {
       reasons.push(...balances.reasons);
       if (
@@ -435,7 +506,7 @@ export class CexLiveExecutor {
         quoteCurrency: request.buy.market.quote,
         requiredQuote: requiredQuote.toFixed(),
         baseCurrency: marketExchangeBase(request.sell.market),
-        requiredBase: plannedBase.toFixed(),
+        requiredBase: (parallelFok ? plannedSellCanonical : plannedBase).toFixed(),
         requiredExchangeBase: plannedLeg2Amount.toFixed(),
         canonicalBase: request.buy.market.base,
         buyBaseMultiplier: buyMultiplier.toFixed(),
@@ -487,6 +558,25 @@ export class CexLiveExecutor {
       clientOrderId: `${request.batchId}-L2`,
     });
     this.#repository.updateExecutionStatus(executionId, 'PREFLIGHT_CHECK');
+
+    if (parallelFok) {
+      ordersSubmitted += 2;
+      return this.executeParallelFok({
+        request,
+        executionId,
+        preflightAt,
+        buyPrice: leg1Price,
+        sellPrice: plannedSellPrice,
+        buyAmount: plannedLeg1Amount,
+        sellAmount: plannedLeg2Amount,
+        buyMultiplier,
+        sellMultiplier,
+        transition,
+        safeStop,
+        outcome,
+        states: () => states,
+      });
+    }
 
     transition('LEG1_SUBMITTING');
     const leg1TimeInForce = request.buy.market.supportsIoc ? ('IOC' as const) : ('FOK' as const);
@@ -837,6 +927,299 @@ export class CexLiveExecutor {
     return outcome('CLOSED', realized);
   }
 
+  private async executeParallelFok(plan: ParallelFokPlan): Promise<LiveExecutionResult> {
+    const { request } = plan;
+    plan.transition('PARALLEL_SUBMITTING');
+    const buyOrder: PreparedLimitOrder = {
+      symbol: request.buy.market.exchangeSymbol,
+      side: 'buy',
+      type: 'limit',
+      amount: plan.buyAmount,
+      price: plan.buyPrice,
+      timeInForce: 'FOK',
+      clientOrderId: `${request.batchId}-L1`,
+    };
+    const sellOrder: PreparedLimitOrder = {
+      symbol: request.sell.market.exchangeSymbol,
+      side: 'sell',
+      type: 'limit',
+      amount: plan.sellAmount,
+      price: plan.sellPrice,
+      timeInForce: 'FOK',
+      clientOrderId: `${request.batchId}-L2`,
+    };
+    this.prepareOrder(request, 1, buyOrder);
+    this.prepareOrder(request, 2, sellOrder);
+    const [buySubmission, sellSubmission] = await Promise.all([
+      this.submitParallelFokLeg(request, 1, buyOrder),
+      this.submitParallelFokLeg(request, 2, sellOrder),
+    ]);
+    const responseAt = this.#clock();
+    const submissionStartSkewMs = Math.abs(buySubmission.submittedAt - sellSubmission.submittedAt);
+    const responseSkewMs = Math.abs(buySubmission.respondedAt - sellSubmission.respondedAt);
+    this.#repository.recordAudit(
+      'executor',
+      'parallel_fok_submission_timing',
+      {
+        batchId: request.batchId,
+        submissionStartSkewMs,
+        responseSkewMs,
+        buy: {
+          ok: buySubmission.ok,
+          submittedAt: buySubmission.submittedAt,
+          respondedAt: buySubmission.respondedAt,
+          ...(buySubmission.ok ? {} : { error: buySubmission.error }),
+        },
+        sell: {
+          ok: sellSubmission.ok,
+          submittedAt: sellSubmission.submittedAt,
+          respondedAt: sellSubmission.respondedAt,
+          ...(sellSubmission.ok ? {} : { error: sellSubmission.error }),
+        },
+      },
+      responseAt,
+    );
+
+    plan.transition('PARALLEL_RECONCILING');
+    const [buyReconciliation, sellReconciliation] = await Promise.all([
+      this.reconcile(request, request.buy, 1, buySubmission.ok ? buySubmission.order : undefined),
+      this.reconcile(
+        request,
+        request.sell,
+        2,
+        sellSubmission.ok ? sellSubmission.order : undefined,
+      ),
+    ]);
+    let buyOrderState = buyReconciliation.ok ? buyReconciliation.order : undefined;
+    let sellOrderState = sellReconciliation.ok ? sellReconciliation.order : undefined;
+
+    const cancellationTasks: Array<
+      Promise<{
+        leg: 1 | 2;
+        result: { ok: true; order: OrderState } | { ok: false; reason: string };
+      }>
+    > = [];
+    if (buyOrderState?.status === 'open' && buyOrderState.remaining.gt(0)) {
+      cancellationTasks.push(
+        this.cancelRemaining(request, request.buy, 1, buyOrderState).then((result) => ({
+          leg: 1 as const,
+          result,
+        })),
+      );
+    }
+    if (sellOrderState?.status === 'open' && sellOrderState.remaining.gt(0)) {
+      cancellationTasks.push(
+        this.cancelRemaining(request, request.sell, 2, sellOrderState).then((result) => ({
+          leg: 2 as const,
+          result,
+        })),
+      );
+    }
+    let cancellationFailure: string | undefined;
+    for (const cancellation of await Promise.all(cancellationTasks)) {
+      if (!cancellation.result.ok) {
+        cancellationFailure = cancellation.result.reason;
+      } else if (cancellation.leg === 1) {
+        buyOrderState = cancellation.result.order;
+      } else {
+        sellOrderState = cancellation.result.order;
+      }
+    }
+
+    const buyFilledCanonical = buyOrderState
+      ? canonicalAmountFromExchange(buyOrderState.filled, plan.buyMultiplier)
+      : undefined;
+    const sellFilledCanonical = sellOrderState
+      ? canonicalAmountFromExchange(sellOrderState.filled, plan.sellMultiplier)
+      : undefined;
+    const unresolvedReasons = [
+      ...(!buyReconciliation.ok ? [buyReconciliation.reason] : []),
+      ...(!sellReconciliation.ok ? [sellReconciliation.reason] : []),
+      ...(cancellationFailure ? [cancellationFailure] : []),
+    ];
+    if (unresolvedReasons.length > 0 || !buyOrderState || !sellOrderState) {
+      this.recordParallelResidualRisk(
+        request,
+        plan.executionId,
+        buyFilledCanonical,
+        sellFilledCanonical,
+        buyOrderState?.averagePrice ?? plan.buyPrice,
+        sellOrderState?.averagePrice ?? plan.sellPrice,
+        'parallel_unresolved_fill',
+      );
+      return plan.safeStop(unresolvedReasons.join(',') || 'parallel_leg_unresolved');
+    }
+
+    const buyFilled = buyOrderState.filled;
+    const sellFilled = sellOrderState.filled;
+    if (buyFilled.eq(0) && sellFilled.eq(0)) {
+      plan.transition('PARALLEL_REJECTED');
+      const closedAt = this.#clock();
+      this.#repository.updateExecutionStatus(plan.executionId, 'PARALLEL_REJECTED', {
+        realizedProfit: ZERO,
+        closedAt,
+        latencyMs: Math.max(0, closedAt - plan.preflightAt),
+        metadata: {
+          states: [...plan.states()],
+          outcome: 'PARALLEL_REJECTED',
+          mode: 'parallel_fok',
+          submissionStartSkewMs,
+          responseSkewMs,
+        },
+      });
+      this.#repository.recordRiskEvent(
+        'warning',
+        'parallel_fok_rejected',
+        'both FOK legs finished without a fill',
+        {
+          batchId: request.batchId,
+          buyStatus: buyOrderState.status,
+          sellStatus: sellOrderState.status,
+        },
+      );
+      return plan.outcome('PARALLEL_REJECTED');
+    }
+
+    const buyComplete =
+      buyOrderState.filled.gte(buyOrderState.amount) && buyOrderState.remaining.lte(0);
+    const sellComplete =
+      sellOrderState.filled.gte(sellOrderState.amount) && sellOrderState.remaining.lte(0);
+    const boughtCanonical = canonicalAmountFromExchange(buyFilled, plan.buyMultiplier);
+    const soldCanonical = canonicalAmountFromExchange(sellFilled, plan.sellMultiplier);
+    if (!buyComplete || !sellComplete) {
+      this.recordParallelResidualRisk(
+        request,
+        plan.executionId,
+        boughtCanonical,
+        soldCanonical,
+        buyOrderState.averagePrice ?? plan.buyPrice,
+        sellOrderState.averagePrice ?? plan.sellPrice,
+        'parallel_incomplete_fill',
+      );
+      return plan.safeStop('parallel_leg_not_fully_filled');
+    }
+    if (!boughtCanonical.eq(soldCanonical)) {
+      this.recordParallelResidualRisk(
+        request,
+        plan.executionId,
+        boughtCanonical,
+        soldCanonical,
+        buyOrderState.averagePrice ?? plan.buyPrice,
+        sellOrderState.averagePrice ?? plan.sellPrice,
+        'parallel_fill_mismatch',
+      );
+      return plan.safeStop('parallel_fill_mismatch');
+    }
+
+    const buyAverage = buyOrderState.averagePrice ?? plan.buyPrice;
+    const sellAverage = sellOrderState.averagePrice ?? plan.sellPrice;
+    const buyFee = buyOrderState.fee ?? ZERO;
+    const sellFee = sellOrderState.fee ?? ZERO;
+    const buyCost = buyAverage.mul(buyFilled).plus(buyFee);
+    const sellProceeds = sellAverage.mul(sellFilled);
+    const realized = sellProceeds.minus(sellFee).minus(buyCost);
+    const grossSpread = sellProceeds.minus(buyAverage.mul(buyFilled));
+    const fees = buyFee.plus(sellFee);
+    this.#repository.updateExecutionLeg(`${request.batchId}-L1`, {
+      status: 'filled',
+      filledAmount: buyFilled,
+      averageFillPrice: buyOrderState.averagePrice,
+      feePaid: buyOrderState.fee,
+      orderId: buyOrderState.venueOrderId,
+    });
+    this.#repository.updateExecutionLeg(`${request.batchId}-L2`, {
+      status: 'filled',
+      filledAmount: sellFilled,
+      averageFillPrice: sellOrderState.averagePrice,
+      feePaid: sellOrderState.fee,
+      orderId: sellOrderState.venueOrderId,
+    });
+    plan.transition('CLOSED');
+    const closedAt = this.#clock();
+    this.#repository.updateExecutionStatus(plan.executionId, 'CLOSED', {
+      realizedProfit: realized,
+      closedAt,
+      grossSpread,
+      fees,
+      latencyMs: Math.max(0, closedAt - plan.preflightAt),
+      inventoryDelta: {
+        baseAsset: request.buy.market.base,
+        baseDelta: '0',
+        quoteAsset: request.buy.market.quote,
+        quoteDelta: realized.toFixed(),
+      },
+      metadata: {
+        states: [...plan.states()],
+        outcome: 'CLOSED',
+        mode: 'parallel_fok',
+        submissionStartSkewMs,
+        responseSkewMs,
+        leg1Filled: buyFilled.toFixed(),
+        leg2Filled: sellFilled.toFixed(),
+        leg1CanonicalFilled: boughtCanonical.toFixed(),
+        leg2CanonicalFilled: soldCanonical.toFixed(),
+        leg1AveragePrice: buyOrderState.averagePrice?.toFixed() ?? null,
+        leg2AveragePrice: sellOrderState.averagePrice?.toFixed() ?? null,
+      },
+    });
+    if (realized.lt(0)) this.#repository.addRealizedLoss(realized.abs(), closedAt);
+    return plan.outcome('CLOSED', realized);
+  }
+
+  private async submitParallelFokLeg(
+    request: LiveExecutionRequest,
+    leg: 1 | 2,
+    order: PreparedLimitOrder,
+  ): Promise<
+    | { ok: true; order: OrderState; submittedAt: number; respondedAt: number }
+    | { ok: false; error: string; submittedAt: number; respondedAt: number }
+  > {
+    const venue = leg === 1 ? request.buy : request.sell;
+    const submittedAt = this.#clock();
+    try {
+      const state = await venue.adapter.createOrder!(order, venue.credentials);
+      this.persistOrder(request, leg, state);
+      return { ok: true, order: state, submittedAt, respondedAt: this.#clock() };
+    } catch (error) {
+      this.markSubmissionUnknown(request, leg, order, error);
+      return { ok: false, error: String(error), submittedAt, respondedAt: this.#clock() };
+    }
+  }
+
+  private recordParallelResidualRisk(
+    request: LiveExecutionRequest,
+    executionId: number,
+    buyFilled: Decimal | undefined,
+    sellFilled: Decimal | undefined,
+    buyPrice: Decimal | undefined,
+    sellPrice: Decimal | undefined,
+    reason: string,
+  ): void {
+    const bought = buyFilled ?? ZERO;
+    const sold = sellFilled ?? ZERO;
+    if (bought.gt(sold)) {
+      this.recordUnhedgedInventoryAt(
+        request,
+        executionId,
+        request.buy,
+        bought.minus(sold),
+        this.conservativePrice(buyPrice, sellPrice),
+        `${reason}_long`,
+        'long',
+      );
+    } else if (sold.gt(bought)) {
+      this.recordUnhedgedInventoryAt(
+        request,
+        executionId,
+        request.sell,
+        sold.minus(bought),
+        this.conservativeShortPrice(buyPrice, sellPrice),
+        `${reason}_inventory_shortfall`,
+        'short',
+      );
+    }
+  }
+
   readonly #executionIds = new Map<string, number>();
 
   private async fetchBalances(
@@ -1162,18 +1545,39 @@ export class CexLiveExecutor {
     canonicalUnitPrice: Decimal,
     reason: string,
   ): number | undefined {
+    return this.recordUnhedgedInventoryAt(
+      request,
+      executionId,
+      request.buy,
+      canonicalAmount,
+      canonicalUnitPrice,
+      reason,
+      'long',
+    );
+  }
+
+  private recordUnhedgedInventoryAt(
+    request: LiveExecutionRequest,
+    executionId: number,
+    venue: ExecutionVenue,
+    canonicalAmount: Decimal,
+    canonicalUnitPrice: Decimal,
+    reason: string,
+    direction: 'long' | 'short',
+  ): number | undefined {
     if (!canonicalAmount.gt(0)) return undefined;
-    const multiplier = marketBaseMultiplier(request.buy.market);
+    const multiplier = marketBaseMultiplier(venue.market);
     const exchangeAmount = exchangeAmountFromCanonical(canonicalAmount, multiplier);
     const usdValue = canonicalAmount.mul(canonicalUnitPrice.gt(0) ? canonicalUnitPrice : ZERO);
-    const exchangeBase = marketExchangeBase(request.buy.market);
+    const exchangeBase = marketExchangeBase(venue.market);
     const id = this.#repository.recordUnhedgedInventory({
       executionId,
       batchId: request.batchId,
-      venueId: request.buy.adapter.venueId,
+      venueId: venue.adapter.venueId,
       asset: exchangeBase,
       amount: exchangeAmount,
       usdValue,
+      direction,
       reason,
       createdAt: this.#clock(),
     });
@@ -1184,12 +1588,13 @@ export class CexLiveExecutor {
       {
         batchId: request.batchId,
         unhedgedInventoryId: id,
-        venueId: request.buy.adapter.venueId,
+        venueId: venue.adapter.venueId,
         asset: exchangeBase,
         amount: exchangeAmount.toFixed(),
-        canonicalAsset: request.buy.market.base,
+        canonicalAsset: venue.market.base,
         canonicalAmount: canonicalAmount.toFixed(),
         baseMultiplier: multiplier.toFixed(),
+        direction,
         usdValue: usdValue.toFixed(),
       },
       this.#clock(),
@@ -1203,5 +1608,13 @@ export class CexLiveExecutor {
     );
     if (prices.length === 0) return ZERO;
     return prices.reduce((lowest, price) => (price.lt(lowest) ? price : lowest));
+  }
+
+  private conservativeShortPrice(first?: Decimal, second?: Decimal): Decimal {
+    const prices = [first, second].filter(
+      (price): price is Decimal => price !== undefined && price.gt(0),
+    );
+    if (prices.length === 0) return ZERO;
+    return prices.reduce((highest, price) => (price.gt(highest) ? price : highest));
   }
 }

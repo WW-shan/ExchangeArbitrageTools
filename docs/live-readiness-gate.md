@@ -24,6 +24,7 @@ npm run live:readiness
 | `sizing.min_profit_vs_notional`  | warn       | `min_profit_usd / max_order_notional` 的隐含 bps 门槛，过高会遮蔽小价差                                               |
 | `sizing.hotcoin_min_notional`    | block      | Hotcoin 启用时，`min_sizing_notional` 与 `max_order_notional` 都必须 ≥15 USDT，且最小额不能大于最大额                 |
 | `execution.ioc_fok_venues`       | warn/block | 每个启用场所是否有已验证的 IOC/FOK；`live_enabled=true` 时缺失会 block                                                |
+| `execution.parallel_fok_venues`  | warn/block | 仅 `leg_mode='parallel_fok'` 时检查；每个启用场所都必须已验证 FOK，实盘开启时缺失会 block                             |
 | `network.proxy`                  | warn       | 是否配置代理                                                                                                          |
 | `database.integrity`             | block      | SQLite `integrity_check` 必须为 ok                                                                                    |
 | `database.open_executions`       | block      | 不能有未对账的 open execution / unresolved order                                                                      |

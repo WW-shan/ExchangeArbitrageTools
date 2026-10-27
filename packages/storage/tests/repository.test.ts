@@ -593,6 +593,7 @@ describe('SQLite storage', () => {
     expect(snapshot.dailyRebalanceCost.toFixed()).toBe('1.25');
     expect(snapshot.unhedgedInventoryRisk.toFixed()).toBe('5');
     expect(repo.openUnhedgedInventory()).toHaveLength(1);
+    expect(repo.openUnhedgedInventory()[0]?.direction).toBe('long');
 
     repo.resolveUnhedgedInventory(inventoryId, now + 1000);
     expect(repo.riskSnapshot(now).unhedgedInventoryRisk.toFixed()).toBe('0');
@@ -637,7 +638,11 @@ describe('SQLite storage', () => {
       .all() as Array<{
       version: number;
     }>;
-    expect(versions.map((row) => row.version)).toEqual([1, 2, 3, 4, 5, 6]);
+    expect(versions.map((row) => row.version)).toEqual([1, 2, 3, 4, 5, 6, 7]);
+    const columns = db.prepare('PRAGMA table_info(unhedged_inventory)').all() as Array<{
+      name: string;
+    }>;
+    expect(columns.map((column) => column.name)).toContain('direction');
     db.close();
     rmSync(directory, { recursive: true, force: true });
   });

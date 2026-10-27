@@ -370,6 +370,33 @@ CREATE TABLE risk_events (
 );
 ```
 
+### unhedged_inventory
+
+```sql
+CREATE TABLE unhedged_inventory (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  execution_id INTEGER NOT NULL,
+  batch_id TEXT NOT NULL,
+  venue_id TEXT NOT NULL,
+  asset TEXT NOT NULL,
+  amount TEXT NOT NULL,
+  usd_value TEXT NOT NULL,
+  direction TEXT NOT NULL DEFAULT 'long', -- long | short
+  reason TEXT NOT NULL,
+  status TEXT NOT NULL,                   -- open | closed
+  created_at INTEGER NOT NULL,
+  resolved_at INTEGER,
+  FOREIGN KEY (execution_id) REFERENCES executions(id),
+  FOREIGN KEY (venue_id) REFERENCES venues(id)
+);
+```
+
+`direction=long` means the venue holds excess base after an incomplete hedge.
+`direction=short` means the sell side consumed base without a matching buy fill;
+it is an inventory shortfall, not a claim that the venue borrowed the asset.
+Both directions contribute to unhedged risk, but only long rows are eligible for
+reduce-only sell hedging in `rebalance:plan`.
+
 ## Retention
 
 Recommended initial retention:

@@ -57,6 +57,10 @@ function market(venueId: string): MarketMetadata {
   };
 }
 
+function fokMarket(venueId: string): MarketMetadata {
+  return { ...market(venueId), supportsIoc: false, supportsFok: true };
+}
+
 function book(venueId: string, ask: string, bid: string, fetchedAt = now): OrderBookSnapshot {
   return {
     venueId,
@@ -121,10 +125,18 @@ interface FakeOptions {
   onFetchBook?: () => void;
   bookFetchedAt?: () => number;
   bookQuote?: (venueId: string, call: number) => { ask: string; bid: string };
+  createDelayMs?: number;
+  concurrency?: { active: number; max: number };
 }
 
 function fakeAdapter(venueId: string, options: FakeOptions = {}) {
-  const state = { createCalls: 0, fetchBookCalls: 0, cancelCalls: 0, canceled: false };
+  const state = {
+    createCalls: 0,
+    fetchBookCalls: 0,
+    cancelCalls: 0,
+    canceled: false,
+    createSides: [] as Array<'buy' | 'sell'>,
+  };
   const orderFor = (
     isBuy: boolean,
     amount: Decimal,
@@ -180,6 +192,18 @@ function fakeAdapter(venueId: string, options: FakeOptions = {}) {
     fetchBalances: async () => balances(venueId, options.baseFree),
     createOrder: async (request) => {
       state.createCalls += 1;
+      state.createSides.push(request.side);
+      if (options.concurrency) {
+        options.concurrency.active += 1;
+        options.concurrency.max = Math.max(options.concurrency.max, options.concurrency.active);
+      }
+      try {
+        if (options.createDelayMs) {
+          await new Promise((resolve) => setTimeout(resolve, options.createDelayMs));
+        }
+      } finally {
+        if (options.concurrency) options.concurrency.active -= 1;
+      }
       if (
         options.createError &&
         (!options.createErrorSide ||
@@ -235,7 +259,7 @@ function fakeAdapter(venueId: string, options: FakeOptions = {}) {
   return { adapter, state };
 }
 
-function setup(options: FakeOptions = {}) {
+function setup(options: FakeOptions = {}, legMode: 'serial' | 'parallel_fok' = 'serial') {
   const db = openDatabase(':memory:');
   const repo = new ArbitrageRepository(db);
   repo.upsertVenue({
@@ -263,8 +287,10 @@ function setup(options: FakeOptions = {}) {
     gate,
     limits,
     liveEnabled: true,
+    legMode,
     settings,
     sleep: async () => {},
+    clock: () => now,
   });
   return { db, repo, buy, sell, gate, executor };
 }
@@ -1016,6 +1042,215 @@ describe('live executor safety gates', () => {
     expect(result.outcome).toBe('SAFE_STOP');
     expect(result.states).toContain('BALANCE_MISMATCH');
     expect(buy.state.fetchBookCalls).toBe(0);
+    expect(repo.getSetting('kill_switch')).toBe('true');
+    repo.close();
+  });
+});
+
+describe('parallel FOK two-leg execution', () => {
+  it('fails preflight unless both venues explicitly support FOK', async () => {
+    const { repo, executor, buy, sell } = setup({}, 'parallel_fok');
+    const result = await executor.execute(
+      request(
+        { adapter: buy.adapter, market: market('gateio'), credentials: keys, healthState: 'A' },
+        { adapter: sell.adapter, market: market('mexc'), credentials: keys, healthState: 'A' },
+      ),
+    );
+    expect(result.outcome).toBe('PREFLIGHT_FAILED');
+    expect(result.reasons).toContain('parallel_fok_unsupported');
+    expect(buy.state.createCalls).toBe(0);
+    expect(sell.state.createCalls).toBe(0);
+    repo.close();
+  });
+
+  it('submits both FOK legs concurrently and closes when quantities match', async () => {
+    const concurrency = { active: 0, max: 0 };
+    const { db, repo, executor, buy, sell } = setup(
+      { createDelayMs: 5, concurrency },
+      'parallel_fok',
+    );
+    const result = await executor.execute(
+      request(
+        {
+          adapter: buy.adapter,
+          market: fokMarket('gateio'),
+          credentials: keys,
+          healthState: 'A',
+        },
+        {
+          adapter: sell.adapter,
+          market: fokMarket('mexc'),
+          credentials: keys,
+          healthState: 'A',
+        },
+      ),
+    );
+    expect(result.outcome).toBe('CLOSED');
+    expect(result.ordersSubmitted).toBe(2);
+    expect(result.states).toEqual(
+      expect.arrayContaining(['PARALLEL_SUBMITTING', 'PARALLEL_RECONCILING', 'CLOSED']),
+    );
+    expect(concurrency.max).toBe(2);
+    expect(buy.state.createSides).toEqual(['buy']);
+    expect(sell.state.createSides).toEqual(['sell']);
+    expect(repo.openUnhedgedInventory()).toHaveLength(0);
+    expect(repo.getSetting('kill_switch')).toBe('false');
+    const execution = db
+      .prepare('SELECT status, metadata_json FROM executions WHERE batch_id = ?')
+      .get('exec-batch') as { status: string; metadata_json: string };
+    expect(execution.status).toBe('CLOSED');
+    expect(JSON.parse(execution.metadata_json)).toMatchObject({
+      mode: 'parallel_fok',
+      outcome: 'CLOSED',
+    });
+    repo.close();
+  });
+
+  it('still sends the other leg when one submission throws and records the inventory shortfall', async () => {
+    const concurrency = { active: 0, max: 0 };
+    const { repo, executor, buy, sell } = setup(
+      {
+        createDelayMs: 5,
+        concurrency,
+        createError: new Error('buy submit timeout'),
+        createErrorSide: 'buy',
+        leg1FillRatio: new Decimal(0),
+      },
+      'parallel_fok',
+    );
+    const result = await executor.execute(
+      request(
+        {
+          adapter: buy.adapter,
+          market: fokMarket('gateio'),
+          credentials: keys,
+          healthState: 'A',
+        },
+        {
+          adapter: sell.adapter,
+          market: fokMarket('mexc'),
+          credentials: keys,
+          healthState: 'A',
+        },
+      ),
+    );
+    expect(result.outcome).toBe('SAFE_STOP');
+    expect(result.reasons).toContain('parallel_leg_not_fully_filled');
+    expect(concurrency.max).toBe(2);
+    expect(buy.state.createCalls).toBe(1);
+    expect(sell.state.createCalls).toBe(1);
+    expect(repo.openUnhedgedInventory()).toHaveLength(1);
+    expect(repo.openUnhedgedInventory()[0]).toMatchObject({
+      venue_id: 'mexc',
+      asset: 'CAKE',
+      amount: '12',
+      direction: 'short',
+      reason: 'parallel_incomplete_fill_inventory_shortfall',
+    });
+    expect(repo.getSetting('kill_switch')).toBe('true');
+    repo.close();
+  });
+
+  it('cancels an open partial parallel leg and records the long residual', async () => {
+    const { repo, executor, buy, sell } = setup(
+      {
+        leg1FillRatio: new Decimal('0.75'),
+        leg1PartialOpen: true,
+        leg2FillRatio: new Decimal('0.5'),
+      },
+      'parallel_fok',
+    );
+    const result = await executor.execute(
+      request(
+        {
+          adapter: buy.adapter,
+          market: fokMarket('gateio'),
+          credentials: keys,
+          healthState: 'A',
+        },
+        {
+          adapter: sell.adapter,
+          market: fokMarket('mexc'),
+          credentials: keys,
+          healthState: 'A',
+        },
+      ),
+    );
+    expect(result.outcome).toBe('SAFE_STOP');
+    expect(result.reasons).toContain('parallel_leg_not_fully_filled');
+    expect(buy.state.cancelCalls).toBe(1);
+    expect(sell.state.cancelCalls).toBe(0);
+    expect(repo.openUnhedgedInventory()[0]).toMatchObject({
+      venue_id: 'gateio',
+      asset: 'CAKE',
+      amount: '3',
+      direction: 'long',
+      reason: 'parallel_incomplete_fill_long',
+    });
+    repo.close();
+  });
+
+  it('records a terminal rejection when neither FOK leg fills', async () => {
+    const { repo, executor, buy, sell } = setup(
+      {
+        leg1FillRatio: new Decimal(0),
+        leg2FillRatio: new Decimal(0),
+      },
+      'parallel_fok',
+    );
+    const result = await executor.execute(
+      request(
+        {
+          adapter: buy.adapter,
+          market: fokMarket('gateio'),
+          credentials: keys,
+          healthState: 'A',
+        },
+        {
+          adapter: sell.adapter,
+          market: fokMarket('mexc'),
+          credentials: keys,
+          healthState: 'A',
+        },
+      ),
+    );
+    expect(result.outcome).toBe('PARALLEL_REJECTED');
+    expect(result.states).toContain('PARALLEL_REJECTED');
+    expect(repo.countOpenExecutions()).toBe(0);
+    expect(repo.openUnhedgedInventory()).toHaveLength(0);
+    expect(repo.getSetting('kill_switch')).toBe('false');
+    repo.close();
+  });
+
+  it('safe-stops when one leg cannot be reconciled and records the known other fill', async () => {
+    const { repo, executor, buy, sell } = setup(
+      { queryUnknown: true, queryUnknownSide: 'buy' },
+      'parallel_fok',
+    );
+    const result = await executor.execute(
+      request(
+        {
+          adapter: buy.adapter,
+          market: fokMarket('gateio'),
+          credentials: keys,
+          healthState: 'A',
+        },
+        {
+          adapter: sell.adapter,
+          market: fokMarket('mexc'),
+          credentials: keys,
+          healthState: 'A',
+        },
+      ),
+    );
+    expect(result.outcome).toBe('SAFE_STOP');
+    expect(result.reasons.some((reason) => reason.startsWith('leg1_reconcile_failed'))).toBe(true);
+    expect(repo.openUnhedgedInventory()[0]).toMatchObject({
+      venue_id: 'mexc',
+      amount: '12',
+      direction: 'short',
+      reason: 'parallel_unresolved_fill_inventory_shortfall',
+    });
     expect(repo.getSetting('kill_switch')).toBe('true');
     repo.close();
   });

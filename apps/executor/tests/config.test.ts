@@ -29,6 +29,7 @@ describe('executor configuration', () => {
     expect(config.riskLimits.maxOrderNotional.toFixed()).toBe('30');
     expect(config.riskLimits.dailyMaxLoss.toFixed()).toBe('20');
     expect(config.handoffMaxAgeMs).toBe(15_000);
+    expect(config.legMode).toBe('serial');
     expect(config.iocVenues).toEqual([]);
   });
 
@@ -63,5 +64,13 @@ describe('executor configuration', () => {
         {},
       ),
     ).toThrow('20 USDT');
+    expect(() =>
+      loadExecutorConfig(configWith([`leg_mode = 'serial'`, `leg_mode = 'parallel'`]), {}),
+    ).toThrow('serial or parallel_fok');
+  });
+
+  it('accepts an explicitly selected parallel FOK mode', () => {
+    const path = configWith([`leg_mode = 'serial'`, `leg_mode = 'parallel_fok'`]);
+    expect(loadExecutorConfig(path, {}).legMode).toBe('parallel_fok');
   });
 });

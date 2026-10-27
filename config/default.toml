@@ -151,6 +151,8 @@ persist_snapshots = true
 live_enabled = false
 kill_switch = true
 manual_confirmation = true
+# serial or parallel_fok; parallel still needs explicit private FOK verification.
+leg_mode = 'serial'
 max_open_batches = 1
 daily_max_loss_usd = "20"
 handoff_max_age_ms = 15000

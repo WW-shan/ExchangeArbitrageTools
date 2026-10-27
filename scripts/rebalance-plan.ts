@@ -50,8 +50,10 @@ async function main(): Promise<void> {
   }));
   const plan = planRebalance(positions, targets, { minTransferAmount, costBps });
   const unhedged = repository.openUnhedgedInventory();
+  const longInventory = unhedged.filter((row) => String(row.direction ?? 'long') === 'long');
+  const shortInventory = unhedged.filter((row) => String(row.direction ?? 'long') === 'short');
   const hedgePlans = planLongInventoryHedges(
-    unhedged.map((row) => ({
+    longInventory.map((row) => ({
       venueId: String(row.venue_id),
       asset: String(row.asset),
       amount: new Decimal(String(row.amount)),
@@ -87,6 +89,13 @@ async function main(): Promise<void> {
     })),
     totalEstimatedCost: plan.totalEstimatedCost.toFixed(),
     unhedgedRows: unhedged.length,
+    inventoryShortfalls: shortInventory.map((row) => ({
+      venueId: String(row.venue_id),
+      asset: String(row.asset),
+      amount: new Decimal(String(row.amount)).toFixed(),
+      usdValue: new Decimal(String(row.usd_value)).toFixed(),
+      reason: String(row.reason),
+    })),
     hedgeOrders: hedgePlans.map((hedge) => ({
       venueId: hedge.venueId,
       asset: hedge.asset,

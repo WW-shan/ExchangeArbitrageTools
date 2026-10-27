@@ -69,6 +69,8 @@ liquidity_top_levels = 5
 live_enabled = false
 kill_switch = true
 manual_confirmation = true
+# serial or parallel_fok; low-liquidity scans do not enable either live path.
+leg_mode = 'serial'
 max_open_batches = 1
 daily_max_loss_usd = '5'
 handoff_max_age_ms = 15000

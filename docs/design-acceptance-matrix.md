@@ -68,10 +68,12 @@ does not mean the system is live-ready.
 | S1-12 | Build a shared low-volume universe and report depth-walk capacity.             | `buildLongTailUniverse`; `analyzeS1Capacity`; low-liquidity tests; real scan | [x]    |
 | S1-13 | Bound the reported capacity by actual sell-venue inventory and buy-venue cash. | Requires private balance API/key; current curve is market-depth only         | [~]    |
 | S1-14 | Measure whether a spread persists long enough to be actionable.                | `spread-tracking.ts`; `track-spread.ts`; tracker tests; TBK smoke            | [x]    |
+| S1-15 | Offer an explicit concurrent-FOK mode with fail-closed inventory handling.     | `leg_mode=parallel_fok`; coordinator concurrency/partial/unknown tests       | [x]    |
 | S1-E1 | Real API keys with no withdrawal permission and encrypted storage.             | requires user credentials and secret-store setup                             | [!]    |
 | S1-E2 | 24-hour read-only soak with all configured venues healthy.                     | requires time and live public endpoints                                      | [!]    |
 | S1-E3 | 10 manually confirmed live batches with 80% full reconciliation.               | requires real capital, operator, and opportunities                           | [!]    |
 | S1-E4 | Stage 3-4 automation limits and daily profit criteria.                         | requires live execution history                                              | [!]    |
+| S1-E5 | Verify real Gate/Hotcoin FOK semantics before enabling parallel mode.          | requires private API orders and reconciliation evidence                      | [!]    |
 
 ## S2: Intra-CEX triangular arbitrage
 
@@ -149,17 +151,18 @@ Internal items below require code plus automated evidence. External items requir
 credentials, live quotes, time, capital, or operator action. The percentages are not a
 claim of live readiness.
 
-| Goal          | Internal evidence | External evidence | Overall accounting                                   |
-| ------------- | ----------------- | ----------------- | ---------------------------------------------------- |
-| S1 CEX-CEX    | 11/11 (100%)      | 0/4               | 11/15 (73.3%); all live gates remain                 |
-| S2 Triangular | 7/7 (100%)        | 0/0               | 7/7 (100%); paper/read-only scope only               |
-| S3 CEX-DEX    | 11/11 (100%)      | 0/4               | 11/15 (73.3%); real BSC data and live batches remain |
-| S4 DEX-DEX    | 6/6 (100%)        | 0/1               | 6/7 (85.7%); real provider validation remains        |
-| Total         | 35/35 (100%)      | 0/9               | 35/44 (79.5%)                                        |
+| Goal          | Internal evidence | External evidence | Overall accounting                                        |
+| ------------- | ----------------- | ----------------- | --------------------------------------------------------- |
+| S1 CEX-CEX    | 14/15 (93.3%)     | 0/5               | 14/20 (70.0%); balance-aware sizing and live gates remain |
+| S2 Triangular | 7/7 (100%)        | 0/0               | 7/7 (100%); paper/read-only scope only                    |
+| S3 CEX-DEX    | 11/11 (100%)      | 0/4               | 11/15 (73.3%); real BSC data and live batches remain      |
+| S4 DEX-DEX    | 6/6 (100%)        | 0/1               | 6/7 (85.7%); real provider validation remains             |
+| Total         | 38/39 (97.4%)     | 0/10              | 38/49 (77.6%)                                             |
 
-The important distinction is: all 35 internal design items now have code plus automated
-evidence. None of the 9 external/live items has been executed, so no strategy is accepted
-against the live rollout plan yet.
+The important distinction is: 38 of 39 internal design items have code plus automated
+evidence. S1-13 remains partial because executable capacity is not yet bounded by private
+venue balances. None of the 10 external/live items has been executed, so no strategy is
+accepted against the live rollout plan yet.
 
 ## Remaining blockers and next checkpoints
 

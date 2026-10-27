@@ -174,6 +174,7 @@ export interface UnhedgedInventoryRecord {
   asset: string;
   amount: Decimal;
   usdValue: Decimal;
+  direction?: 'long' | 'short';
   reason: string;
   createdAt?: number;
 }
@@ -862,11 +863,16 @@ export class ArbitrageRepository {
   recordUnhedgedInventory(input: UnhedgedInventoryRecord): number {
     if (!input.amount.gt(0)) throw new Error('unhedged inventory amount must be positive');
     if (input.usdValue.lt(0)) throw new Error('unhedged inventory value cannot be negative');
+    const direction = input.direction ?? 'long';
+    if (direction !== 'long' && direction !== 'short') {
+      throw new Error('unhedged inventory direction must be long or short');
+    }
     const result = this.db
       .prepare(
         `INSERT INTO unhedged_inventory(
-          execution_id, batch_id, venue_id, asset, amount, usd_value, reason, status, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, 'open', ?)`,
+          execution_id, batch_id, venue_id, asset, amount, usd_value, direction, reason, status,
+          created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'open', ?)`,
       )
       .run(
         input.executionId,
@@ -875,6 +881,7 @@ export class ArbitrageRepository {
         input.asset.toUpperCase(),
         input.amount.toFixed(),
         input.usdValue.toFixed(),
+        direction,
         input.reason,
         input.createdAt ?? Date.now(),
       ) as { lastInsertRowid: number | bigint };
