@@ -1,5 +1,6 @@
 ﻿import { describe, expect, it } from 'vitest';
 import ccxt from 'ccxt';
+import { Decimal } from 'decimal.js';
 import {
   classifyCcxtFailure,
   createCcxtAdapter,
@@ -44,6 +45,7 @@ describe('CCXT adapter construction', () => {
     expect(normalizeCurrencyNetwork('BSC')).toBe('BSC');
     expect(normalizeCurrencyNetwork('BEP20')).toBe('BSC');
     expect(normalizeCurrencyNetwork('BNB Smart Chain (BEP20)')).toBe('BSC');
+    expect(normalizeCurrencyNetwork('BNB Smart Chain')).toBe('BSC');
     expect(normalizeCurrencyNetwork('ERC20')).toBe('ERC20');
   });
 
@@ -104,6 +106,127 @@ describe('CCXT adapter construction', () => {
       transient: false,
       rateLimited: false,
     });
+  });
+});
+
+describe('ccxt transfer adapter', () => {
+  const keys = { apiKey: 'key', secret: 'secret' };
+
+  it('normalizes deposit addresses, deposits, withdrawals and submissions', async () => {
+    const prototype = (ccxt.gate as unknown as { prototype: Record<string, unknown> }).prototype;
+    const originalAddress = prototype.fetchDepositAddress;
+    const originalDeposits = prototype.fetchDeposits;
+    const originalWithdrawals = prototype.fetchWithdrawals;
+    const originalWithdraw = prototype.withdraw;
+    let withdrawParams: unknown;
+    prototype.fetchDepositAddress = async () => ({
+      address: '0xAbC0000000000000000000000000000000000001',
+      network: 'BSC',
+      tag: '',
+    });
+    prototype.fetchDeposits = async () => [
+      {
+        id: 'd1',
+        currency: 'INC',
+        network: 'BSC',
+        address: '0xabc',
+        amount: '10',
+        status: 'ok',
+        txid: '0xdeposit',
+        timestamp: 1_700_000_000_000,
+        fee: { cost: '0.1' },
+      },
+    ];
+    prototype.fetchWithdrawals = async () => [
+      {
+        id: 'w1',
+        currency: 'INC',
+        network: 'BSC',
+        address: '0xabc',
+        amount: '10',
+        status: 'pending',
+        timestamp: 1_700_000_000_000,
+      },
+    ];
+    prototype.withdraw = async (
+      _code: string,
+      _amount: number,
+      _address: string,
+      params: unknown,
+    ) => {
+      withdrawParams = params;
+      return {
+        id: 'w2',
+        currency: 'INC',
+        network: 'BSC',
+        address: '0xabc',
+        amount: '10',
+        status: 'pending',
+      };
+    };
+    try {
+      const adapter = createCcxtAdapter('gateio', createPublicRuntime(1), {
+        credentials: keys,
+        readOnly: false,
+      });
+      expect(adapter.capabilities.depositAddress).toBe(true);
+      expect(adapter.capabilities.depositHistory).toBe(true);
+      expect(adapter.capabilities.withdrawalHistory).toBe(true);
+      expect(adapter.capabilities.createWithdrawal).toBe(true);
+
+      const address = await adapter.fetchDepositAddress!('INC', 'BEP20', keys);
+      expect(address.network).toBe('BSC');
+      expect(address.address).toBe('0xAbC0000000000000000000000000000000000001');
+
+      const deposits = await adapter.fetchDeposits!({ currency: 'INC', network: 'BSC' }, keys);
+      expect(deposits[0]).toMatchObject({
+        id: 'd1',
+        direction: 'deposit',
+        status: 'completed',
+        txId: '0xdeposit',
+      });
+      expect(deposits[0]?.fee?.toFixed()).toBe('0.1');
+
+      const withdrawals = await adapter.fetchWithdrawals!({ currency: 'INC', id: 'w1' }, keys);
+      expect(withdrawals[0]).toMatchObject({ direction: 'withdrawal', status: 'pending' });
+
+      const submission = await adapter.createWithdrawal!(
+        {
+          currency: 'INC',
+          network: 'BSC',
+          amount: new Decimal('10'),
+          address: '0xabc',
+        },
+        keys,
+      );
+      expect(submission.id).toBe('w2');
+      expect(withdrawParams).toMatchObject({ network: 'BSC' });
+    } finally {
+      prototype.fetchDepositAddress = originalAddress;
+      prototype.fetchDeposits = originalDeposits;
+      prototype.fetchWithdrawals = originalWithdrawals;
+      prototype.withdraw = originalWithdraw;
+    }
+  });
+
+  it('does not expose withdrawal on a read-only adapter', async () => {
+    const adapter = createCcxtAdapter('gateio', createPublicRuntime(1), {
+      credentials: keys,
+      readOnly: true,
+    });
+    expect(adapter.capabilities.depositAddress).toBe(true);
+    expect(adapter.capabilities.createWithdrawal).toBe(false);
+    await expect(
+      adapter.createWithdrawal!(
+        {
+          currency: 'INC',
+          network: 'BSC',
+          amount: new Decimal('10'),
+          address: '0xabc',
+        },
+        keys,
+      ),
+    ).rejects.toThrow(/not enabled/);
   });
 });
 

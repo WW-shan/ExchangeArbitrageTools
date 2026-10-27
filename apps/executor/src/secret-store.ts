@@ -3,12 +3,12 @@ import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import type { ApiCredentials } from '@arb/venues-cex';
 
-export type CredentialRole = 'read_only' | 'trade';
+export type CredentialRole = 'read_only' | 'trade' | 'withdrawal';
 
 export interface StoredCredential extends ApiCredentials {
   venueId: string;
   role: CredentialRole;
-  withdrawalPermission: false;
+  withdrawalPermission: boolean;
   ipWhitelistVerified?: boolean;
 }
 
@@ -65,18 +65,31 @@ function validateCredential(record: StoredCredential): void {
   if (!record.apiKey.trim() || !record.secret.trim()) {
     throw new Error(`credential for ${record.venueId} is incomplete`);
   }
-  if (record.role !== 'read_only' && record.role !== 'trade') {
+  if (record.role !== 'read_only' && record.role !== 'trade' && record.role !== 'withdrawal') {
     throw new Error(`credential for ${record.venueId} has an invalid role`);
   }
-  if (record.withdrawalPermission !== false) {
-    throw new Error(`credential for ${record.venueId} must declare withdrawalPermission=false`);
+  if (record.role === 'withdrawal') {
+    if (record.withdrawalPermission !== true) {
+      throw new Error(
+        `withdrawal credential for ${record.venueId} must declare withdrawalPermission=true`,
+      );
+    }
+    if (record.ipWhitelistVerified !== true) {
+      throw new Error(
+        `withdrawal credential for ${record.venueId} requires ipWhitelistVerified=true`,
+      );
+    }
+  } else if (record.withdrawalPermission !== false) {
+    throw new Error(
+      `${record.role} credential for ${record.venueId} must declare withdrawalPermission=false`,
+    );
   }
 }
 
 function validateRecords(records: StoredCredential[]): StoredCredential[] {
   if (records.length === 0) throw new Error('at least one credential is required');
   const seen = new Set<string>();
-  return records.map((record) => {
+  const validated = records.map((record) => {
     validateCredential(record);
     const venueId = record.venueId.trim();
     const key = credentialKey({ venueId, role: record.role });
@@ -86,9 +99,25 @@ function validateRecords(records: StoredCredential[]): StoredCredential[] {
       ...record,
       venueId,
       role: record.role,
-      withdrawalPermission: false,
+      withdrawalPermission: record.role === 'withdrawal',
     };
   });
+
+  const keysByVenue = new Map<string, StoredCredential[]>();
+  for (const record of validated) {
+    const key = `${record.venueId}\u0000${record.apiKey}`;
+    const existing = keysByVenue.get(key) ?? [];
+    existing.push(record);
+    keysByVenue.set(key, existing);
+  }
+  for (const owners of keysByVenue.values()) {
+    if (owners.length < 2) continue;
+    if (owners.some((record) => record.role === 'withdrawal')) {
+      const venueId = owners[0]!.venueId;
+      throw new Error(`withdrawal credential for ${venueId} must use a different API key`);
+    }
+  }
+  return validated;
 }
 
 function deriveKey(

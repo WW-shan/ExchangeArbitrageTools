@@ -17,12 +17,25 @@ import type {
   ApiCredentials,
   BalanceSnapshot,
   CexAdapter,
+  DepositAddress,
   OrderQuery,
   OrderRequest,
   OrderState,
+  TransferQuery,
+  TransferRecord,
+  TransferStatus,
   VenueCapabilities,
+  WithdrawalRequest,
+  WithdrawalSubmission,
 } from './types.js';
 import { VENUE_CATALOG, venueDefinition, type VenueMarketType } from './catalog.js';
+import {
+  networksMatch,
+  normalizeAddressTag,
+  normalizeCurrencyNetwork,
+} from './transfer-network.js';
+
+export { normalizeCurrencyNetwork };
 
 type ExchangeConstructor = new (config?: Record<string, unknown>) => Exchange;
 
@@ -78,6 +91,71 @@ function decimalOrUndefined(value: unknown): Decimal | undefined {
   } catch {
     return undefined;
   }
+}
+
+function stringOrUndefined(value: unknown): string | undefined {
+  if (typeof value === 'string' && value.trim() !== '') return value.trim();
+  if (typeof value === 'number' && Number.isFinite(value)) return String(value);
+  return undefined;
+}
+
+export function normalizeTransferStatus(value: unknown): TransferStatus {
+  const status = String(value ?? '')
+    .trim()
+    .toLowerCase();
+  if (['ok', 'completed', 'complete', 'success', 'done'].includes(status)) return 'completed';
+  if (['pending', 'new', 'open', 'waiting'].includes(status)) return 'pending';
+  if (['processing', 'inprogress', 'confirming', 'confirmations'].includes(status)) {
+    return 'processing';
+  }
+  if (['canceled', 'cancelled', 'revoked'].includes(status)) return 'canceled';
+  if (['failed', 'failure', 'rejected', 'invalid'].includes(status)) return 'failed';
+  return 'unknown';
+}
+
+function normalizeCcxtTransfer(
+  venueId: string,
+  direction: 'deposit' | 'withdrawal',
+  transaction: Record<string, unknown>,
+): TransferRecord {
+  const id = stringOrUndefined(transaction.id) ?? '';
+  const currency = (stringOrUndefined(transaction.currency) ?? '').toUpperCase();
+  const network = stringOrUndefined(transaction.network);
+  const address = stringOrUndefined(transaction.address);
+  const tag =
+    stringOrUndefined(transaction.tag) ?? stringOrUndefined(transaction.memo) ?? undefined;
+  const txId = stringOrUndefined(transaction.txid);
+  const feeRecord =
+    transaction.fee && typeof transaction.fee === 'object' && !Array.isArray(transaction.fee)
+      ? (transaction.fee as Record<string, unknown>)
+      : undefined;
+  const amount = decimalOrUndefined(transaction.amount) ?? ZERO;
+  const fee = decimalOrUndefined(feeRecord?.cost);
+  const createdAt = normalizeExchangeTimestamp(numberOrUndefined(transaction.timestamp));
+  const updatedAt = normalizeExchangeTimestamp(numberOrUndefined(transaction.updated));
+  return {
+    venueId,
+    id,
+    direction,
+    currency,
+    amount,
+    status: normalizeTransferStatus(transaction.status),
+    ...(network ? { network } : {}),
+    ...(address ? { address } : {}),
+    ...(tag ? { tag: normalizeAddressTag(tag) } : {}),
+    ...(txId ? { txId } : {}),
+    ...(fee !== undefined ? { fee } : {}),
+    ...(createdAt !== undefined ? { createdAt } : {}),
+    ...(updatedAt !== undefined ? { updatedAt } : {}),
+    raw: transaction,
+  };
+}
+
+function transferMatchesQuery(record: TransferRecord, query: TransferQuery): boolean {
+  if (query.id && record.id !== query.id) return false;
+  if (query.txId && record.txId !== query.txId) return false;
+  if (query.network && !networksMatch(record.network, query.network)) return false;
+  return true;
 }
 
 export function normalizeExchangeTimestamp(value: number | undefined): number | undefined {
@@ -169,18 +247,6 @@ export function stepFromCcxt(precision: unknown): Decimal | undefined {
     return value;
   }
   return undefined;
-}
-
-export function normalizeCurrencyNetwork(network: string): string {
-  const normalized = network.toUpperCase().replace(/[^A-Z0-9]/g, '');
-  if (
-    normalized.includes('BSC') ||
-    normalized.includes('BEP20') ||
-    normalized.includes('BNBSMARTCHAIN')
-  ) {
-    return 'BSC';
-  }
-  return network;
 }
 
 function precisionDigits(value: unknown, fallback = 8): number {
@@ -343,6 +409,14 @@ export class CcxtCexAdapter implements CexAdapter {
       createOrder: !readOnly && Boolean(options.credentials),
       fetchOrder: !readOnly && Boolean(options.credentials),
       cancelOrder: !readOnly && Boolean(options.credentials),
+      depositAddress:
+        Boolean(options.credentials) && typeof this.#exchange.fetchDepositAddress === 'function',
+      depositHistory:
+        Boolean(options.credentials) && typeof this.#exchange.fetchDeposits === 'function',
+      withdrawalHistory:
+        Boolean(options.credentials) && typeof this.#exchange.fetchWithdrawals === 'function',
+      createWithdrawal:
+        !readOnly && Boolean(options.credentials) && typeof this.#exchange.withdraw === 'function',
       websocket: Boolean(proExchangeRegistry()[proExchangeId(options.exchangeId)]),
       ioc: options.supportsIoc ?? false,
       fok: options.supportsFok ?? false,
@@ -640,6 +714,125 @@ export class CcxtCexAdapter implements CexAdapter {
         fetchedAt,
       };
     });
+  }
+
+  async fetchDepositAddress(
+    currency: string,
+    network: string,
+    keys: ApiCredentials,
+  ): Promise<DepositAddress> {
+    if (!this.capabilities.depositAddress) {
+      throw new Error(`${this.venueId} deposit-address API is not available`);
+    }
+    this.setCredentials(keys);
+    const response = await this.call(
+      true,
+      () => this.#exchange.fetchDepositAddress(currency, { network }),
+      'execution',
+    );
+    const record = response as unknown as Record<string, unknown>;
+    const address = stringOrUndefined(record.address);
+    if (!address) throw new Error(`${this.venueId} deposit address response is missing address`);
+    const returnedNetwork = stringOrUndefined(record.network) ?? network;
+    if (!networksMatch(returnedNetwork, network)) {
+      throw new Error(
+        `${this.venueId} deposit address network mismatch: ${returnedNetwork} != ${network}`,
+      );
+    }
+    const tag = stringOrUndefined(record.tag);
+    return {
+      venueId: this.venueId,
+      currency: currency.toUpperCase(),
+      network: returnedNetwork,
+      address,
+      ...(tag ? { tag } : {}),
+      fetchedAt: Date.now(),
+      raw: response,
+    };
+  }
+
+  async fetchDeposits(query: TransferQuery, keys: ApiCredentials): Promise<TransferRecord[]> {
+    if (!this.capabilities.depositHistory) {
+      throw new Error(`${this.venueId} deposit-history API is not available`);
+    }
+    this.setCredentials(keys);
+    const rows = await this.call(
+      true,
+      () => this.#exchange.fetchDeposits(query.currency, query.since, query.limit),
+      'execution',
+    );
+    return rows
+      .map((row) =>
+        normalizeCcxtTransfer(this.venueId, 'deposit', row as unknown as Record<string, unknown>),
+      )
+      .filter((record) => transferMatchesQuery(record, query));
+  }
+
+  async fetchWithdrawals(query: TransferQuery, keys: ApiCredentials): Promise<TransferRecord[]> {
+    if (!this.capabilities.withdrawalHistory) {
+      throw new Error(`${this.venueId} withdrawal-history API is not available`);
+    }
+    this.setCredentials(keys);
+    const rows = await this.call(
+      true,
+      () => this.#exchange.fetchWithdrawals(query.currency, query.since, query.limit),
+      'execution',
+    );
+    return rows
+      .map((row) =>
+        normalizeCcxtTransfer(
+          this.venueId,
+          'withdrawal',
+          row as unknown as Record<string, unknown>,
+        ),
+      )
+      .filter((record) => transferMatchesQuery(record, query));
+  }
+
+  async createWithdrawal(
+    request: WithdrawalRequest,
+    keys: ApiCredentials,
+  ): Promise<WithdrawalSubmission> {
+    if (!this.capabilities.createWithdrawal) {
+      throw new Error(`${this.venueId} withdrawal API is not enabled for this adapter`);
+    }
+    this.setCredentials(keys);
+    const tag = normalizeAddressTag(request.tag);
+    const params: Record<string, unknown> = {
+      network: request.network,
+      ...(tag ? { tag } : {}),
+    };
+    const response = await this.call(
+      true,
+      () =>
+        this.#exchange.withdraw(
+          request.currency,
+          request.amount.toFixed() as unknown as number,
+          request.address,
+          params,
+        ),
+      'execution',
+    );
+    const record = normalizeCcxtTransfer(
+      this.venueId,
+      'withdrawal',
+      response as unknown as Record<string, unknown>,
+    );
+    return {
+      venueId: this.venueId,
+      ...(record.id ? { id: record.id } : {}),
+      currency: record.currency || request.currency.toUpperCase(),
+      network: record.network ?? request.network,
+      address: record.address ?? request.address,
+      ...(record.tag ? { tag: record.tag } : {}),
+      amount: record.amount.gt(0) ? record.amount : request.amount,
+      status: record.status,
+      ...(record.fee !== undefined ? { fee: record.fee } : {}),
+      ...(record.txId ? { txId: record.txId } : {}),
+      ...(record.createdAt !== undefined ? { createdAt: record.createdAt } : {}),
+      ...(record.updatedAt !== undefined ? { updatedAt: record.updatedAt } : {}),
+      raw: record.raw,
+    };
   }
 
   async createOrder(request: OrderRequest, keys: ApiCredentials): Promise<OrderState> {

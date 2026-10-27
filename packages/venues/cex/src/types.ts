@@ -22,9 +22,79 @@ export interface VenueCapabilities {
   createOrder: boolean;
   fetchOrder: boolean;
   cancelOrder: boolean;
+  depositAddress?: boolean;
+  depositHistory?: boolean;
+  withdrawalHistory?: boolean;
+  createWithdrawal?: boolean;
   websocket: boolean;
   ioc: boolean;
   fok: boolean;
+}
+
+export type TransferDirection = 'deposit' | 'withdrawal';
+
+export type TransferStatus =
+  'pending' | 'processing' | 'completed' | 'failed' | 'canceled' | 'unknown';
+
+export interface DepositAddress {
+  venueId: string;
+  currency: string;
+  network: string;
+  address: string;
+  tag?: string;
+  fetchedAt: number;
+  raw: unknown;
+}
+
+export interface TransferQuery {
+  currency: string;
+  network?: string;
+  id?: string;
+  txId?: string;
+  since?: number;
+  limit?: number;
+}
+
+export interface TransferRecord {
+  venueId: string;
+  id: string;
+  direction: TransferDirection;
+  currency: string;
+  network?: string;
+  address?: string;
+  tag?: string;
+  amount: Decimal;
+  fee?: Decimal;
+  txId?: string;
+  status: TransferStatus;
+  createdAt?: number;
+  updatedAt?: number;
+  raw: unknown;
+}
+
+export interface WithdrawalRequest {
+  currency: string;
+  network: string;
+  amount: Decimal;
+  address: string;
+  tag?: string;
+  remark?: string;
+}
+
+export interface WithdrawalSubmission {
+  venueId: string;
+  id?: string;
+  currency: string;
+  network?: string;
+  address?: string;
+  tag?: string;
+  amount: Decimal;
+  fee?: Decimal;
+  txId?: string;
+  status: TransferStatus;
+  createdAt?: number;
+  updatedAt?: number;
+  raw: unknown;
 }
 
 export interface OrderRequest {
@@ -85,6 +155,17 @@ export interface CexAdapter {
   ): Promise<void>;
   fetchCurrencies?(): Promise<CurrencyMetadata[]>;
   fetchBalances?(keys: ApiCredentials): Promise<BalanceSnapshot[]>;
+  fetchDepositAddress?(
+    currency: string,
+    network: string,
+    keys: ApiCredentials,
+  ): Promise<DepositAddress>;
+  fetchDeposits?(query: TransferQuery, keys: ApiCredentials): Promise<TransferRecord[]>;
+  fetchWithdrawals?(query: TransferQuery, keys: ApiCredentials): Promise<TransferRecord[]>;
+  createWithdrawal?(
+    request: WithdrawalRequest,
+    keys: ApiCredentials,
+  ): Promise<WithdrawalSubmission>;
   createOrder?(request: OrderRequest, keys: ApiCredentials): Promise<OrderState>;
   fetchOrder?(request: OrderQuery, keys: ApiCredentials): Promise<OrderState>;
   cancelOrder?(request: OrderQuery, keys: ApiCredentials): Promise<OrderState>;

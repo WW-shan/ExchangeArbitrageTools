@@ -127,7 +127,7 @@ createWithdrawal(request, keys): Promise<WithdrawalSubmission>
 Capabilities expose these independently:
 
 ```ts
-depositAddress, depositHistory, withdrawalHistory, createWithdrawal
+(depositAddress, depositHistory, withdrawalHistory, createWithdrawal);
 ```
 
 Read-only and trade adapters must report `createWithdrawal=false`, even when
@@ -271,18 +271,18 @@ After all legs are `ARRIVED`, the batch is `COMPLETED`.
 
 ## 8. Failure handling
 
-| Failure | Batch | Leg | Action |
-| --- | --- | --- | --- |
-| allowlist missing or changed | BLOCKED | BLOCKED | no withdrawal |
-| destination address mismatch | BLOCKED | BLOCKED | no withdrawal |
-| insufficient source balance | BLOCKED before first leg; SAFE_STOP after one leg | BLOCKED/UNKNOWN | no further withdrawal |
-| withdrawal request throws | SAFE_STOP | UNKNOWN | reconcile only; no retry |
-| withdrawal response has no id | SAFE_STOP | UNKNOWN | query history by amount/address/time; no retry |
-| source reports failed/canceled | SAFE_STOP | WITHDRAW_FAILED | no further withdrawal |
-| source completed but no tx id | SAFE_STOP | WAITING_DEPOSIT | manual reconciliation |
-| destination deposit not found by timeout | SAFE_STOP | DEPOSIT_TIMEOUT | query only; no retry |
-| destination deposit failed | SAFE_STOP | DEPOSIT_FAILED | manual reconciliation |
-| daily cap or in-flight cap reached | BLOCKED | BLOCKED | no withdrawal |
+| Failure                                  | Batch                                             | Leg             | Action                                         |
+| ---------------------------------------- | ------------------------------------------------- | --------------- | ---------------------------------------------- |
+| allowlist missing or changed             | BLOCKED                                           | BLOCKED         | no withdrawal                                  |
+| destination address mismatch             | BLOCKED                                           | BLOCKED         | no withdrawal                                  |
+| insufficient source balance              | BLOCKED before first leg; SAFE_STOP after one leg | BLOCKED/UNKNOWN | no further withdrawal                          |
+| withdrawal request throws                | SAFE_STOP                                         | UNKNOWN         | reconcile only; no retry                       |
+| withdrawal response has no id            | SAFE_STOP                                         | UNKNOWN         | query history by amount/address/time; no retry |
+| source reports failed/canceled           | SAFE_STOP                                         | WITHDRAW_FAILED | no further withdrawal                          |
+| source completed but no tx id            | SAFE_STOP                                         | WAITING_DEPOSIT | manual reconciliation                          |
+| destination deposit not found by timeout | SAFE_STOP                                         | DEPOSIT_TIMEOUT | query only; no retry                           |
+| destination deposit failed               | SAFE_STOP                                         | DEPOSIT_FAILED  | manual reconciliation                          |
+| daily cap or in-flight cap reached       | BLOCKED                                           | BLOCKED         | no withdrawal                                  |
 
 All failures are written to `risk_events` and `audit_logs`.
 
@@ -338,28 +338,28 @@ withdrawal_timeout_ms = 900000
 deposit_timeout_ms = 1800000
 
 [[transfers.allowlist]]
-from_venue = gateio
-to_venue = hotcoin
-asset = INC
-network = BSC
-address = 0x...
-address_tag = "
-min_amount = 15
-max_amount = 200
-daily_max_amount = 400
-withdraw_fee = 1
+from_venue = "gateio"
+to_venue = "hotcoin"
+asset = "INC"
+network = "BSC"
+address = "0x..."
+address_tag = ""
+min_amount = "15"
+max_amount = "200"
+daily_max_amount = "400"
+withdraw_fee = "1"
 
 [[transfers.allowlist]]
-from_venue = hotcoin
-to_venue = gateio
-asset = USDT
-network = BSC
-address = 0x...
-address_tag = "
-min_amount = 10
-max_amount = 200
-daily_max_amount = 400
-withdraw_fee = 1
+from_venue = "hotcoin"
+to_venue = "gateio"
+asset = "USDT"
+network = "BSC"
+address = "0x..."
+address_tag = ""
+min_amount = "10"
+max_amount = "200"
+daily_max_amount = "400"
+withdraw_fee = "1"
 ```
 
 `withdraw_fee` is a conservative reserve used to confirm that the source free
@@ -368,22 +368,22 @@ before live use.
 
 ## 11. Acceptance criteria
 
-| ID | Requirement | Test / evidence |
-| --- | --- | --- |
-| T-1 | All monetary amounts use Decimal | type review and transfer tests |
-| T-2 | Trade/read-only keys cannot withdraw | secret-store tests |
-| T-3 | Withdrawal key must be separate and IP-whitelisted | secret-store tests |
-| T-4 | Destination address must match allowlist and live response | preflight tests |
-| T-5 | Network aliases match only when safe | network tests |
-| T-6 | Unknown withdrawal result becomes SAFE_STOP, never retried | transfer-service test |
-| T-7 | Second leg waits for first leg arrival | two-leg test |
-| T-8 | Source completion alone is insufficient | arrival test |
-| T-9 | Batch and leg states are persisted atomically | repository tests |
-| T-10 | Daily and per-transfer caps are enforced | preflight test |
-| T-11 | Gate methods are normalized from CCXT transactions | CCXT adapter tests |
-| T-12 | Hotcoin methods sign and parse official payloads | Hotcoin adapter tests |
-| T-13 | `enabled=false`, `kill_switch=true`, manual confirmation remain defaults | config tests |
-| T-14 | Dry-run/preflight performs no withdrawal call | transfer-service test |
+| ID   | Requirement                                                              | Test / evidence                |
+| ---- | ------------------------------------------------------------------------ | ------------------------------ |
+| T-1  | All monetary amounts use Decimal                                         | type review and transfer tests |
+| T-2  | Trade/read-only keys cannot withdraw                                     | secret-store tests             |
+| T-3  | Withdrawal key must be separate and IP-whitelisted                       | secret-store tests             |
+| T-4  | Destination address must match allowlist and live response               | preflight tests                |
+| T-5  | Network aliases match only when safe                                     | network tests                  |
+| T-6  | Unknown withdrawal result becomes SAFE_STOP, never retried               | transfer-service test          |
+| T-7  | Second leg waits for first leg arrival                                   | two-leg test                   |
+| T-8  | Source completion alone is insufficient                                  | arrival test                   |
+| T-9  | Batch and leg states are persisted atomically                            | repository tests               |
+| T-10 | Daily and per-transfer caps are enforced                                 | preflight test                 |
+| T-11 | Gate methods are normalized from CCXT transactions                       | CCXT adapter tests             |
+| T-12 | Hotcoin methods sign and parse official payloads                         | Hotcoin adapter tests          |
+| T-13 | `enabled=false`, `kill_switch=true`, manual confirmation remain defaults | config tests                   |
+| T-14 | Dry-run/preflight performs no withdrawal call                            | transfer-service test          |
 
 ## 12. Live rollout
 

@@ -565,3 +565,167 @@ class FakeSocket {
     for (const listener of this.#listeners.get(event) ?? []) listener(...args);
   }
 }
+
+describe('Hotcoin transfer adapter', () => {
+  it('matches deposit addresses by chain and normalizes history statuses', async () => {
+    const { client, requests } = clientWith((request) => {
+      if (request.url.includes('/v1/asset/deposit/address')) {
+        return {
+          code: 200,
+          msg: 'succeed',
+          time: now,
+          data: [
+            {
+              chain: 'BSC',
+              address: '0xAbC0000000000000000000000000000000000001',
+              addressTag: '',
+              selected: true,
+            },
+          ],
+        };
+      }
+      if (request.url.includes('/v1/asset/deposit/history')) {
+        return {
+          code: 200,
+          msg: 'succeed',
+          time: now,
+          data: [
+            {
+              id: 1,
+              currency: 'INC',
+              chain: 'BSC',
+              address: '0xabc',
+              txId: '0xdeposit',
+              amount: '12.5',
+              createdAt: now,
+              updatedAt: now,
+              status: 'Completed',
+            },
+          ],
+        };
+      }
+      if (request.url.includes('/v1/asset/withdrawal/history')) {
+        return {
+          code: 200,
+          msg: 'succeed',
+          time: now,
+          data: [
+            {
+              id: 2,
+              currency: 'INC',
+              chain: 'BSC',
+              address: '0xabc',
+              txId: '0xwithdraw',
+              amount: '10',
+              fee: '1',
+              createdAt: now,
+              updatedAt: now,
+              status: '3-completed',
+            },
+            {
+              id: 3,
+              currency: 'INC',
+              chain: 'BSC',
+              address: '0xabc',
+              amount: '10',
+              createdAt: now,
+              updatedAt: now,
+              status: '4-revoked',
+            },
+          ],
+        };
+      }
+      throw new Error(`unexpected URL ${request.url}`);
+    });
+    const adapter = new HotcoinAdapter({
+      httpClient: client,
+      credentials: keys,
+      readOnly: false,
+      clock: () => now,
+    });
+
+    const address = await adapter.fetchDepositAddress('INC', 'BEP20', keys);
+    expect(address.network).toBe('BSC');
+    expect(address.address).toBe('0xAbC0000000000000000000000000000000000001');
+
+    const deposits = await adapter.fetchDeposits({ currency: 'INC', network: 'BSC' }, keys);
+    expect(deposits[0]).toMatchObject({
+      id: '1',
+      direction: 'deposit',
+      status: 'completed',
+      txId: '0xdeposit',
+    });
+
+    const withdrawals = await adapter.fetchWithdrawals({ currency: 'INC' }, keys);
+    expect(withdrawals.map((row) => row.status)).toEqual(['completed', 'canceled']);
+    expect(withdrawals[0]?.fee?.toFixed()).toBe('1');
+    const passphraseHeader = 'XH-PASSPHRASE';
+    expect(requests.every((request) => request.headers[passphraseHeader] === 'passphrase')).toBe(
+      true,
+    );
+  });
+
+  it('submits a signed withdrawal with the Hotcoin fields and passphrase', async () => {
+    const { client, requests } = clientWith((request) => {
+      if (request.url.includes('/v1/asset/withdrawal/apply')) {
+        return { code: 200, msg: 'succeed', time: now, data: 12345 };
+      }
+      throw new Error(`unexpected URL ${request.url}`);
+    });
+    const adapter = new HotcoinAdapter({
+      httpClient: client,
+      credentials: keys,
+      readOnly: false,
+      clock: () => now,
+    });
+    const result = await adapter.createWithdrawal(
+      {
+        currency: 'INC',
+        network: 'BSC',
+        amount: new Decimal('20'),
+        address: '0xabc',
+        tag: '',
+        remark: 'batch-1',
+      },
+      keys,
+    );
+    expect(result.id).toBe('12345');
+    expect(result.status).toBe('pending');
+    const request = requests[0]!;
+    expect(request.method).toBe('POST');
+    expect(request.headers['XH-PASSPHRASE']).toBe('passphrase');
+    expect(decodeURIComponent(request.url)).toContain('chain=BSC');
+    expect(decodeURIComponent(request.url)).toContain('transferMode=1');
+    expect(decodeURIComponent(request.url)).toContain('addressType=0');
+    expect(decodeURIComponent(request.url)).toContain('amount=20');
+    expect(decodeURIComponent(request.url)).toContain('remark=batch-1');
+  });
+
+  it('fails closed when no deposit address matches the requested network or on read-only withdrawal', async () => {
+    const { client } = clientWith(() => ({
+      code: 200,
+      msg: 'succeed',
+      time: now,
+      data: [{ chain: 'TRC20', address: 'T...', selected: true }],
+    }));
+    const adapter = new HotcoinReadOnlyAdapter({
+      httpClient: client,
+      credentials: keys,
+      clock: () => now,
+    });
+    await expect(adapter.fetchDepositAddress('INC', 'BSC', keys)).rejects.toThrow(
+      /no deposit address/,
+    );
+    await expect(
+      adapter.createWithdrawal(
+        {
+          currency: 'INC',
+          network: 'BSC',
+          amount: new Decimal('20'),
+          address: '0xabc',
+        },
+        keys,
+      ),
+    ).rejects.toThrow(/read-only/);
+  });
+});

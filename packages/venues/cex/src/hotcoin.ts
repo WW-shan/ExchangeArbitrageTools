@@ -18,11 +18,18 @@ import type {
   ApiCredentials,
   BalanceSnapshot,
   CexAdapter,
+  DepositAddress,
   OrderQuery,
   OrderRequest,
   OrderState,
+  TransferQuery,
+  TransferRecord,
+  TransferStatus,
   VenueCapabilities,
+  WithdrawalRequest,
+  WithdrawalSubmission,
 } from './types.js';
+import { networksMatch, normalizeAddressTag } from './transfer-network.js';
 
 interface HotcoinSymbol {
   baseCurrency: string;
@@ -342,6 +349,79 @@ function normalizeOrder(row: Record<string, unknown>, fallbackSymbol?: string): 
   };
 }
 
+function normalizeHotcoinTransferStatus(
+  direction: 'deposit' | 'withdrawal',
+  value: unknown,
+): TransferStatus {
+  const text = String(value ?? '')
+    .trim()
+    .toLowerCase();
+  if (!text) return 'unknown';
+  if (text.startsWith('0') || text.includes('confirm')) return 'pending';
+  if (text.startsWith('3') || text.includes('completed') || text.includes('success')) {
+    return 'completed';
+  }
+  if (text.startsWith('4') && direction === 'withdrawal') return 'canceled';
+  if (text.includes('revok') || text.includes('cancel')) return 'canceled';
+  if (
+    text.startsWith('4') ||
+    text.startsWith('5') ||
+    text.startsWith('7') ||
+    text.startsWith('8') ||
+    text.includes('fail') ||
+    text.includes('reject') ||
+    text.includes('risk')
+  ) {
+    return 'failed';
+  }
+  if (text.startsWith('1') || text.includes('pending')) return 'pending';
+  if (text.startsWith('2') || text.startsWith('5') || text.includes('processing')) {
+    return 'processing';
+  }
+  if (text.startsWith('6') || text.includes('remit')) return 'processing';
+  return 'unknown';
+}
+
+function normalizeHotcoinTransfer(
+  venueId: string,
+  direction: 'deposit' | 'withdrawal',
+  row: Record<string, unknown>,
+): TransferRecord {
+  const id = firstString(row, ['id', 'recordId', 'withdrawId']) ?? '';
+  const currency = (firstString(row, ['currency', 'coin', 'symbol']) ?? '').toUpperCase();
+  const network = firstString(row, ['chain', 'network']);
+  const address = firstString(row, ['address']);
+  const tag = firstString(row, ['addressTag', 'tag', 'memo']);
+  const txId = firstString(row, ['txId', 'txid', 'transactionId']);
+  const amount = firstDecimal(row, ['amount', 'quantity']) ?? ZERO;
+  const fee = firstDecimal(row, ['fee', 'fees']);
+  const createdAt = numberOrUndefined(row.createdAt ?? row.createTime ?? row.timestamp);
+  const updatedAt = numberOrUndefined(row.updatedAt ?? row.updateTime);
+  return {
+    venueId,
+    id,
+    direction,
+    currency,
+    amount,
+    status: normalizeHotcoinTransferStatus(direction, row.status),
+    ...(network ? { network } : {}),
+    ...(address ? { address } : {}),
+    ...(tag ? { tag: normalizeAddressTag(tag) } : {}),
+    ...(txId ? { txId } : {}),
+    ...(fee !== undefined ? { fee } : {}),
+    ...(createdAt !== undefined ? { createdAt } : {}),
+    ...(updatedAt !== undefined ? { updatedAt } : {}),
+    raw: row,
+  };
+}
+
+function hotcoinTransferMatches(record: TransferRecord, query: TransferQuery): boolean {
+  if (query.id && record.id !== query.id) return false;
+  if (query.txId && record.txId !== query.txId) return false;
+  if (query.network && !networksMatch(record.network, query.network)) return false;
+  return true;
+}
+
 function asRecords(value: unknown): Record<string, unknown>[] {
   if (Array.isArray(value)) {
     return value
@@ -423,6 +503,10 @@ export class HotcoinAdapter implements CexAdapter {
       createOrder: Boolean(options.credentials) && !this.#readOnly,
       fetchOrder: Boolean(options.credentials) && !this.#readOnly,
       cancelOrder: Boolean(options.credentials) && !this.#readOnly,
+      depositAddress: Boolean(options.credentials),
+      depositHistory: Boolean(options.credentials),
+      withdrawalHistory: Boolean(options.credentials),
+      createWithdrawal: Boolean(options.credentials) && !this.#readOnly,
       websocket: true,
       ioc: options.supportsIoc ?? false,
       fok: options.supportsFok ?? false,
@@ -863,6 +947,120 @@ export class HotcoinAdapter implements CexAdapter {
         };
       })
       .filter((row): row is BalanceSnapshot => Boolean(row));
+  }
+
+  async fetchDepositAddress(
+    currency: string,
+    network: string,
+    keys: ApiCredentials,
+  ): Promise<DepositAddress> {
+    if (!this.capabilities.depositAddress) {
+      throw new Error('Hotcoin adapter has no private credentials');
+    }
+    const result = await this.request<unknown>(
+      '/v1/asset/deposit/address',
+      { currency: currency.toUpperCase() },
+      keys,
+    );
+    const rows = asRecords(result.data);
+    const candidates = rows.filter((row) => {
+      const chain = firstString(row, ['chain', 'network']);
+      return chain ? networksMatch(chain, network) : false;
+    });
+    if (candidates.length === 0) {
+      throw new Error(`Hotcoin has no deposit address for ${currency} on ${network}`);
+    }
+    const selected = candidates.find((row) => row.selected === true) ?? candidates[0]!;
+    const address = firstString(selected, ['address']);
+    if (!address) throw new Error('Hotcoin deposit address response is missing address');
+    const chain = firstString(selected, ['chain', 'network']);
+    if (!chain) throw new Error('Hotcoin deposit address response is missing chain');
+    const tag = firstString(selected, ['addressTag', 'tag', 'memo']);
+    return {
+      venueId: this.venueId,
+      currency: currency.toUpperCase(),
+      network: chain,
+      address,
+      ...(tag ? { tag: normalizeAddressTag(tag) } : {}),
+      fetchedAt: this.#clock(),
+      raw: selected,
+    };
+  }
+
+  async fetchDeposits(query: TransferQuery, keys: ApiCredentials): Promise<TransferRecord[]> {
+    if (!this.capabilities.depositHistory) {
+      throw new Error('Hotcoin adapter has no private credentials');
+    }
+    const result = await this.request<unknown>(
+      '/v1/asset/deposit/history',
+      {
+        currency: query.currency.toUpperCase(),
+        pageNum: 1,
+        limit: query.limit ?? 100,
+        direct: 'prev',
+      },
+      keys,
+    );
+    return asRecords(result.data)
+      .map((row) => normalizeHotcoinTransfer(this.venueId, 'deposit', row))
+      .filter((record) => hotcoinTransferMatches(record, query));
+  }
+
+  async fetchWithdrawals(query: TransferQuery, keys: ApiCredentials): Promise<TransferRecord[]> {
+    if (!this.capabilities.withdrawalHistory) {
+      throw new Error('Hotcoin adapter has no private credentials');
+    }
+    const result = await this.request<unknown>(
+      '/v1/asset/withdrawal/history',
+      {
+        currency: query.currency.toUpperCase(),
+        pageNum: 1,
+        limit: query.limit ?? 100,
+        direct: 'prev',
+      },
+      keys,
+    );
+    return asRecords(result.data)
+      .map((row) => normalizeHotcoinTransfer(this.venueId, 'withdrawal', row))
+      .filter((record) => hotcoinTransferMatches(record, query));
+  }
+
+  async createWithdrawal(
+    request: WithdrawalRequest,
+    keys: ApiCredentials,
+  ): Promise<WithdrawalSubmission> {
+    if (!this.capabilities.createWithdrawal) {
+      throw new Error('Hotcoin adapter is read-only or missing withdrawal credentials');
+    }
+    if (!request.amount.gt(0)) throw new Error('Hotcoin withdrawal amount must be positive');
+    if (!request.address.trim()) throw new Error('Hotcoin withdrawal address is required');
+    const tag = normalizeAddressTag(request.tag);
+    const params: Record<string, string | number | boolean | undefined> = {
+      currency: request.currency.toUpperCase(),
+      ...(request.network ? { chain: request.network } : {}),
+      transferMode: 1,
+      address: request.address.trim(),
+      addressType: 0,
+      amount: request.amount.toFixed(),
+      ...(tag ? { addressTag: tag } : {}),
+      ...(request.remark ? { remark: request.remark } : {}),
+    };
+    const result = await this.request<unknown>('/v1/asset/withdrawal/apply', params, keys, 'POST');
+    const row = recordOrUndefined(result.data);
+    const id = row
+      ? firstString(row, ['id', 'recordId', 'withdrawId'])
+      : stringOrUndefined(result.data);
+    return {
+      venueId: this.venueId,
+      ...(id ? { id } : {}),
+      currency: request.currency.toUpperCase(),
+      ...(request.network ? { network: request.network } : {}),
+      address: request.address.trim(),
+      ...(tag ? { tag } : {}),
+      amount: request.amount,
+      status: 'pending',
+      raw: result.data,
+    };
   }
 
   async createOrder(request: OrderRequest, keys: ApiCredentials): Promise<OrderState> {
