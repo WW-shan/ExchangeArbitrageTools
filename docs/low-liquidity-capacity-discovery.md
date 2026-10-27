@@ -78,21 +78,42 @@ Gate 低流动性币的 REST 订单簿时间戳偶尔会落后 10 到 30 秒。I
 容量不是“盘口看起来有多少”，而是按真实可见档位逐档吃单后的结果。
 所有金额使用 Decimal，不使用二进制浮点。
 
-| 字段                    | 定义                                                                                           |
-| ----------------------- | ---------------------------------------------------------------------------------------------- |
-| topGrossBps             | 买一价到卖一价的毛边，不扣费                                                                   |
-| feeBreakEvenBps         | 买腿 taker + 卖腿 taker，覆盖手续费所需的最低毛边                                              |
-| eligibleThresholdBps    | 手续费 + safety_buffer + min_net_profit，达到配置门槛的近似毛边                                |
-| maxFeeBreakEvenNotional | 可见深度内，扣手续费后仍大于 0 的最大下单名义额                                                |
-| maxProfitableNotional   | 扣手续费和 safety buffer 后仍大于 0 的最大名义额                                               |
-| maxEligibleNotional     | 再满足 min_net_profit_bps 的最大名义额，最接近“可执行”                                         |
-| depthExhaustionNotional | 买腿 ask 和卖腿 bid 可见深度都还够的最大名义额                                                 |
-| bindingReason           | 最后卡住容量的是 fee_floor、profit_threshold、spread_decay、depth、notional_cap、stale_book 等 |
-| classification          | clean、review、near_miss、rejected、no_edge                                                    |
+| 字段                    | 定义                                                                                                    |
+| ----------------------- | ------------------------------------------------------------------------------------------------------- |
+| topGrossBps             | 买一价到卖一价的毛边，不扣费                                                                            |
+| feeBreakEvenBps         | 买腿 taker + 卖腿 taker，覆盖手续费所需的最低毛边                                                       |
+| eligibleThresholdBps    | 手续费 + safety_buffer + min_net_profit，达到配置门槛的近似毛边                                         |
+| maxFeeBreakEvenNotional | 可见深度内，扣手续费后仍大于 0 的最大下单名义额                                                         |
+| maxProfitableNotional   | 扣手续费和 safety buffer 后仍大于 0 的最大名义额                                                        |
+| maxEligibleNotional     | 再满足 min_net_profit_bps 的最大名义额，最接近“可执行”                                                  |
+| maxBalanceNotional      | 由买腿 quote 余额和卖腿 base 库存计算出的余额上限                                                       |
+| balanceBinding          | 余额上限由 buy_quote、sell_base 还是两者共同卡住                                                        |
+| balanceInputsComplete   | 是否同时拿到了买腿 quote 和卖腿 base 余额                                                               |
+| depthExhaustionNotional | 买腿 ask 和卖腿 bid 可见深度都还够的最大名义额                                                          |
+| bindingReason           | 最后卡住容量的是 fee_floor、profit_threshold、spread_decay、depth、balance、notional_cap、stale_book 等 |
+| classification          | clean、review、near_miss、rejected、no_edge                                                             |
 
 容量搜索以 0.5 USDT 为粗步长，再在边界上做 12 次二分细化，因此
 maxFeeBreakEvenNotional 和 maxEligibleNotional 的精度约为 0.001 USDT。
 所有点都会重新走 S1 的深度、精度、最小额、手续费和 safety buffer 规则。
+
+### 4.1 余额感知容量
+
+实际可下单名义额现在取四者的最小值：
+
+```text
+min(配置上限, 可见深度上限, 买腿 quote 余额上限, 卖腿 base 库存上限)
+```
+
+- 买腿 quote 上限 = `free_quote / (1.01 * (1 + buy_taker_rate))`。`1.01` 与执行器
+  预检的 1% 缓冲一致，避免扫描说能做、预检却因余额不足失败。
+- 卖腿 base 上限 = `free_base(按 marketExchangeBase 读取) × baseMultiplier × 买一 ask`。
+  用买一 ask 是保守下限：更深的 ask 只会消耗更多 quote，不会让同样 quote 买得更多 base。
+- `balanceInputsComplete=false` 表示至少缺一边余额，结果不是完整可执行容量。
+- `--require-balances` 或 `require_balances_for_s1=true` 时，缺余额的路线会带
+  `balance_missing` 并被归为 rejected；余额为 0 会带 `balance_zero`。
+- 没有余额数据时仍可做只读发现，但路线会带 `balance_incomplete`，不能把
+  `maxEligibleNotional` 当成真实可下单量。
 
 ## 5. 使用方法
 
@@ -108,6 +129,13 @@ npm run scan:longtail -- --max-bases 200 --max-book-candidates 0 --top 20 --deta
 
 # 只验证几个已知候选，方便重复确认
 npm run scan:longtail:test
+
+# 先从加密凭证库刷新 read_only 余额到 data/longtail.sqlite
+# 需要 ARB_SECRET_STORE_KEY 和 gateio/hotcoin 的 read_only 凭证
+npm run executor:balances
+
+# 严格模式：缺任一边余额就把路线判为 rejected
+npm run scan:longtail -- --bases INC,TBK,HTX --require-balances --out data/longtail-balanced.json
 
 # 换费率场景；0/2/5/10/20 表示每腿 taker bps
 npm run scan:longtail -- --bases TBK,INC,HTX --fee-scenarios 0,2,5,10,20 --out data/longtail-review.json
@@ -168,6 +196,18 @@ TBK 的 Gate 买一约 0.24183，Hotcoin 卖一约 0.25058。按 10 bps/腿：
 INC 的容量比 TBK 小，但对 5 到 20 USDT 的小额批次已经很够用。
 它也会出现 Gate 快照 stale 的轮次；stale 轮次不应下单。
 
+### 6.4 余额感知接入后的复核
+
+2026-10-27 21:36 HKT 用当前公共盘口重跑 INC/TBK：
+
+- INC `gateio -> hotcoin`：毛边约 34.47 bps，`maxEligibleNotional` 约 34.51 USDT，
+  bindingReason 为 `spread_decay`。
+- TBK 两个方向分别约为 -374 bps 和 -452 bps，已经没有可执行边。
+- 当前没有私有余额，因此两个方向都标记 `balance_incomplete`；
+  `maxBalanceNotional` 为空，不能把 34.51 USDT 当成最终可下单量。
+
+这再次说明价差窗口会消失，而且“盘口容量”和“账户真实可做容量”必须分开看。
+
 ## 7. 这些机会真实存在的前提
 
 ### 7.1 不是无库存原子套利
@@ -214,8 +254,8 @@ maxEligible 为空，虽然毛边仍有约 34 bps。
 
 1. 真实账户费率：当前 10 bps/腿是占位值，必须用 Gate 账户页面和
    Hotcoin 账户页面确认。
-2. 余额感知容量：现在只算市场深度，没有把 Hotcoin 的 TBK 库存和
-   Gate 的 USDT 余额纳入 maxEligibleNotional。
+2. 真实私有余额：余额感知逻辑和 stored-balance 接入已完成，但没有真实 key，
+   还没有用 Gate/Hotcoin 账户余额验证过 `maxBalanceNotional`。
 3. WebSocket 持续确认：本次是 REST 快照加三次独立复核；TBK 在约 10 分钟后
    已经反转，说明必须对候选建立 WS 订阅和持续性统计。
 4. 充提状态和代币合约核验：尚未接入逐币种充提、网络和合约地址检查。
@@ -226,7 +266,8 @@ maxEligible 为空，虽然毛边仍有约 34 bps。
 优先级从高到低：
 
 1. 用真实费率重跑本扫描，确认 TBK/INC/HTX 在真实费率下还剩多少。
-2. 增加 balance-aware capacity：把卖腿库存和买腿 USDT 作为硬上限。
+2. 用 `executor:balances` 刷新真实只读余额，再用 `--require-balances` 重跑，
+   确认每条路线的 `maxEligibleNotional` 确实不超过真实可做量。
 3. 对 clean/review 候选做 10 到 30 分钟 WS 持续采样，记录出现次数、
    持续时间、最大容量和消失速度。
 4. 增加充提状态、网络、合约地址和 token 风险检查。

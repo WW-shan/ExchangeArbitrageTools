@@ -66,7 +66,7 @@ does not mean the system is live-ready.
 | S1-10 | Provide the production executor entry and scanner-to-executor handoff.         | `main.ts`, `handoff.ts`, `config.ts`; handoff/config tests; CLI smoke        | [x]    |
 | S1-11 | Expand the read-only universe with real tickers and expose near misses.        | Hotcoin `/v1/market/ticker`; `config/discovery.toml`; `topGrossRows`         | [x]    |
 | S1-12 | Build a shared low-volume universe and report depth-walk capacity.             | `buildLongTailUniverse`; `analyzeS1Capacity`; low-liquidity tests; real scan | [x]    |
-| S1-13 | Bound the reported capacity by actual sell-venue inventory and buy-venue cash. | Requires private balance API/key; current curve is market-depth only         | [~]    |
+| S1-13 | Bound the reported capacity by actual sell-venue inventory and buy-venue cash. | Capacity balance caps; stored-balance scan; capacity tests                   | [x]    |
 | S1-14 | Measure whether a spread persists long enough to be actionable.                | `spread-tracking.ts`; `track-spread.ts`; tracker tests; TBK smoke            | [x]    |
 | S1-15 | Offer an explicit concurrent-FOK mode with fail-closed inventory handling.     | `leg_mode=parallel_fok`; coordinator concurrency/partial/unknown tests       | [x]    |
 | S1-E1 | Real API keys with no withdrawal permission and encrypted storage.             | requires user credentials and secret-store setup                             | [!]    |
@@ -74,6 +74,7 @@ does not mean the system is live-ready.
 | S1-E3 | 10 manually confirmed live batches with 80% full reconciliation.               | requires real capital, operator, and opportunities                           | [!]    |
 | S1-E4 | Stage 3-4 automation limits and daily profit criteria.                         | requires live execution history                                              | [!]    |
 | S1-E5 | Verify real Gate/Hotcoin FOK semantics before enabling parallel mode.          | requires private API orders and reconciliation evidence                      | [!]    |
+| S1-E6 | Verify balance-aware capacity against real Gate/Hotcoin accounts.              | requires read_only credentials and refreshed balances                        | [!]    |
 
 ## S2: Intra-CEX triangular arbitrage
 
@@ -151,18 +152,18 @@ Internal items below require code plus automated evidence. External items requir
 credentials, live quotes, time, capital, or operator action. The percentages are not a
 claim of live readiness.
 
-| Goal          | Internal evidence | External evidence | Overall accounting                                        |
-| ------------- | ----------------- | ----------------- | --------------------------------------------------------- |
-| S1 CEX-CEX    | 14/15 (93.3%)     | 0/5               | 14/20 (70.0%); balance-aware sizing and live gates remain |
-| S2 Triangular | 7/7 (100%)        | 0/0               | 7/7 (100%); paper/read-only scope only                    |
-| S3 CEX-DEX    | 11/11 (100%)      | 0/4               | 11/15 (73.3%); real BSC data and live batches remain      |
-| S4 DEX-DEX    | 6/6 (100%)        | 0/1               | 6/7 (85.7%); real provider validation remains             |
-| Total         | 38/39 (97.4%)     | 0/10              | 38/49 (77.6%)                                             |
+| Goal          | Internal evidence | External evidence | Overall accounting                                   |
+| ------------- | ----------------- | ----------------- | ---------------------------------------------------- |
+| S1 CEX-CEX    | 15/15 (100%)      | 0/6               | 15/21 (71.4%); all live gates remain                 |
+| S2 Triangular | 7/7 (100%)        | 0/0               | 7/7 (100%); paper/read-only scope only               |
+| S3 CEX-DEX    | 11/11 (100%)      | 0/4               | 11/15 (73.3%); real BSC data and live batches remain |
+| S4 DEX-DEX    | 6/6 (100%)        | 0/1               | 6/7 (85.7%); real provider validation remains        |
+| Total         | 39/39 (100%)      | 0/11              | 39/50 (78.0%)                                        |
 
-The important distinction is: 38 of 39 internal design items have code plus automated
-evidence. S1-13 remains partial because executable capacity is not yet bounded by private
-venue balances. None of the 10 external/live items has been executed, so no strategy is
-accepted against the live rollout plan yet.
+The important distinction is: all 39 internal design items have code plus automated
+evidence. None of the 11 external/live items has been executed, so no strategy is accepted
+against the live rollout plan yet. Real balance values, real FOK behaviour, fees, and the
+24-hour soak remain external blockers.
 
 ## Remaining blockers and next checkpoints
 

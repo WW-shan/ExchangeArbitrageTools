@@ -1,6 +1,13 @@
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
-import { Decimal, type OrderBookSnapshot, type TickerSnapshot } from '@arb/core';
+import {
+  Decimal,
+  marketBaseMultiplier,
+  marketExchangeBase,
+  type OrderBookSnapshot,
+  type TickerSnapshot,
+} from '@arb/core';
+import { ArbitrageRepository, openDatabase } from '@arb/storage';
 import {
   applyFeeOverride,
   createCexAdapter,
@@ -100,6 +107,8 @@ const CRITICAL_FLAGS = new Set([
   'one_sided_book',
   'no_depth',
   'min_notional_above_cap',
+  'balance_missing',
+  'balance_zero',
 ]);
 
 function routeClassification(
@@ -123,6 +132,19 @@ function routeVolumes(candidate: LongTailCandidate | undefined): Record<string, 
   const result: Record<string, string> = {};
   for (const venue of candidate.venues) result[venue.venueId] = venue.quoteVolume24h.toFixed(2);
   return result;
+}
+
+function freeBalance(
+  balances: ReadonlyArray<{ venueId: string; currency: string; free: Decimal }>,
+  venueId: string,
+  currency: string,
+): Decimal | undefined {
+  const target = currency.trim().toUpperCase();
+  const rows = balances.filter(
+    (balance) => balance.venueId === venueId && balance.currency.trim().toUpperCase() === target,
+  );
+  if (rows.length === 0) return undefined;
+  return rows.reduce((total, balance) => total.plus(balance.free), new Decimal(0));
 }
 
 async function main(): Promise<void> {
@@ -149,6 +171,12 @@ async function main(): Promise<void> {
   const probes = decimalList('--probes', '1,2,5,10,15,20,30,50,100');
   const scenarioBps = decimalList('--fee-scenarios', '0,2,5,10,20');
   const maxTickerAgeMs = Math.max(1000, Number(arg('--max-ticker-age-ms', '900000')));
+  const balanceMaxAgeMs = Math.max(
+    0,
+    Number(arg('--balance-max-age-ms', String(config.scanner.balanceMaxAgeMs))),
+  );
+  const requireBalances =
+    process.argv.includes('--require-balances') || config.scanner.requireBalancesForS1;
   const output = resolve(arg('--out', 'data/longtail-scan.json'));
   const topCount = Math.max(1, Number(arg('--top', '20')));
   const detailCount = Math.max(0, Number(arg('--detail', '5')));
@@ -169,6 +197,26 @@ async function main(): Promise<void> {
   const marketCounts: Record<string, number> = {};
   const tickerCounts: Record<string, number> = {};
   const loadErrors: Record<string, string> = {};
+  let balanceRepository: ArbitrageRepository | undefined;
+  let balances: ReturnType<ArbitrageRepository['latestBalances']> = [];
+  try {
+    if (existsSync(config.database.path)) {
+      balanceRepository = new ArbitrageRepository(openDatabase(config.database.path));
+      balances = balanceRepository.latestBalances({
+        maxAgeMs: balanceMaxAgeMs,
+        now: Date.now(),
+      });
+    }
+  } catch (error) {
+    loadErrors.balances = String(error);
+  }
+  if (requireBalances && balances.length === 0) {
+    balanceRepository?.close();
+    throw new Error(
+      'fresh stored balances are required; run npm run executor:balances with ARB_CONFIG=' +
+        configPath,
+    );
+  }
   try {
     for (const venueId of venues) {
       const runtime = createPublicRuntime(rps);
@@ -220,6 +268,9 @@ async function main(): Promise<void> {
         loadErrors,
         minVolume: minVolume.toFixed(),
         maxVolume: maxVolume.toFixed(),
+        balanceRows: balances.length,
+        requireBalances,
+        balanceMaxAgeMs,
         candidates: candidates.length,
         bookCandidates: bookCandidates.length,
         bases: bases.size > 0 ? [...bases] : null,
@@ -247,6 +298,12 @@ async function main(): Promise<void> {
           const scenarios: CapacityFeeScenario[] = [
             { label: 'actual', buyTakerBps: actualBuyFee, sellTakerBps: actualSellFee },
           ];
+          const buyQuoteFree = freeBalance(balances, buy.venueId, candidate.quote);
+          const sellBaseFree = freeBalance(
+            balances,
+            sell.venueId,
+            marketExchangeBase(sell.market),
+          )?.mul(marketBaseMultiplier(sell.market));
           const seen = new Set<string>([actualBuyFee.toFixed() + '|' + actualSellFee.toFixed()]);
           for (const fee of scenarioBps) {
             const key = fee.toFixed() + '|' + fee.toFixed();
@@ -272,7 +329,15 @@ async function main(): Promise<void> {
             maxNotional,
             step,
             probes,
+            ...(buyQuoteFree !== undefined ? { buyQuoteFree } : {}),
+            ...(sellBaseFree !== undefined ? { sellBaseFree } : {}),
           });
+          if (requireBalances && (buyQuoteFree === undefined || sellBaseFree === undefined)) {
+            route.flags.push('balance_missing');
+          }
+          if (buyQuoteFree?.lte(0) || sellBaseFree?.lte(0)) {
+            route.flags.push('balance_zero');
+          }
           routes.push(route);
           routeVolumesByKey[routeKey(candidate.base, candidate.quote, buy.venueId, sell.venueId)] =
             routeVolumes(candidate);
@@ -380,6 +445,8 @@ async function main(): Promise<void> {
           'maxFeeBE=' + fmt(actual.maxFeeBreakEvenNotional),
           'maxProfit=' + fmt(actual.maxProfitableNotional),
           'maxEligible=' + fmt(actual.maxEligibleNotional),
+          'maxBalance=' + fmt(actual.maxBalanceNotional),
+          'balBinding=' + (actual.balanceBinding ?? '-'),
           'bestNet=' + fmt(actual.bestNetBps),
           'binding=' + actual.bindingReason,
           'flags=' + route.flags.join('|'),
@@ -431,6 +498,9 @@ async function main(): Promise<void> {
         step: step.toFixed(),
         probes: probes.map((probe) => probe.toFixed()),
         feeScenarios: scenarioBps.map((fee) => fee.toFixed()),
+        balanceRows: balances.length,
+        requireBalances,
+        balanceMaxAgeMs,
         depth,
       },
       marketCounts,
@@ -470,6 +540,7 @@ async function main(): Promise<void> {
     );
     console.log('wrote ' + output);
   } finally {
+    balanceRepository?.close();
     for (const adapter of adapters.values()) {
       try {
         await withTimeout(Promise.resolve(adapter.close?.()), 5000, 'close');

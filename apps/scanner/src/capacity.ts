@@ -67,6 +67,9 @@ export interface CapacityCurveSummary {
   maxFeeBreakEvenNotional?: Decimal;
   maxProfitableNotional?: Decimal;
   maxEligibleNotional?: Decimal;
+  maxBalanceNotional?: Decimal;
+  balanceBinding?: 'buy_quote' | 'sell_base' | 'both';
+  balanceInputsComplete: boolean;
   bestNetBps: Decimal;
   bestNetProfit: Decimal;
   bindingReason: string;
@@ -88,6 +91,8 @@ export interface CapacityAnalysisInput {
   maxNotional?: Decimal;
   step?: Decimal;
   probes?: readonly Decimal[];
+  buyQuoteFree?: Decimal;
+  sellBaseFree?: Decimal;
 }
 
 export interface CapacityRouteAnalysis {
@@ -101,6 +106,8 @@ export interface CapacityRouteAnalysis {
   buyBookAgeMs: number;
   sellBookAgeMs: number;
   pairSkewMs: number;
+  buyQuoteFree?: Decimal;
+  sellBaseFree?: Decimal;
   flags: string[];
   scenarios: CapacityCurveSummary[];
 }
@@ -158,6 +165,40 @@ function relaxedSettings(settings: CostSettings): CostSettings {
     maxPairSkewMs: 0,
     minReliabilityScore: new Decimal(0),
     minTopDepthQty: new Decimal(0),
+  };
+}
+
+function balanceCapacity(
+  input: CapacityAnalysisInput,
+  scenario: CapacityFeeScenario,
+): {
+  max?: Decimal;
+  binding?: 'buy_quote' | 'sell_base' | 'both';
+  complete: boolean;
+} {
+  const buyFree = input.buyQuoteFree;
+  const sellFree = input.sellBaseFree;
+  if (buyFree && (!buyFree.isFinite() || buyFree.lt(0))) {
+    throw new Error('buyQuoteFree must be finite and non-negative');
+  }
+  if (sellFree && (!sellFree.isFinite() || sellFree.lt(0))) {
+    throw new Error('sellBaseFree must be finite and non-negative');
+  }
+  const buyFeeRate = Decimal.max(0, scenario.buyTakerBps).div(10_000);
+  const buyCap =
+    buyFree === undefined ? undefined : buyFree.div(new Decimal('1.01').mul(buyFeeRate.plus(1)));
+  const topAsk = input.buyBook.asks[0]?.price;
+  const sellCap =
+    sellFree === undefined || !topAsk || !topAsk.gt(0) ? undefined : sellFree.mul(topAsk);
+  const caps = [buyCap, sellCap].filter((value): value is Decimal => value !== undefined);
+  if (caps.length === 0) return { complete: buyFree !== undefined && sellFree !== undefined };
+  const max = caps.reduce((lowest, value) => (value.lt(lowest) ? value : lowest));
+  const buyBinding = buyCap !== undefined && buyCap.eq(max);
+  const sellBinding = sellCap !== undefined && sellCap.eq(max);
+  return {
+    max,
+    binding: buyBinding && sellBinding ? 'both' : buyBinding ? 'buy_quote' : 'sell_base',
+    complete: buyFree !== undefined && sellFree !== undefined,
   };
 }
 
@@ -281,15 +322,14 @@ function searchValues(
   input: CapacityAnalysisInput,
   depth: DepthCapacity,
   step: Decimal,
+  cap: Decimal,
 ): Decimal[] {
   const values = new Map<string, Decimal>();
   const add = (value: Decimal): void => {
-    if (value.isFinite() && value.gt(0)) values.set(value.toFixed(), value);
+    if (value.isFinite() && value.gt(0) && value.lte(cap)) values.set(value.toFixed(), value);
   };
   for (const probe of input.probes ?? []) add(probe);
-  const maxNotional = input.maxNotional ?? new Decimal(100);
   const minNotional = input.minNotional ?? new Decimal('0.5');
-  const cap = Decimal.min(maxNotional, depth.buyNotional.gt(0) ? depth.buyNotional : maxNotional);
   if (minNotional.lte(cap)) {
     let current = minNotional;
     let count = 0;
@@ -301,7 +341,7 @@ function searchValues(
   }
   add(cap);
   add(depth.buyNotional);
-  add(maxNotional);
+  add(input.maxNotional ?? new Decimal(100));
   return [...values.values()].sort((left, right) => left.comparedTo(right));
 }
 
@@ -338,10 +378,13 @@ function selectedCurve(
   maxFee: Decimal | undefined,
   maxProfit: Decimal | undefined,
   maxEligible: Decimal | undefined,
+  cap: Decimal,
 ): CapacityPoint[] {
   const values = new Map<string, Decimal>();
   const add = (value: Decimal | undefined): void => {
-    if (value && value.isFinite() && value.gt(0)) values.set(value.toFixed(), value);
+    if (value && value.isFinite() && value.gt(0) && value.lte(cap)) {
+      values.set(value.toFixed(), value);
+    }
   };
   for (const probe of input.probes ?? []) add(probe);
   add(maxFee);
@@ -361,10 +404,24 @@ function bindingReason(
   maxProfit: Decimal | undefined,
   maxEligible: Decimal | undefined,
   firstPoint: CapacityPoint | undefined,
+  maxBalance: Decimal | undefined,
+  cap: Decimal,
 ): string {
   if (!top) return 'one_sided_book';
   if (depth.maxBaseAmount.lte(0)) return 'no_depth';
   if (firstPoint?.reasons.includes('stale_orderbook')) return 'stale_book';
+  const step = input.step ?? new Decimal('0.5');
+  if (maxBalance !== undefined && maxBalance.lt(input.minNotional ?? new Decimal('0.5'))) {
+    return 'balance';
+  }
+  const configuredMax = input.maxNotional ?? new Decimal(100);
+  const depthCap = depth.buyNotional.gt(0) ? depth.buyNotional : configuredMax;
+  const balanceCapped =
+    maxBalance !== undefined &&
+    cap.lt(configuredMax) &&
+    cap.lt(depthCap) &&
+    maxEligible !== undefined;
+  if (balanceCapped && maxEligible.gte(cap.minus(step))) return 'balance';
   if (!minExecutable) {
     if (depth.buyNotional.lte(input.minNotional ?? new Decimal('0.5'))) return 'depth';
     return 'min_notional';
@@ -372,13 +429,12 @@ function bindingReason(
   if (!maxFee) return 'fee_floor';
   if (!maxProfit) return 'profit_threshold';
   if (!maxEligible) return 'profit_threshold';
-  const cap = Decimal.min(
-    input.maxNotional ?? new Decimal(100),
-    depth.buyNotional.gt(0) ? depth.buyNotional : (input.maxNotional ?? new Decimal(100)),
-  );
-  const step = input.step ?? new Decimal('0.5');
   if (maxEligible.gte(cap.minus(step))) {
-    return cap.lt(input.maxNotional ?? new Decimal(100)) ? 'depth' : 'notional_cap';
+    return cap.lt(configuredMax)
+      ? maxBalance !== undefined && cap.eq(maxBalance)
+        ? 'balance'
+        : 'depth'
+      : 'notional_cap';
   }
   return 'spread_decay';
 }
@@ -458,6 +514,9 @@ function routeFlags(
   );
   if (buyMin.gt(maxNotional) || sellMin.gt(maxNotional)) flags.add('min_notional_above_cap');
   if (depth.buyNotional.lte(0)) flags.add('no_depth');
+  if (input.buyQuoteFree === undefined || input.sellBaseFree === undefined) {
+    flags.add('balance_incomplete');
+  }
   return [...flags];
 }
 
@@ -468,7 +527,13 @@ function analyzeScenario(
   top: Decimal | undefined,
 ): CapacityCurveSummary {
   const step = input.step ?? new Decimal('0.5');
-  const values = searchValues(input, depth, step);
+  const balance = balanceCapacity(input, scenario);
+  const configuredMax = input.maxNotional ?? new Decimal(100);
+  const depthCap = depth.buyNotional.gt(0) ? depth.buyNotional : configuredMax;
+  const cap = balance.max
+    ? Decimal.min(configuredMax, depthCap, balance.max)
+    : Decimal.min(configuredMax, depthCap);
+  const values = searchValues(input, depth, step, cap);
   const points = values.map((value) => evaluatePoint(input, scenario, value));
   const minExecutable = points.find((point) => point.executable)?.requestedNotional;
   const maxFee = refineMax(input, scenario, points, (point) => point.feeBreakEven);
@@ -492,6 +557,9 @@ function analyzeScenario(
     ...(maxFee ? { maxFeeBreakEvenNotional: maxFee } : {}),
     ...(maxProfit ? { maxProfitableNotional: maxProfit } : {}),
     ...(maxEligible ? { maxEligibleNotional: maxEligible } : {}),
+    ...(balance.max !== undefined ? { maxBalanceNotional: balance.max } : {}),
+    ...(balance.binding ? { balanceBinding: balance.binding } : {}),
+    balanceInputsComplete: balance.complete,
     bestNetBps: best?.netBps ?? ZERO,
     bestNetProfit: best?.netProfit ?? ZERO,
     bindingReason: bindingReason(
@@ -503,9 +571,11 @@ function analyzeScenario(
       maxProfit,
       maxEligible,
       points[0],
+      balance.max,
+      cap,
     ),
     searchStep: step,
-    curve: selectedCurve(input, scenario, maxFee, maxProfit, maxEligible),
+    curve: selectedCurve(input, scenario, maxFee, maxProfit, maxEligible, cap),
   };
 }
 
@@ -524,6 +594,8 @@ export function analyzeS1Capacity(input: CapacityAnalysisInput): CapacityRouteAn
     buyBookAgeMs: Math.max(0, input.now - bookReceivedAt(input.buyBook)),
     sellBookAgeMs: Math.max(0, input.now - bookReceivedAt(input.sellBook)),
     pairSkewMs: Math.abs(bookReceivedAt(input.buyBook) - bookReceivedAt(input.sellBook)),
+    ...(input.buyQuoteFree !== undefined ? { buyQuoteFree: input.buyQuoteFree } : {}),
+    ...(input.sellBaseFree !== undefined ? { sellBaseFree: input.sellBaseFree } : {}),
     flags: routeFlags(input, top, depth),
     scenarios,
   };

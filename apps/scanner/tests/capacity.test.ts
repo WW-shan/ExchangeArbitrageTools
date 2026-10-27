@@ -206,4 +206,78 @@ describe('S1 capacity analysis', () => {
     expect(actual.maxFeeBreakEvenNotional).toBeUndefined();
     expect(actual.bindingReason).toBe('depth');
   });
+
+  it('caps eligible notional by the buy-venue quote balance after fees', () => {
+    const result = analyzeS1Capacity({
+      base: 'TEST',
+      quote: 'USDT',
+      buyMarket: market('gateio', 'TEST/USDT'),
+      sellMarket: market('hotcoin', 'TEST/USDT'),
+      buyBook: book('gateio', 'TEST/USDT', [['0.99', '100']], [['1.00', '100']]),
+      sellBook: book('hotcoin', 'TEST/USDT', [['1.05', '100']], [['1.06', '100']]),
+      settings,
+      now,
+      scenarios: [scenario('10', '10')],
+      minNotional: new Decimal(1),
+      maxNotional: new Decimal(200),
+      step: new Decimal(1),
+      probes: [new Decimal(5), new Decimal(50), new Decimal(150)],
+      buyQuoteFree: new Decimal(50),
+      sellBaseFree: new Decimal(1000),
+    });
+    const actual = result.scenarios[0]!;
+    expect(actual.balanceInputsComplete).toBe(true);
+    expect(actual.maxBalanceNotional?.lte(50)).toBe(true);
+    expect(actual.maxEligibleNotional?.lte(50)).toBe(true);
+    expect(actual.balanceBinding).toBe('buy_quote');
+    expect(actual.bindingReason).toBe('balance');
+  });
+
+  it('caps eligible notional by sell-venue base inventory at the buy ask', () => {
+    const result = analyzeS1Capacity({
+      base: 'TEST',
+      quote: 'USDT',
+      buyMarket: market('gateio', 'TEST/USDT'),
+      sellMarket: market('hotcoin', 'TEST/USDT'),
+      buyBook: book('gateio', 'TEST/USDT', [['0.99', '100']], [['1.00', '100']]),
+      sellBook: book('hotcoin', 'TEST/USDT', [['1.05', '100']], [['1.06', '100']]),
+      settings,
+      now,
+      scenarios: [scenario('10', '10')],
+      minNotional: new Decimal(1),
+      maxNotional: new Decimal(200),
+      step: new Decimal(1),
+      probes: [new Decimal(5), new Decimal(30), new Decimal(150)],
+      buyQuoteFree: new Decimal(1000),
+      sellBaseFree: new Decimal(30),
+    });
+    const actual = result.scenarios[0]!;
+    expect(actual.maxBalanceNotional?.toFixed()).toBe('30');
+    expect(actual.maxEligibleNotional?.lte(30)).toBe(true);
+    expect(actual.balanceBinding).toBe('sell_base');
+    expect(actual.bindingReason).toBe('balance');
+  });
+
+  it('marks capacity as financially incomplete when one balance is missing', () => {
+    const result = analyzeS1Capacity({
+      base: 'TEST',
+      quote: 'USDT',
+      buyMarket: market('gateio', 'TEST/USDT'),
+      sellMarket: market('hotcoin', 'TEST/USDT'),
+      buyBook: book('gateio', 'TEST/USDT', [['0.99', '100']], [['1.00', '100']]),
+      sellBook: book('hotcoin', 'TEST/USDT', [['1.05', '100']], [['1.06', '100']]),
+      settings,
+      now,
+      scenarios: [scenario('10', '10')],
+      minNotional: new Decimal(1),
+      maxNotional: new Decimal(20),
+      step: new Decimal(1),
+      probes: [new Decimal(5)],
+      buyQuoteFree: new Decimal(10),
+    });
+    const actual = result.scenarios[0]!;
+    expect(actual.balanceInputsComplete).toBe(false);
+    expect(result.flags).toContain('balance_incomplete');
+    expect(actual.maxEligibleNotional?.lte(10)).toBe(true);
+  });
 });

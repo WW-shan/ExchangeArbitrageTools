@@ -109,8 +109,11 @@ Last verified: 2026-10-27 (Asia/Hong_Kong). The clause-by-clause audit is in
       no automatic convergence assumption or automatic flatten is used.
 - [x] Unhedged inventory records `direction=long|short`; `rebalance:plan` hedges only long
       inventory and reports short inventory separately.
-- [~] Capacity is not yet bounded by actual sell-venue inventory. A clean price curve can
-  still be untradable if the destination venue lacks the base asset.
+- [x] Capacity is bounded by stored buy-venue quote and sell-venue base balances when
+      available; missing or zero balances produce explicit flags and can fail closed with
+      `--require-balances`.
+- [~] Real private balances have not been fetched or reconciled, so the balance-aware
+  path has automated and stored-fixture evidence only.
 - [~] Low-volume candidates have been confirmed with repeated REST snapshots, but not yet
   with a sustained WebSocket subscription and persistence/lifetime statistics.
 - [~] Sell-first execution is not implemented. Real Gate/Hotcoin IOC/FOK behaviour still
