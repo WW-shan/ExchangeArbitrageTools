@@ -29,7 +29,7 @@ import type {
   WithdrawalRequest,
   WithdrawalSubmission,
 } from './types.js';
-import { networksMatch, normalizeAddressTag } from './transfer-network.js';
+import { networksMatch, normalizeAddressTag, transactionIdsMatch } from './transfer-network.js';
 
 interface HotcoinSymbol {
   baseCurrency: string;
@@ -417,7 +417,7 @@ function normalizeHotcoinTransfer(
 
 function hotcoinTransferMatches(record: TransferRecord, query: TransferQuery): boolean {
   if (query.id && record.id !== query.id) return false;
-  if (query.txId && record.txId !== query.txId) return false;
+  if (query.txId && !transactionIdsMatch(record.txId, query.txId)) return false;
   if (query.network && !networksMatch(record.network, query.network)) return false;
   return true;
 }

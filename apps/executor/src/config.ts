@@ -11,6 +11,7 @@ export interface TransferAllowlistEntry {
   network: string;
   address: string;
   addressTag?: string;
+  venueCurrency?: string;
   minAmount: Decimal;
   maxAmount: Decimal;
   dailyMaxAmount: Decimal;
@@ -165,6 +166,10 @@ function transferAllowlist(value: unknown): TransferAllowlistEntry[] {
       typeof row.address_tag === 'string' && row.address_tag.trim() !== ''
         ? row.address_tag.trim()
         : undefined;
+    const venueCurrency =
+      typeof row.venue_currency === 'string' && row.venue_currency.trim() !== ''
+        ? row.venue_currency.trim()
+        : undefined;
     if (fromVenue === toVenue) {
       throw new Error('transfers.allowlist from_venue and to_venue must differ');
     }
@@ -194,6 +199,7 @@ function transferAllowlist(value: unknown): TransferAllowlistEntry[] {
       network,
       address,
       ...(addressTag ? { addressTag } : {}),
+      ...(venueCurrency ? { venueCurrency } : {}),
       minAmount,
       maxAmount,
       dailyMaxAmount,

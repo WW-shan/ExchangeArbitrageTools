@@ -276,7 +276,17 @@ async function main(): Promise<void> {
       add(
         'secrets.store',
         'pass',
-        `${records.size} credentials loaded; withdrawalPermission=false`,
+        `${records.size} credentials loaded; non-withdrawal keys are withdrawal-disabled`,
+      );
+      const unsafeWithdrawalKeys = [...records.values()]
+        .filter((record) => record.role !== 'withdrawal' && record.withdrawalPermission !== false)
+        .map((record) => `${record.venueId}:${record.role}`);
+      add(
+        'secrets.withdrawal_isolation',
+        unsafeWithdrawalKeys.length === 0 ? 'pass' : 'block',
+        unsafeWithdrawalKeys.length === 0
+          ? 'read_only and trade keys cannot withdraw'
+          : `withdrawal enabled on non-withdrawal keys: ${unsafeWithdrawalKeys.join(',')}`,
       );
       const missingTrade = enabled.filter((venue) => !keys.has(`${venue}:trade`));
       add(
@@ -326,6 +336,50 @@ async function main(): Promise<void> {
           ? 'all trade keys marked ipWhitelistVerified'
           : `ip whitelist unverified: ${unverifiedIp.slice(0, 10).join(',')}`,
       );
+      if (executor?.transfers.enabled) {
+        const allowlist = executor.transfers.allowlist;
+        add(
+          'transfers.allowlist',
+          allowlist.length > 0 ? 'pass' : 'block',
+          allowlist.length > 0
+            ? `${allowlist.length} transfer allowlist entries configured`
+            : 'automated transfers enabled without an allowlist',
+        );
+        const routeVenues = new Set<string>();
+        const sourceVenues = new Set<string>();
+        for (const entry of allowlist) {
+          routeVenues.add(entry.fromVenue);
+          routeVenues.add(entry.toVenue);
+          sourceVenues.add(entry.fromVenue);
+        }
+        const missingRead = [...routeVenues]
+          .filter((venue) => !keys.has(`${venue}:read_only`) && !keys.has(`${venue}:trade`))
+          .sort();
+        const missingWithdrawal = [...sourceVenues]
+          .filter((venue) => !keys.has(`${venue}:withdrawal`))
+          .sort();
+        add(
+          'transfers.credentials',
+          missingRead.length === 0 && missingWithdrawal.length === 0 ? 'pass' : 'block',
+          missingRead.length === 0 && missingWithdrawal.length === 0
+            ? 'all transfer routes have read credentials and source withdrawal credentials'
+            : `missing read: ${missingRead.join(',') || 'none'}; missing withdrawal: ${
+                missingWithdrawal.join(',') || 'none'
+              }`,
+        );
+        const unverifiedWithdrawal = [...records.values()]
+          .filter((record) => record.role === 'withdrawal' && record.ipWhitelistVerified !== true)
+          .map((record) => record.venueId);
+        add(
+          'transfers.ip_whitelist',
+          unverifiedWithdrawal.length === 0 ? 'pass' : 'block',
+          unverifiedWithdrawal.length === 0
+            ? 'all withdrawal keys marked ipWhitelistVerified'
+            : `withdrawal keys without IP attestation: ${unverifiedWithdrawal.join(',')}`,
+        );
+      } else {
+        add('transfers.execution', 'pass', 'automated inventory transfers disabled');
+      }
     } catch (error) {
       add('secrets.store', 'block', `cannot load secret store: ${String(error)}`);
     }

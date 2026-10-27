@@ -4,6 +4,7 @@ import type { ArbitrageRepository, TransferBatchRecord, TransferLegRecord } from
 import {
   networksMatch,
   normalizeAddressTag,
+  transactionIdsMatch,
   transferAddressesMatch,
   type ApiCredentials,
   type CexAdapter,
@@ -746,7 +747,7 @@ async function settleLegOnce(input: {
   } catch (error) {
     return { status: leg.status, reasons: [`destination_history_failed:${errorMessage(error)}`] };
   }
-  const deposit = deposits.find((row) => row.txId === sourceRecord.txId);
+  const deposit = deposits.find((row) => transactionIdsMatch(row.txId, sourceRecord!.txId));
   if (!deposit) {
     repository.updateTransferLeg(batch.id, leg.legNumber, {
       status: TRANSFER_LEG_STATUS.WAITING_DEPOSIT,
@@ -807,12 +808,49 @@ async function settleLegOnce(input: {
       reasons: ['destination_deposit_network_mismatch'],
     };
   }
+  if (deposit.tag && normalizeAddressTag(deposit.tag) !== normalizeAddressTag(leg.addressTag)) {
+    repository.updateTransferLeg(batch.id, leg.legNumber, {
+      status: TRANSFER_LEG_STATUS.DEPOSIT_FAILED,
+      destinationRecordId: deposit.id,
+      destinationTxId: deposit.txId ?? null,
+      destinationObservedAt: now,
+      error: 'destination_deposit_tag_mismatch',
+      updatedAt: now,
+    });
+    return {
+      status: TRANSFER_LEG_STATUS.DEPOSIT_FAILED,
+      reasons: ['destination_deposit_tag_mismatch'],
+    };
+  }
+  if (!deposit.amount.gt(0)) {
+    repository.updateTransferLeg(batch.id, leg.legNumber, {
+      status: TRANSFER_LEG_STATUS.DEPOSIT_FAILED,
+      destinationRecordId: deposit.id,
+      destinationTxId: deposit.txId ?? null,
+      destinationObservedAt: now,
+      error: 'destination_deposit_amount_not_positive',
+      updatedAt: now,
+    });
+    return {
+      status: TRANSFER_LEG_STATUS.DEPOSIT_FAILED,
+      reasons: ['destination_deposit_amount_not_positive'],
+    };
+  }
   repository.updateTransferLeg(batch.id, leg.legNumber, {
     status: TRANSFER_LEG_STATUS.ARRIVED,
     destinationRecordId: deposit.id,
     destinationTxId: deposit.txId ?? null,
     destinationObservedAt: now,
     error: null,
+    metadata: {
+      ...metadataObject(leg.metadata),
+      arrival: {
+        amount: deposit.amount.toFixed(),
+        fee: deposit.fee?.toFixed() ?? null,
+        txId: deposit.txId ?? null,
+        recordId: deposit.id,
+      },
+    },
     updatedAt: now,
   });
   return { status: TRANSFER_LEG_STATUS.ARRIVED, reasons: [] };
@@ -1029,10 +1067,24 @@ export async function executeTransferBatch(
   let withdrawalsSubmitted = 0;
 
   for (const initialLeg of batch.legs) {
-    let leg = repository
-      .getTransferBatch(batchId)!
-      .legs.find((candidate) => candidate.legNumber === initialLeg.legNumber)!;
+    const currentBatch = repository.getTransferBatch(batchId)!;
+    let leg = currentBatch.legs.find((candidate) => candidate.legNumber === initialLeg.legNumber)!;
     if (leg.status === TRANSFER_LEG_STATUS.ARRIVED) continue;
+    if (leg.status === TRANSFER_LEG_STATUS.BLOCKED) {
+      const reason = `leg${leg.legNumber}_blocked:${leg.error ?? 'preflight blocked'}`;
+      repository.updateTransferBatch(batchId, {
+        status: TRANSFER_BATCH_STATUS.BLOCKED,
+        safeModeReason: reason,
+        updatedAt: now(),
+      });
+      return {
+        batchId,
+        status: TRANSFER_BATCH_STATUS.BLOCKED,
+        reasons: [reason],
+        withdrawalsSubmitted,
+        legs: executionLegs(repository.getTransferBatch(batchId)!),
+      };
+    }
     if (FINAL_LEG_FAILURES.has(leg.status)) {
       const reason = `leg${leg.legNumber}_already_${leg.status}`;
       markSafeStop(repository, batchId, reason, now());
@@ -1047,7 +1099,7 @@ export async function executeTransferBatch(
 
     const partialBatch =
       leg.requestedAt !== null ||
-      batch.legs.some(
+      currentBatch.legs.some(
         (candidate) =>
           candidate.requestedAt !== null || candidate.status === TRANSFER_LEG_STATUS.ARRIVED,
       );
@@ -1092,10 +1144,12 @@ export async function executeTransferBatch(
         updatedAt: now(),
       });
       const source = sourceAccess(venues, leg.fromVenue)!;
+      const allowlist = findAllowlistEntry(config, leg);
+      const withdrawalCurrency = allowlist?.venueCurrency ?? leg.asset;
       try {
         const submission = await source.adapter.createWithdrawal!(
           {
-            currency: leg.asset,
+            currency: withdrawalCurrency,
             network: leg.network,
             amount: leg.amount,
             address: leg.address,
@@ -1196,6 +1250,18 @@ export async function reconcileTransferBatch(
       legs: executionLegs(batch),
     };
   }
+  if (
+    batch.status === TRANSFER_BATCH_STATUS.BLOCKED ||
+    batch.status === TRANSFER_BATCH_STATUS.DRY_RUN
+  ) {
+    return {
+      batchId,
+      status: batch.status,
+      reasons: [batch.safeModeReason ?? `batch already ${batch.status}`],
+      withdrawalsSubmitted: 0,
+      legs: executionLegs(batch),
+    };
+  }
   const reasons: string[] = [];
   for (const leg of batch.legs) {
     if (leg.status === TRANSFER_LEG_STATUS.ARRIVED) continue;
@@ -1223,6 +1289,9 @@ export async function reconcileTransferBatch(
     current.legs.length > 0 &&
     current.legs.every((leg) => leg.status === TRANSFER_LEG_STATUS.ARRIVED);
   const failed = current.legs.some((leg) => FINAL_LEG_FAILURES.has(leg.status));
+  const failedReasons = current.legs
+    .filter((leg) => FINAL_LEG_FAILURES.has(leg.status))
+    .map((leg) => `leg${leg.legNumber}:${leg.status}:${leg.error ?? 'no_detail'}`);
   let status = current.status;
   if (allArrived) status = TRANSFER_BATCH_STATUS.COMPLETED;
   else if (failed) status = TRANSFER_BATCH_STATUS.SAFE_STOP;
@@ -1231,7 +1300,9 @@ export async function reconcileTransferBatch(
   }
   repository.updateTransferBatch(batchId, {
     status,
-    safeModeReason: failed ? reasons.join('; ') || current.safeModeReason : null,
+    safeModeReason: failed
+      ? reasons.join('; ') || failedReasons.join('; ') || current.safeModeReason
+      : null,
     updatedAt: now,
   });
   repository.recordAudit('system', 'transfer_reconciled', { batchId, status, reasons }, now);

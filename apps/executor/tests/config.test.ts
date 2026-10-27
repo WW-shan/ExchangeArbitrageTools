@@ -24,6 +24,18 @@ function configWithAppendix(appendix: string): string {
   return path;
 }
 
+function configWithLiveTransfers(appendix: string): string {
+  const directory = mkdtempSync(join(tmpdir(), 'arb-executor-config-'));
+  directories.push(directory);
+  const source = readFileSync(resolve('config/default.toml'), 'utf8')
+    .replace('[transfers]\nenabled = false', '[transfers]\nenabled = true')
+    .replace('live_enabled = false', 'live_enabled = true')
+    .replace('kill_switch = true', 'kill_switch = false');
+  const path = join(directory, 'config.toml');
+  writeFileSync(path, `${source}\n${appendix}\n`);
+  return path;
+}
+
 afterEach(() => {
   while (directories.length > 0) rmSync(directories.pop()!, { recursive: true, force: true });
 });
@@ -97,6 +109,7 @@ asset = 'inc'
 network = 'BEP20'
 address = '0xAbC0000000000000000000000000000000000001'
 address_tag = ''
+venue_currency = 'INC(BSC)'
 min_amount = '15'
 max_amount = '200'
 daily_max_amount = '400'
@@ -110,6 +123,7 @@ withdraw_fee = '1'
       asset: 'INC',
       network: 'BEP20',
       address: '0xAbC0000000000000000000000000000000000001',
+      venueCurrency: 'INC(BSC)',
     });
     expect(config.transfers.allowlist[0]?.maxAmount.toFixed()).toBe('200');
   });
@@ -145,5 +159,26 @@ daily_max_amount = '20'
     expect(() =>
       loadExecutorConfig(configWith(['max_legs_per_batch = 2', 'max_legs_per_batch = 3']), {}),
     ).toThrow('max_legs_per_batch');
+  });
+
+  it('accepts enabled transfers only with live execution and an allowlist', () => {
+    const allowlist = `
+[[transfers.allowlist]]
+from_venue = 'gateio'
+to_venue = 'hotcoin'
+asset = 'INC'
+network = 'BSC'
+address = '0xabc'
+min_amount = '10'
+max_amount = '100'
+daily_max_amount = '200'
+withdraw_fee = '1'
+`;
+    const config = loadExecutorConfig(configWithLiveTransfers(allowlist), {});
+    expect(config.transfers.enabled).toBe(true);
+    expect(config.liveEnabled).toBe(true);
+    expect(config.killSwitch).toBe(false);
+    expect(config.transfers.allowlist).toHaveLength(1);
+    expect(() => loadExecutorConfig(configWithLiveTransfers(''), {})).toThrow('allowlist');
   });
 });

@@ -155,17 +155,18 @@ async function loadTransferVenues(config: ExecutorConfig): Promise<LoadedVenues>
   const adapters: CexAdapter[] = [];
   for (const [venueId, roles] of byVenue) {
     if (!CEX_TIERS[venueId]) continue;
-    const readCredential = roles.read_only ?? roles.trade ?? roles.withdrawal;
+    const readCredential = roles.read_only ?? roles.trade;
     const withdrawalCredential = roles.withdrawal;
+    const runtime = createPublicRuntime(1);
     const readAdapter = readCredential
-      ? createCexAdapter(venueId, createPublicRuntime(1), {
+      ? createCexAdapter(venueId, runtime, {
           credentials: readCredential,
           readOnly: true,
         })
       : undefined;
     if (readAdapter) adapters.push(readAdapter);
     const withdrawalAdapter = withdrawalCredential
-      ? createCexAdapter(venueId, createPublicRuntime(1), {
+      ? createCexAdapter(venueId, runtime, {
           credentials: withdrawalCredential,
           readOnly: false,
         })

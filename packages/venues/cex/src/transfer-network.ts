@@ -42,3 +42,20 @@ export function transferAddressesMatch(left: string, right: string): boolean {
   }
   return a === b;
 }
+
+/**
+ * EVM transaction hashes are case-insensitive. Other transaction ids keep
+ * exact matching so memo-based or numeric ids are never conflated.
+ */
+export function transactionIdsMatch(
+  left: string | undefined | null,
+  right: string | undefined | null,
+): boolean {
+  const a = (left ?? '').trim();
+  const b = (right ?? '').trim();
+  if (!a || !b) return false;
+  if (/^0x[0-9a-f]{64}$/i.test(a) && /^0x[0-9a-f]{64}$/i.test(b)) {
+    return a.toLowerCase() === b.toLowerCase();
+  }
+  return a === b;
+}

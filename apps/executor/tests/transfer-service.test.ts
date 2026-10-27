@@ -157,8 +157,8 @@ function fakeVenue(options: FakeVenueOptions): {
       ),
     createWithdrawal: async (request: WithdrawalRequest) => {
       attempts += 1;
-      if (options.failWithdrawal) throw new Error('simulated ambiguous network failure');
       createRequests.push(request);
+      if (options.failWithdrawal) throw new Error('simulated ambiguous network failure');
       const txId = `tx-${options.venueId}-${request.currency.toUpperCase()}`;
       const record: TransferRecord = {
         venueId: options.venueId,
@@ -379,7 +379,11 @@ describe('automated inventory transfer service', () => {
   it('stops safely on an ambiguous withdrawal and never submits the second leg', async () => {
     const { repository, gate, hotcoin, venues } = setup({ failGateWithdrawal: true });
     try {
-      const config = transferConfig();
+      const base = transferConfig();
+      const config = {
+        ...base,
+        allowlist: [{ ...base.allowlist[0]!, venueCurrency: 'INC(BSC)' }, base.allowlist[1]!],
+      };
       const batch = planTransferBatch({
         repository,
         config,
@@ -404,6 +408,7 @@ describe('automated inventory transfer service', () => {
       expect(result.status).toBe(TRANSFER_BATCH_STATUS.SAFE_STOP);
       expect(result.withdrawalsSubmitted).toBe(0);
       expect(gate.attempts).toBe(1);
+      expect(gate.createRequests[0]?.currency).toBe('INC(BSC)');
       expect(hotcoin.attempts).toBe(0);
       expect(repository.getTransferBatch(batch.id)?.legs[0]?.status).toBe(
         TRANSFER_LEG_STATUS.UNKNOWN,

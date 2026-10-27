@@ -8,6 +8,7 @@ import {
   isCcxtShutdownError,
   normalizeCurrencyNetwork,
   normalizeExchangeTimestamp,
+  transactionIdsMatch,
   parseRetryAfterMs,
   resolveCcxtExchangeId,
   stepFromCcxt,
@@ -47,6 +48,14 @@ describe('CCXT adapter construction', () => {
     expect(normalizeCurrencyNetwork('BNB Smart Chain (BEP20)')).toBe('BSC');
     expect(normalizeCurrencyNetwork('BNB Smart Chain')).toBe('BSC');
     expect(normalizeCurrencyNetwork('ERC20')).toBe('ERC20');
+  });
+
+  it('matches EVM transaction hashes case-insensitively', () => {
+    const lower = '0x' + 'ab'.repeat(32);
+    expect(transactionIdsMatch(lower, lower.toUpperCase())).toBe(true);
+    expect(transactionIdsMatch('12345', '12345')).toBe(true);
+    expect(transactionIdsMatch('12345', '12346')).toBe(false);
+    expect(transactionIdsMatch(undefined, lower)).toBe(false);
   });
 
   it('normalizes exchange timestamps from seconds, microseconds, and nanoseconds', () => {

@@ -33,6 +33,7 @@ import {
   networksMatch,
   normalizeAddressTag,
   normalizeCurrencyNetwork,
+  transactionIdsMatch,
 } from './transfer-network.js';
 
 export { normalizeCurrencyNetwork };
@@ -153,7 +154,7 @@ function normalizeCcxtTransfer(
 
 function transferMatchesQuery(record: TransferRecord, query: TransferQuery): boolean {
   if (query.id && record.id !== query.id) return false;
-  if (query.txId && record.txId !== query.txId) return false;
+  if (query.txId && !transactionIdsMatch(record.txId, query.txId)) return false;
   if (query.network && !networksMatch(record.network, query.network)) return false;
   return true;
 }
