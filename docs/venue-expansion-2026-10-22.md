@@ -2,6 +2,10 @@
 
 ## 1. 已加入的交易所
 
+> 2026-10-27 更新：Hotcoin 已加入 `VENUE_CATALOG` 和 Tier S，统一通过
+> `createCexAdapter` 路由到自定义适配器。下文的市场数与测试数字是 2026-10-22 的
+> 历史快照，不是当前全量计数。
+
 `VENUE_CATALOG` 现在包含 42 个场所，其中 37 个 spot 场所进入默认扫描列表：
 
 - CEX spot：gateio、mexc、weex、binance、okx、bybit、bitget、kucoin、htx、bitrue、lbank、xt、coinbase、kraken、cryptocom、woo、backpack、poloniex、bingx、phemex、whitebit、upbit、bitstamp、gemini、bitfinex、blockchaincom、bigone、hitbtc、btse、cex、digifinex、p2b、deepcoin、hashkey。

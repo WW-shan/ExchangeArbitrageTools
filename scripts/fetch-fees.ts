@@ -37,6 +37,12 @@ async function main(): Promise<void> {
   const output: Record<string, Record<string, { takerBps?: string; makerBps?: string }>> = {};
 
   for (const venueId of venueIds) {
+    if (venueId === 'hotcoin') {
+      console.error(
+        'skip hotcoin: account fee endpoint is not verified; set [fees.hotcoin] or data/fees.json manually',
+      );
+      continue;
+    }
     const credential =
       credentials.get(`${venueId}:read_only`) ?? credentials.get(`${venueId}:trade`);
     if (!credential) {

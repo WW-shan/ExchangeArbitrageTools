@@ -1,6 +1,11 @@
 import { Decimal, VenueHealthTracker } from '@arb/core';
 import { ArbitrageRepository, openDatabase } from '@arb/storage';
-import { createCcxtAdapter, createPublicRuntime, isCcxtShutdownError } from '@arb/venues-cex';
+import {
+  createCexAdapter,
+  createPublicRuntime,
+  isCcxtShutdownError,
+  mergeAccountFeeFile,
+} from '@arb/venues-cex';
 import { costSettings, loadConfig } from '../apps/scanner/src/config.js';
 import { ScannerService, type ScannerVenue } from '../apps/scanner/src/scanner-service.js';
 
@@ -41,17 +46,18 @@ async function main(): Promise<void> {
   const cycles = Math.max(1, Number(arg('--cycles', '8')));
   const intervalMs = Math.max(100, Number(arg('--interval-ms', '3000')));
   const warmupMs = Math.max(0, Number(arg('--warmup-ms', '15000')));
-  const maxFeedLatencyMs = Math.max(100, Number(arg('--max-feed-latency-ms', '2000')));
-  const notional = new Decimal(arg('--notional', '30'));
+  const maxFeedLatencyMs = Math.max(
+    100,
+    Number(arg('--max-feed-latency-ms', String(config.scanner.maxFeedLatencyMs))),
+  );
+  const notional = new Decimal(arg('--notional', config.scanner.requestedNotional.toFixed()));
   const takerBpsArg = arg('--taker-bps', '');
   const makerBpsArg = arg('--maker-bps', '');
   const minNetProfitArg = arg('--min-net-profit-bps', '');
   const safetyBufferArg = arg('--safety-buffer-bps', '');
   const minProfitUsdArg = arg('--min-profit-usd', '');
 
-  const feeOverrides: Record<string, { takerBps?: Decimal; makerBps?: Decimal }> = {
-    ...config.fees,
-  };
+  const feeOverrides = mergeAccountFeeFile(config.fees, config.scanner.feeFile);
   if (takerBpsArg || makerBpsArg) {
     for (const venueId of venueIds) {
       const existing = feeOverrides[venueId] ?? {};
@@ -63,7 +69,10 @@ async function main(): Promise<void> {
     }
   }
   const settings = costSettings(config.scanner);
-  settings.maxOrderbookAgeMs = 5000;
+  settings.maxOrderbookAgeMs = Math.max(
+    settings.maxOrderbookAgeMs,
+    Number(arg('--max-book-age-ms', String(config.scanner.maxOrderbookAgeMs))),
+  );
   if (minNetProfitArg) settings.minNetProfitBps = new Decimal(minNetProfitArg);
   if (safetyBufferArg) settings.safetyBufferBps = new Decimal(safetyBufferArg);
   if (minProfitUsdArg) settings.minProfitUsd = new Decimal(minProfitUsdArg);
@@ -76,7 +85,7 @@ async function main(): Promise<void> {
       onFailure: (latency, rateLimited) => health.recordFailure(latency, Date.now(), rateLimited),
     });
     return {
-      adapter: createCcxtAdapter(venueId, runtime, { readOnly: true }),
+      adapter: createCexAdapter(venueId, runtime, { readOnly: true }),
       health,
       markets: [],
     };
@@ -138,7 +147,9 @@ async function main(): Promise<void> {
     maxCandidatesPerCycle: 10,
     crossVenueMode: 'off',
     optimalSizing: true,
-    minSizingNotional: new Decimal('1'),
+    minSizingNotional: new Decimal(
+      arg('--min-sizing-notional', config.scanner.minSizingNotional.toFixed()),
+    ),
     sizingStep: new Decimal('0.01'),
     maxSizingCandidatesPerCycle: 20,
     sizingSamples: 8,

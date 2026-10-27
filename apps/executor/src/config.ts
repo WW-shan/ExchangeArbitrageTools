@@ -1,5 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { Decimal, type RiskLimits } from '@arb/core';
+import type { VenueFeeOverride } from '@arb/venues-cex';
 import { parse } from 'smol-toml';
 import type { CexLiveExecutorOptions } from './coordinator.js';
 
@@ -13,6 +14,8 @@ export interface ExecutorConfig {
   handoffMaxAgeMs: number;
   iocVenues: string[];
   fokVenues: string[];
+  feeFile: string;
+  feeOverrides: Record<string, VenueFeeOverride>;
   riskLimits: RiskLimits;
   settings: CexLiveExecutorOptions['settings'];
 }
@@ -66,6 +69,45 @@ function stringArray(source: Table, key: string, fallback: string[]): string[] {
   return (value as string[]).map((item) => item.trim()).filter((item) => item.length > 0);
 }
 
+function feeOverrides(value: unknown): Record<string, VenueFeeOverride> {
+  if (value === undefined) return {};
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error('config section [fees] must be a table');
+  }
+  const result: Record<string, VenueFeeOverride> = {};
+  for (const [venueId, raw] of Object.entries(value as Record<string, unknown>)) {
+    const row = table(raw, `fees.${venueId}`);
+    const taker = row.taker_bps === undefined ? undefined : decimalValue(row, 'taker_bps', '0');
+    const maker = row.maker_bps === undefined ? undefined : decimalValue(row, 'maker_bps', '0');
+    let symbols: Record<string, { takerBps?: Decimal; makerBps?: Decimal }> | undefined;
+    if (row.symbols !== undefined) {
+      const symbolTable = table(row.symbols, `fees.${venueId}.symbols`);
+      symbols = {};
+      for (const [symbol, symbolRaw] of Object.entries(symbolTable)) {
+        const symbolRow = table(symbolRaw, `fees.${venueId}.symbols.${symbol}`);
+        const symbolTaker =
+          symbolRow.taker_bps === undefined ? undefined : decimalValue(symbolRow, 'taker_bps', '0');
+        const symbolMaker =
+          symbolRow.maker_bps === undefined ? undefined : decimalValue(symbolRow, 'maker_bps', '0');
+        if (symbolTaker === undefined && symbolMaker === undefined) continue;
+        symbols[symbol] = {
+          ...(symbolTaker !== undefined ? { takerBps: symbolTaker } : {}),
+          ...(symbolMaker !== undefined ? { makerBps: symbolMaker } : {}),
+        };
+      }
+      if (Object.keys(symbols).length === 0) symbols = undefined;
+    }
+    if (taker === undefined && maker === undefined && symbols === undefined) continue;
+    result[venueId] = {
+      ...(taker !== undefined ? { takerBps: taker } : {}),
+      ...(maker !== undefined ? { makerBps: maker } : {}),
+      ...(symbols !== undefined ? { symbols } : {}),
+      source: 'config',
+    };
+  }
+  return result;
+}
+
 function validateSafetyBounds(config: ExecutorConfig): void {
   if (config.maxOpenBatches !== 1) throw new Error('MVP requires max_open_batches = 1');
   if (!config.manualConfirmation) {
@@ -109,6 +151,8 @@ export function loadExecutorConfig(
     handoffMaxAgeMs: numberValue(execution, 'handoff_max_age_ms', 15_000),
     iocVenues: stringArray(execution, 'ioc_venues', []),
     fokVenues: stringArray(execution, 'fok_venues', []),
+    feeFile: typeof scanner.fee_file === 'string' ? scanner.fee_file : '',
+    feeOverrides: feeOverrides(document.fees),
     riskLimits: {
       maxOrderNotional,
       dailyMaxLoss: decimalValue(execution, 'daily_max_loss_usd', '20'),

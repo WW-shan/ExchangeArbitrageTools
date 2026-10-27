@@ -8,10 +8,12 @@ Last verified: 2026-10-27 (Asia/Hong_Kong). The clause-by-clause audit is in
 
 ## Verification Baseline
 
-- [x] `npm run check` passed: typecheck, test typecheck, Prettier check, 46 test files /
-      243 tests, and synthetic backtest.
-- [x] `npm run coverage` passed with 81.71% statements, 73.49% branches, 80.44% functions,
-      and 85.60% lines.
+- [x] `npm run lint` passed: typecheck, test typecheck, and Prettier check.
+- [x] Full suite passed with a single worker: 47 test files / 257 tests.
+- [x] `npm run coverage` passed with 80.98% statements, 71.68% branches, 77.90% functions,
+      and 84.76% lines.
+- [x] `npm run backtest` passed with 20/20 actionable samples and 20/20 consecutive paper
+      batches.
 - [x] Focused regression set after the S3/S4 and zero-fee fixes passed: 46 tests across
       strategy, adapter, and executor files.
 - [x] Synthetic calibration passed: 20/20 actionable samples, 20/20 consecutive paper
@@ -267,11 +269,12 @@ broadcast, withdrawal, or real credential test was performed.
 - [x] S1-O12 live-readiness preflight: `npm run live:readiness` checks execution safety
       bounds, live/kill-switch gates, fee-override coverage, min-profit-vs-notional floor,
       DB integrity and open executions, encrypted secret-store coverage, per-venue REST/WS
-      connectivity, and BSC quote keys. It never signs or places orders. Current run blocks
-      on missing `data/secrets.enc.json` and warns on generic fees and the 83bps
-      `min_profit_usd` floor. Evidence: `docs/live-readiness-gate.md`.
-- [x] S1-O13 live-test profile and runbook: `config/live-test.toml` (gateio/mexc/weex,
-      10 USDT max, 5 USDT daily loss, manual confirmation, S1-only) plus
+      connectivity, and BSC quote keys. It never signs or places orders. The 2026-10-22 run
+      blocked on missing `data/secrets.enc.json` and warned on generic fees and the 83bps
+      `min_profit_usd` floor. Current status is in `docs/live-readiness-gate.md`.
+- [x] S1-O13 live-test profile and runbook (historical; current Gate/Hotcoin profile is
+      S1-O21): `config/live-test.toml` (gateio/mexc/weex, 10 USDT max, 5 USDT daily loss,
+      manual confirmation, S1-only) plus
       `docs/live-test-runbook.md` covering fees, encrypted credentials, balances,
       readiness, scanner, read-only executor rehearsal, and manual `--execute`. Readiness
       against this profile reports 3 venues, a 5.00bps min-profit floor, and blocks only on
@@ -331,16 +334,36 @@ broadcast, withdrawal, or real credential test was performed.
       the suite verifies a CLOSED two-leg batch and a leg-2 partial fill that enters
       `SAFE_STOP`, persists the unhedged remainder, and turns the kill switch on. Evidence:
       `apps/executor/tests/s1-pipeline.test.ts`.
+- [x] S1-O21 Gate.io + Hotcoin live-test integration: Hotcoin now has a custom REST/WS
+      adapter with gzip depth, ping/pong keepalive, server-clock correction, signed
+      balances/order/cancel, documented status mapping, FOK/IOC request construction, and
+      bounded clientOrderId pagination. All callers use `createCexAdapter`; the shared fee
+      override implementation is used by scanner and executor. `config/live-test.toml` uses
+      Gate.io + Hotcoin with a 20 USDT cap and 15 USDT minimum sizing. Readiness now checks
+      Hotcoin minimum sizing, IOC/FOK coverage, venue execution gates, and requires WS when
+      `feed_mode=websocket`. Real public probe: Gate.io 2,181 markets and Hotcoin 374 markets;
+      both REST/WS succeeded through the proxy. Five-cycle zero-fee smoke produced S1 rows
+      in the `gateio->hotcoin` direction, proving the public pipeline; it is not evidence of
+      post-fee profitability. A three-cycle 10bps/leg placeholder run produced zero valid
+      S1 rows, with `gross_profit_below_threshold`, `invalid_orderbook`, and
+      `stale_orderbook` rejections. Evidence: `packages/venues/cex/tests/hotcoin.test.ts`,
+      `packages/venues/cex/tests/catalog.test.ts`, `scripts/live-readiness.ts`,
+      `data/venue-probe-hotcoin.json`, `data/live-readiness-hotcoin.json`.
 
 Detailed design: `docs/s1-event-driven-hot-path.md`.
 Clause-by-clause S1 audit: `docs/s1-completion-audit-2026-10-22.md`.
 
 ## External Blockers
 
-- [x] Proxy connectivity: `ARB_SOCKS_PROXY=socks5://127.0.0.1:10808` reaches MEXC and WEEX
-      REST and WebSocket; Gate also works. Evidence:
-      `docs/s1-real-data-findings-2026-10-22.md`.
+- [x] Proxy connectivity: `ARB_SOCKS_PROXY=socks5://127.0.0.1:10808` reaches Gate.io and
+      Hotcoin REST and WebSocket. Gate.io 2,181 markets; Hotcoin 374 markets; both WS feeds
+      produced books. Evidence: `data/venue-probe-hotcoin.json`.
 - [ ] Real API keys with withdrawal permission disabled and IP-whitelist verification.
+- [ ] Hotcoin private endpoints: balance, order placement, order query, cancel, status
+      mapping, clientOrderId lookup, and 15 USDT minimum order.
+- [ ] Gate.io and Hotcoin FOK/IOC behavior verified with real orders before enabling
+      `ioc_venues` / `fok_venues`.
+- [ ] Real account fee tiers for both venues; Hotcoin has no verified fee endpoint.
 - [ ] 24-hour continuous read-only soak; a 4-minute soak and 3-minute INJ-focused run are
       recorded, but the full 24-hour gate is not yet complete.
 - At least one real actionable S1 opportunity, 20 real-market paper batches, and 10

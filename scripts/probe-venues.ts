@@ -1,12 +1,7 @@
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { loadConfig } from '../apps/scanner/src/config.js';
-import {
-  HotcoinReadOnlyAdapter,
-  createCcxtAdapter,
-  createPublicRuntime,
-  type CexAdapter,
-} from '@arb/venues-cex';
+import { createCexAdapter, createPublicRuntime, type CexAdapter } from '@arb/venues-cex';
 
 function arg(name: string, fallback: string): string {
   const index = process.argv.indexOf(name);
@@ -67,10 +62,7 @@ async function main(): Promise<void> {
   const results: Array<Record<string, unknown>> = [];
   for (const venueId of venueIds) {
     const runtime = createPublicRuntime(2);
-    const adapter: CexAdapter =
-      venueId === 'hotcoin'
-        ? new HotcoinReadOnlyAdapter()
-        : createCcxtAdapter(venueId, runtime, { readOnly: true });
+    const adapter: CexAdapter = createCexAdapter(venueId, runtime, { readOnly: true });
     const row: Record<string, unknown> = { venueId };
     try {
       const started = Date.now();

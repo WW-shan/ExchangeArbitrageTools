@@ -63,7 +63,7 @@ live_enabled = false
 kill_switch = true
 manual_confirmation = true
 max_open_batches = 1
-max_daily_loss_usd = '20'
+daily_max_loss_usd = '20'
 
 [database]
 path = 'data/s1-soak.sqlite'

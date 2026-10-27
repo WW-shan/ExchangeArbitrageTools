@@ -321,7 +321,8 @@ export class CexLiveExecutor {
       !plannedLeg1Amount.gt(0) ||
       !plannedLeg2Amount.gt(0) ||
       (request.buy.market.minAmount && plannedLeg1Amount.lt(request.buy.market.minAmount)) ||
-      (request.sell.market.minAmount && plannedLeg2Amount.lt(request.sell.market.minAmount))
+      (request.sell.market.minAmount && plannedLeg2Amount.lt(request.sell.market.minAmount)) ||
+      (request.buy.market.minNotional && plannedQuote.lt(request.buy.market.minNotional))
     ) {
       reasons.push('below_min_notional');
       transition('PREFLIGHT_FAILED');

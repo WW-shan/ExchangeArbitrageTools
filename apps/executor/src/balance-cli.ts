@@ -1,5 +1,5 @@
 import { ArbitrageRepository, openDatabase } from '@arb/storage';
-import { CEX_TIERS, createCcxtAdapter, createPublicRuntime } from '@arb/venues-cex';
+import { CEX_TIERS, createCexAdapter, createPublicRuntime } from '@arb/venues-cex';
 import { loadExecutorConfig } from './config.js';
 import { loadEncryptedSecretStore } from './secret-store.js';
 import { refreshBalances, type BalanceVenue } from './balance-service.js';
@@ -65,11 +65,12 @@ async function main(): Promise<void> {
       if (credential.role !== 'read_only') continue;
       if (!CEX_TIERS[credential.venueId]) continue;
       const runtime = createPublicRuntime(1);
+      const adapter = createCexAdapter(credential.venueId, runtime, {
+        credentials: credential,
+        readOnly: true,
+      });
       venues.push({
-        adapter: createCcxtAdapter(credential.venueId, runtime, {
-          credentials: credential,
-          readOnly: true,
-        }),
+        adapter,
         credentials: credential,
       });
     }

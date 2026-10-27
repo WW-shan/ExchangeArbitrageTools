@@ -108,22 +108,25 @@ These are scanned opportunistically and only promoted to live testing after stab
 
 These are mainly for major-asset reference pricing.
 
-## Custom adapter requirement
+## Custom adapter status
 
-Hotcoin must implement the standard `CexAdapter` interface:
+Hotcoin is implemented through the standard `CexAdapter` interface:
 
-- load markets
-- fetch order book
-- fetch tickers
-- fetch currencies/networks
-- fetch balances
-- create order
-- fetch order
-- cancel order
-- fetch trading rules
-- report rate limits
+- [x] load markets and precision/minimum metadata
+- [x] REST order-book snapshots
+- [x] gzip WebSocket depth with keepalive
+- [x] signed balance reads (`/v3/balance`, `/v1/balance` fallback)
+- [x] create order (`matchType=8` FOK, `matchType=9` IOC)
+- [x] fetch order and cancel order
+- [x] documented status mapping and bounded clientOrderId pagination
+- [ ] fetch tickers (not required for the explicit-base S1 path)
+- [ ] fetch currencies/networks (not required while BSC is disabled)
+- [ ] venue-specific rate-limit verification
 
-No live execution is enabled until the custom adapter has integration tests and a successful read-only soak test.
+The public REST/WS path has integration tests and real probe evidence. Private
+endpoints are implemented but have not been exercised with real keys. No live
+execution is enabled until private-key integration tests, FOK/IOC verification,
+and a read-only soak pass.
 
 ## Legal and compliance notes
 

@@ -47,6 +47,16 @@ export const VENUE_CATALOG: Readonly<Record<string, VenueDefinition>> = {
     ccxtId: 'weex',
     s1Eligible: true,
   },
+  hotcoin: {
+    id: 'hotcoin',
+    name: 'Hotcoin',
+    kind: 'cex',
+    marketType: 'spot',
+    tier: 'S',
+    ccxtId: 'hotcoin',
+    s1Eligible: true,
+    notes: 'Custom adapter; Hotcoin is not supported by CCXT',
+  },
   binance: {
     id: 'binance',
     name: 'Binance',

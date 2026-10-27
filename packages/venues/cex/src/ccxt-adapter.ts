@@ -696,11 +696,13 @@ export function resolveCcxtExchangeId(venueId: string): string {
   return venueDefinition(venueId)?.ccxtId ?? CCXT_EXCHANGE_IDS[venueId] ?? venueId;
 }
 
-export const CEX_TIERS: Readonly<Record<string, VenueTier>> = Object.fromEntries(
-  Object.values(VENUE_CATALOG)
-    .filter((venue) => venue.kind === 'cex')
-    .map((venue) => [venue.id, venue.tier]),
-);
+export const CEX_TIERS: Readonly<Record<string, VenueTier>> = {
+  ...Object.fromEntries(
+    Object.values(VENUE_CATALOG)
+      .filter((venue) => venue.kind === 'cex')
+      .map((venue) => [venue.id, venue.tier]),
+  ),
+};
 
 export function createCcxtAdapter(
   exchangeId: keyof typeof CEX_TIERS | string,
@@ -716,6 +718,9 @@ export function createCcxtAdapter(
     marketType?: VenueMarketType;
   } = {},
 ): CcxtCexAdapter {
+  if (exchangeId === 'hotcoin') {
+    throw new Error('Hotcoin requires HotcoinAdapter, not createCcxtAdapter');
+  }
   const definition = venueDefinition(exchangeId);
   const tier = options.tier ?? definition?.tier ?? CEX_TIERS[exchangeId] ?? 'B';
   const marketType = options.marketType ?? definition?.marketType ?? 'spot';

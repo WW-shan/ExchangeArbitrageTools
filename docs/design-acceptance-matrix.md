@@ -24,7 +24,7 @@ does not mean the system is live-ready.
 - [x] P5. Verify S4 independent quotes, two simulated legs, gas/impact costs, and absence
       of transaction signing.
 - [x] P6. Verify adapter contracts, order-book validation, rate limiting, health scoring,
-      and the deliberately read-only Hotcoin adapter.
+      and the Hotcoin custom adapter's public REST/WS and private order paths.
 - [x] P7. Verify schema, decimal storage, retention, migration backup, JSONL export, and
       audit links.
 - [x] P8. Run typecheck, test typecheck, full test suite, formatter, synthetic backtest,
@@ -125,7 +125,7 @@ design.
 | A3  | Validate order books before use: shape, sorting, crossing, staleness, symbol.  | `orderbook.ts`; market-data tests                                | [x]    |
 | A4  | Apply independent rate limits, Retry-After, and venue backoff.                 | token bucket/backoff tests; scanner persistence                  | [x]    |
 | A5  | Score venue health over the configured window.                                 | `health.ts`; venue health tests; dashboard health API            | [x]    |
-| A6  | Hotcoin is read-only until a verified depth/private feed exists.               | Hotcoin adapter and tests                                        | [x]    |
+| A6  | Hotcoin has a verified public depth feed and a gated private order path.       | Hotcoin adapter, tests, real REST/WS probe                       | [~]    |
 | A7  | Store credentials encrypted locally and expose only fingerprints.              | `secret-store.ts`; tamper/wrong-key/dual-role tests              | [x]    |
 | A8  | Check all live capability requirements before enabling execution.              | coordinator preflight and startup recovery tests                 | [~]    |
 | D1  | SQLite schema covers all designed entities, including execution/order/audit.   | `schema.ts` and repository tests                                 | [x]    |

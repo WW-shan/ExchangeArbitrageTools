@@ -99,7 +99,20 @@ interface CurrencyNetwork {
 | Gate.io  | CCXT    | Core venue, public API already verified                      |
 | MEXC     | CCXT    | Core venue, public API already verified                      |
 | WEEX     | CCXT    | Supported by CCXT; verify trading capability before live use |
-| Hotcoin  | Custom  | No CCXT support found; read-only adapter first               |
+| Hotcoin  | Custom  | Full REST/WS/private adapter; live gated by key verification |
+
+Hotcoin is not supported by CCXT. The custom adapter implements:
+
+- REST market discovery and order-book snapshots;
+- gzip WebSocket depth with ping/pong keepalive and server-clock correction;
+- HMAC-SHA256 signed balances, order placement, order query, and cancel;
+- documented order status mapping (`1/2/3/4/5/8`);
+- `matchType=8` FOK and `matchType=9` IOC request construction;
+- clientOrderId lookup with bounded pagination and fail-closed behavior;
+- read-only and trade modes, with withdrawal capabilities absent by design.
+
+The public REST/WS path is verified. Private endpoints, FOK/IOC behavior, order-state
+transitions, and the 15 USDT minimum notional still require real API-key tests.
 
 ### Tier A
 

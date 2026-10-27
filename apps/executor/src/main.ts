@@ -2,9 +2,11 @@ import { ExecutionGate, type HealthState, type MarketMetadata } from '@arb/core'
 import { ArbitrageRepository, openDatabase } from '@arb/storage';
 import {
   CEX_TIERS,
-  createCcxtAdapter,
+  applyFeeOverride,
+  createCexAdapter,
   createPublicRuntime,
   isCcxtShutdownError,
+  mergeAccountFeeFile,
 } from '@arb/venues-cex';
 import { loadExecutorConfig } from './config.js';
 import { CexLiveExecutor, type ExecutionVenue } from './coordinator.js';
@@ -166,7 +168,7 @@ function adapterMap(
       continue;
     }
     const runtime = runtimeFor(repository, venueId);
-    const adapter = createCcxtAdapter(venueId, runtime, {
+    const adapter = createCexAdapter(venueId, runtime, {
       credentials: credential,
       readOnly: false,
       supportsIoc: config.iocVenues.includes(venueId),
@@ -315,10 +317,13 @@ async function main(): Promise<void> {
     if (!buyBundle || !sellBundle) {
       throw new Error('trade credentials are missing for one side of the opportunity');
     }
-    const [buyMarkets, sellMarkets] = await Promise.all([
+    const feeOverrides = mergeAccountFeeFile(config.feeOverrides, config.feeFile);
+    const [rawBuyMarkets, rawSellMarkets] = await Promise.all([
       buyBundle.adapter.loadMarkets(),
       sellBundle.adapter.loadMarkets(),
     ]);
+    const buyMarkets = rawBuyMarkets.map((market) => applyFeeOverride(market, feeOverrides));
+    const sellMarkets = rawSellMarkets.map((market) => applyFeeOverride(market, feeOverrides));
     const states = healthStates(repository);
     const buy = executionVenue(
       opportunity.venueBuy,

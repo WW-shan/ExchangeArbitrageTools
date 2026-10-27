@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { ArbitrageRepository, openDatabase } from '@arb/storage';
-import { createCcxtAdapter, createPublicRuntime } from '@arb/venues-cex';
+import { createCexAdapter, createPublicRuntime, mergeAccountFeeFile } from '@arb/venues-cex';
 import { loadConfig } from '../apps/scanner/src/config.js';
 import { loadExecutorConfig } from '../apps/executor/src/config.js';
 import { credentialKey, loadEncryptedSecretStore } from '../apps/executor/src/secret-store.js';
@@ -37,12 +37,13 @@ function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise
 }
 
 async function probeVenue(venueId: string, timeoutMs: number): Promise<VenueProbe> {
-  const adapter = createCcxtAdapter(venueId, createPublicRuntime(2), { readOnly: true });
+  const adapter = createCexAdapter(venueId, createPublicRuntime(2), { readOnly: true });
   const row: VenueProbe = { venueId, restOk: false, wsOk: false, markets: 0 };
   try {
     const markets = await withTimeout(adapter.loadMarkets(), timeoutMs, 'rest');
     row.markets = markets.length;
     const market =
+      markets.find((candidate) => candidate.unifiedSymbol === 'BTC/USDT') ??
       markets.find((candidate) => candidate.quote === 'USDT') ??
       markets.find((candidate) => candidate.quote === 'USDC') ??
       markets[0];
@@ -121,14 +122,15 @@ async function main(): Promise<void> {
   );
 
   const enabled = config.scanner.enabledVenues;
-  const missingFees = missingFeeOverrideVenues(enabled, config.fees);
+  const effectiveFees = mergeAccountFeeFile(config.fees, config.scanner.feeFile);
+  const missingFees = missingFeeOverrideVenues(enabled, effectiveFees);
   if (missingFees.length === 0) {
     add('fees.taker_overrides', 'pass', 'all enabled venues have explicit taker_bps');
   } else {
     add(
       'fees.taker_overrides',
-      'warn',
-      `${missingFees.length}/${enabled.length} venues fall back to CCXT generic fees: ${missingFees
+      config.execution.liveEnabled ? 'block' : 'warn',
+      `${missingFees.length}/${enabled.length} venues have no explicit taker_bps (Hotcoin fails closed; CCXT venues may use generic fees): ${missingFees
         .slice(0, 10)
         .join(',')}${missingFees.length > 10 ? ',...' : ''}`,
     );
@@ -141,6 +143,35 @@ async function main(): Promise<void> {
     impliedBps.gt(20) ? 'warn' : 'pass',
     `min_profit_usd=${config.scanner.minProfitUsd} / max_order_notional=${maxNotional} implies a ${impliedBps.toFixed(2)}bps floor`,
   );
+
+  if (enabled.includes('hotcoin')) {
+    const minSizing = config.scanner.minSizingNotional;
+    const issues: string[] = [];
+    if (maxNotional.lt(15)) issues.push(`max_order_notional=${maxNotional}`);
+    if (minSizing.lt(15)) issues.push(`min_sizing_notional=${minSizing}`);
+    if (minSizing.gt(maxNotional)) {
+      issues.push(`min_sizing_notional ${minSizing} > max_order_notional ${maxNotional}`);
+    }
+    add(
+      'sizing.hotcoin_min_notional',
+      issues.length === 0 ? 'pass' : 'block',
+      issues.length === 0
+        ? `hotcoin minimum 15 USDT; min_sizing_notional=${minSizing}, max_order_notional=${maxNotional}`
+        : `hotcoin requires >=15 USDT: ${issues.join('; ')}`,
+    );
+  }
+
+  if (executor) {
+    const timeInForceVenues = new Set([...executor.iocVenues, ...executor.fokVenues]);
+    const missingTimeInForce = enabled.filter((venue) => !timeInForceVenues.has(venue));
+    add(
+      'execution.ioc_fok_venues',
+      missingTimeInForce.length === 0 ? 'pass' : config.execution.liveEnabled ? 'block' : 'warn',
+      missingTimeInForce.length === 0
+        ? 'all enabled venues have a verified IOC or FOK mode'
+        : `no IOC/FOK mode yet for: ${missingTimeInForce.join(',')}`,
+    );
+  }
 
   const proxy =
     process.env.ARB_SOCKS_PROXY ?? process.env.ARB_HTTPS_PROXY ?? process.env.HTTPS_PROXY;
@@ -179,6 +210,19 @@ async function main(): Promise<void> {
       persistedLive === 'false' || persistedLive === undefined ? 'pass' : 'warn',
       `live_enabled=${persistedLive ?? 'unset'}`,
     );
+    const health = repository.latestHealth();
+    const byVenue = new Map(health.map((row) => [String(row.venue_id), row]));
+    const notExecutionEnabled = enabled.filter((venue) => {
+      const row = byVenue.get(venue);
+      return !row || Number(row.execution_enabled) !== 1;
+    });
+    add(
+      'execution.venue_gates',
+      notExecutionEnabled.length === 0 ? 'pass' : config.execution.liveEnabled ? 'block' : 'warn',
+      notExecutionEnabled.length === 0
+        ? 'all enabled venues are registered and execution-enabled'
+        : `not execution-enabled: ${notExecutionEnabled.join(',')}`,
+    );
     repository.close();
   } catch (error) {
     add('database.open', 'block', String(error));
@@ -210,6 +254,20 @@ async function main(): Promise<void> {
               missingTrade.length > 10 ? ',...' : ''
             }`,
       );
+      const missingReadOnly = enabled.filter((venue) => !keys.has(`${venue}:read_only`));
+      add(
+        'secrets.read_only_coverage',
+        missingReadOnly.length === 0
+          ? 'pass'
+          : config.scanner.requireBalancesForS1
+            ? 'block'
+            : 'warn',
+        missingReadOnly.length === 0
+          ? 'all enabled venues have read_only credentials'
+          : `missing read_only credentials for balance-aware S1: ${missingReadOnly
+              .slice(0, 10)
+              .join(',')}${missingReadOnly.length > 10 ? ',...' : ''}`,
+      );
       const unverifiedIp = [...records.values()]
         .filter((record) => record.role === 'trade' && record.ipWhitelistVerified !== true)
         .map((record) => record.venueId);
@@ -230,7 +288,7 @@ async function main(): Promise<void> {
   if (skipNetwork) {
     add('network.venues', 'warn', 'skipped (--skip-network)');
   } else {
-    const timeoutMs = Math.max(1000, Number(arg('--timeout-ms', '10000')));
+    const timeoutMs = Math.max(1000, Number(arg('--timeout-ms', '30000')));
     const ids = venueFilter
       ? venueFilter
           .split(',')
@@ -242,11 +300,19 @@ async function main(): Promise<void> {
     const restOk = probes.filter((probe) => probe.restOk);
     const wsOk = probes.filter((probe) => probe.wsOk);
     const failed = probes.filter((probe) => !probe.restOk).map((probe) => probe.venueId);
+    const wsFailed = probes.filter((probe) => !probe.wsOk).map((probe) => probe.venueId);
+    const websocketRequired = config.scanner.feedMode === 'websocket';
+    const networkOk =
+      restOk.length === ids.length && (!websocketRequired || wsOk.length === ids.length);
     add(
       'network.venues',
-      restOk.length === 0 ? 'block' : restOk.length === ids.length ? 'pass' : 'warn',
+      networkOk ? 'pass' : 'block',
       `${restOk.length}/${ids.length} REST ok, ${wsOk.length}/${ids.length} WS ok${
         failed.length > 0 ? `; REST failed: ${failed.join(',')}` : ''
+      }${
+        websocketRequired && wsFailed.length > 0
+          ? `; WS required and failed: ${wsFailed.join(',')}`
+          : ''
       }`,
     );
     const output = resolve(arg('--out', 'data/live-readiness.json'));

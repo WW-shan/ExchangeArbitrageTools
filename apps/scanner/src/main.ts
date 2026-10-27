@@ -9,8 +9,7 @@ import { ArbitrageRepository, openDatabase } from '@arb/storage';
 import { dirname, join, resolve } from 'node:path';
 import {
   CEX_TIERS,
-  HotcoinReadOnlyAdapter,
-  createCcxtAdapter,
+  createCexAdapter,
   createPublicRuntime,
   isCcxtShutdownError,
 } from '@arb/venues-cex';
@@ -127,10 +126,7 @@ async function main(): Promise<void> {
         }
       },
     });
-    const adapter =
-      venueId === 'hotcoin'
-        ? new HotcoinReadOnlyAdapter()
-        : createCcxtAdapter(venueId, runtime, { readOnly: true });
+    const adapter = createCexAdapter(venueId, runtime, { readOnly: true });
     return {
       adapter,
       health,

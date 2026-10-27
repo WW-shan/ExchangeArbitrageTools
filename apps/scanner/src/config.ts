@@ -126,7 +126,7 @@ export interface ApiConfig {
 export interface FeeOverride {
   takerBps?: Decimal;
   makerBps?: Decimal;
-  source?: 'config' | 'account';
+  source?: 'config' | 'account' | 'ccxt' | 'default';
   symbols?: Record<string, { takerBps?: Decimal; makerBps?: Decimal }>;
 }
 

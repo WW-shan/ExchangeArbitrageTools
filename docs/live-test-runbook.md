@@ -1,34 +1,53 @@
 # 小额实盘测试 Runbook（S1 手动批次）
 
-目标：用最小资金验证“扫描 → 就绪检查 → 只读预演 → 手动确认下单 → 双腿对账”的完整链路。默认只做 S1，只开 gateio/mexc/weex，单批不超过 10 USDT。
+目标：用最小资金验证“扫描 → 就绪检查 → 只读预演 → 手动确认下单 → 双腿对账”的完整链路。当前只做 S1，只开 Gate.io 与 Hotcoin，单批名义额上限 20 USDT。
 
-## 0. 前提
+## 0. 当前状态（2026-10-27）
 
-- 已有 `config/live-test.toml`（本仓库提供，`live_enabled=false`、`kill_switch=true`、`max_order_notional=10`、`min_profit_usd=0.005`）。
-- 已安装并启动代理，`ARB_SOCKS_PROXY=socks5://127.0.0.1:10808`。
-- 已准备 trade key（禁用提现、开 IP 白名单）与 read_only key。
+- `config/live-test.toml`：`enabled_venues=['gateio','hotcoin']`、`max_order_notional=20`、`min_sizing_notional=15`、`min_profit_usd=0.01`、`feed_mode='websocket'`。
+- 行情门槛：`max_feed_latency_ms=3000`、`ws_max_book_age_ms=3000`、`max_pair_skew_ms=2500`。Gate.io 经代理的 WS feed latency 可能接近 2.5 秒，不能沿用 500ms 门槛。
+- 默认安全状态：`live_enabled=false`、`kill_switch=true`、`ioc_venues=[]`、`fok_venues=[]`、`manual_confirmation=true`。
+- 公开链路已验证：Gate.io 与 Hotcoin 的 REST、WS 均可通过 `socks5://127.0.0.1:10808` 连接；Hotcoin 深度 WS 为 gzip 推送，约 1–3 秒更新一次。
+- 私有链路尚未验证：余额、下单、撤单、订单状态、FOK/IOC 都需要真实 API key。
+- Hotcoin 目标交易对的最小名义额为 15 USDT，因此扫描器最小 sizing 与执行器最小下单额都必须不低于 15。
+- 当前没有真实 API key 时，`npm run live:readiness` 会因为 `secrets.store` 缺失而 block；这是预期行为，不是代码故障。
 
-## 1. 写入真实费率
+## 1. 前提
 
-编辑 `config/live-test.toml`，取消注释并填入你账户的真实费率：
+1. Windows 时钟已同步。Hotcoin 签名使用 UTC 时间，偏差过大会直接认证失败。
+2. 代理可用：`ARB_SOCKS_PROXY=socks5://127.0.0.1:10808`。
+3. 为 Gate.io 和 Hotcoin 各准备两条 key：
+   - `read_only`：只读余额，供 `executor:balances` 与扫描器余额门槛使用；
+   - `trade`：读取 + 下单 + 查单 + 撤单；
+   - 禁止提现/转账；
+   - 开启 IP 白名单，填入代理出口 IP。
+4. Hotcoin key 的 passphrase 必须与创建 key 时一致，写入凭证的 `password` 字段。
+   Hotcoin 的 read_only 适配器不执行查单/撤单；恢复与对账使用 trade 凭证。
+
+## 2. 写入真实费率
+
+编辑 `config/live-test.toml`，按账户实际等级填写：
 
 ```toml
 [fees.gateio]
 taker_bps = 10
 maker_bps = 2
-[fees.mexc]
-taker_bps = 10
-maker_bps = 2
-[fees.weex]
+
+[fees.hotcoin]
 taker_bps = 10
 maker_bps = 2
 ```
 
-未填费率时，就绪检查会告警，部分场所会以 `fee_not_configured` 失败关闭。
+说明：
 
-## 2. 写入加密凭证
+- 负数 `maker_bps` 表示 rebate。
+- Hotcoin 当前没有已验证的账户费率查询接口，必须手工填写。
+- `data/fees.json` 可由 `npm run fees:fetch` 生成，但 Hotcoin 会被跳过。
+- 当 `live_enabled=true` 且任一启用场所缺少 taker 费率时，readiness 会 block；`live_enabled=false` 时只是 warn。
 
-先准备 `secrets.json`，内容是一个 JSON 数组，每个元素形如：
+## 3. 写入加密凭证
+
+准备 `secrets.json`，内容是 JSON 数组。Gate.io 示例：
 
 ```json
 {
@@ -36,28 +55,46 @@ maker_bps = 2
   "role": "trade",
   "withdrawalPermission": false,
   "apiKey": "...",
-  "secret": "..."
+  "secret": "...",
+  "ipWhitelistVerified": true
 }
 ```
 
-为 gateio/mexc/weex 各准备一条 trade 和一条 read_only 记录，然后：
+Hotcoin 示例（passphrase 必填）：
+
+```json
+{
+  "venueId": "hotcoin",
+  "role": "trade",
+  "withdrawalPermission": false,
+  "apiKey": "...",
+  "secret": "...",
+  "password": "...",
+  "ipWhitelistVerified": true
+}
+```
+
+每个场所再准备一条 `role: "read_only"` 记录，然后执行：
 
 ```powershell
 $env:ARB_SECRET_STORE_KEY = '<至少16位主密钥>'
 Get-Content secrets.json -Raw | npm run executor:secrets
 ```
 
-命令只输出指纹，不输出密钥。确认 `withdrawalPermission=false`。
+命令只输出指纹，不输出密钥。确认 `withdrawalPermission=false`，并在交易所后台再次确认没有提现权限。
 
-## 3. 刷新余额
+## 4. 刷新余额
 
 ```powershell
 $env:ARB_CONFIG = 'config/live-test.toml'
+$env:ARB_SOCKS_PROXY = 'socks5://127.0.0.1:10808'
 $env:ARB_SECRET_STORE_KEY = '<主密钥>'
 npm run executor:balances
 ```
 
-## 4. 就绪检查（必须通过）
+必须看到 Gate.io 与 Hotcoin 的 USDT 余额。Hotcoin 优先调用 `/v3/balance`，失败时回退 `/v1/balance`；余额字段会按 `free/used/total` 规范化。
+
+## 5. 就绪检查（有 key 后必须通过）
 
 ```powershell
 $env:ARB_CONFIG = 'config/live-test.toml'
@@ -66,11 +103,34 @@ $env:ARB_SECRET_STORE_KEY = '<主密钥>'
 npm run live:readiness
 ```
 
-- 必须 `liveTestReady: true` 且退出码 0。
-- 任何 `block`（缺少凭证、DB 未对账、连通失败）都必须先解决。
-- 结果同时写入 `data/live-readiness.json`。
+必须满足：
 
-## 5. 启动扫描器
+- `liveTestReady: true` 且退出码为 0；
+- `network.venues` 同时满足 REST 与 WS 成功（`feed_mode=websocket` 时 WS 失败会 block）；
+- `sizing.hotcoin_min_notional` 通过：`min_sizing_notional>=15`、`max_order_notional>=15`，且最小额不大于最大额；
+- `fees.taker_overrides` 通过；
+- `secrets.trade_coverage` 覆盖 Gate.io 与 Hotcoin；
+- `secrets.read_only_coverage` 覆盖 Gate.io 与 Hotcoin（扫描器需要只读余额）；
+- `database.open_executions` 没有未对账执行；
+- `execution.ioc_fok_venues` 在 API key 实测完成前允许 warn；`live_enabled=true` 时会 block。
+
+## 6. 公开行情 smoke（不需要 key）
+
+这个命令只验证 Gate + Hotcoin 的公开扫描链路，不证明真实盈利。为了看到链路结果，可临时把费用和利润阈值设为 0：
+
+```powershell
+$env:ARB_CONFIG = 'config/live-test.toml'
+$env:ARB_SOCKS_PROXY = 'socks5://127.0.0.1:10808'
+npm run smoke:s1 -- --venues gateio,hotcoin --bases CAKE,ETH,BTC --notional 20 --cycles 5 --warmup-ms 10000 --max-feed-latency-ms 3000 --taker-bps 0 --min-net-profit-bps 0 --min-profit-usd 0 --safety-buffer-bps 0 --min-sizing-notional 15
+```
+
+观察：
+
+- `health` 中两个场所都应为 A 或至少 B；
+- `validS1Rows` 若出现，方向应为 `gateio->hotcoin` 或 `hotcoin->gateio`；
+- 结果只用于验证数据链路。真实费率下的净机会必须重新扫描，不能把零费率结果当成可执行利润。
+
+## 7. 启动扫描器（只读）
 
 ```powershell
 $env:ARB_CONFIG = 'config/live-test.toml'
@@ -78,38 +138,59 @@ $env:ARB_SOCKS_PROXY = 'socks5://127.0.0.1:10808'
 npm run scanner
 ```
 
-扫描器把 S1 机会写入 `data/live-test.sqlite`，不产生任何订单。
+扫描器把 S1 机会写入 `data/live-test.sqlite`，不产生任何订单。确认 `live_enabled=false` 与 `kill_switch=true`。
 
-## 6. 只读执行预演
+## 8. 只读执行预演
 
 ```powershell
 $env:ARB_CONFIG = 'config/live-test.toml'
+$env:ARB_SOCKS_PROXY = 'socks5://127.0.0.1:10808'
 $env:ARB_SECRET_STORE_KEY = '<主密钥>'
 npm run executor -- --opportunity <机会ID>
 ```
 
 默认只读：加载最新有效 S1、检查凭证与恢复状态、打印精确的批次确认字符串，不提交订单。
 
-## 7. 手动实盘（确认后才执行）
+## 9. 手动实盘（确认后才执行）
 
-1. 在 `config/live-test.toml` 把 `live_enabled` 改为 `true`、`kill_switch` 改为 `false`。
-2. 通过 Dashboard `POST /api/kill-switch`（body 为 `{"active":false}`）释放持久化 kill switch（或确认启动后仍为 false）。
-3. 用上一步打印的批次号执行：
+只有以下条件全部满足后才允许：
+
+1. readiness 全部通过；
+2. `executor:balances` 能看到两个场所余额；
+3. Gate.io 与 Hotcoin 的 FOK/IOC 行为已经实测并写入 `ioc_venues` / `fok_venues`；
+4. 已完成只读预演与至少一条公开行情 smoke；
+5. 操作者明确知道该机会的真实费率与库存风险。
+
+将 `config/live-test.toml` 改为：
+
+```toml
+[execution]
+live_enabled = true
+kill_switch = false
+manual_confirmation = true
+max_open_batches = 1
+```
+
+然后：
 
 ```powershell
 $env:ARB_CONFIG = 'config/live-test.toml'
+$env:ARB_SOCKS_PROXY = 'socks5://127.0.0.1:10808'
 $env:ARB_SECRET_STORE_KEY = '<主密钥>'
 npm run executor -- --opportunity <机会ID> --confirm-batch <批次ID> --execute
 ```
 
 `--execute` 还要求：`live_enabled=true`、kill switch 已释放、启动恢复无未对账执行、`--confirm-batch` 与批次号完全一致。
 
-## 8. 限额与停止条件
+## 10. 限额与停止条件
 
-- 单批 notional ≤ 10 USDT，并发批次 = 1，每日最多 5 批，日亏上限 5 USDT，必须手动确认。
-- 出现以下任一情况立即停手：未知订单无法对账、余额不一致、交易所回报本地不存在的订单、API 权限变化、检测到提现权限、行情持续过期、时钟漂移、同一场所重复下单失败、BSC 模拟与报价明显不符。
+- 单批 notional ≤ 20 USDT，并发批次 = 1，日亏上限 5 USDT，必须手动确认。
+- 每日最多 5 批目前是操作纪律，由人工计数；执行器还没有自动按日批次数硬限制。
+- Hotcoin 单笔最小名义额 15 USDT；低于该值的 S1 不应进入执行。
+- 出现以下任一情况立即停止：未知订单无法对账、余额不一致、交易所回报本地不存在的订单、API 权限变化、检测到提现权限、行情持续过期、时钟漂移、同一场所重复下单失败、BSC 模拟与报价明显不符。
 
-## 9. 测试期记录
+## 11. 测试期记录
 
-- 每批记录：机会 ID、批次 ID、方向、实际成交价、手续费、滑点、净利、库存漂移。
-- 达到 10 批手动实盘且 ≥80% 双腿完全对账后，再考虑进入自动化阶段（见 `docs/live-rollout-plan.md`）。
+每批记录：机会 ID、批次 ID、方向、实际成交价、手续费、滑点、净利、库存漂移、是否触发安全停止。
+
+达到 10 批手动实盘且 ≥80% 双腿完全对账后，再考虑进入自动化阶段（见 `docs/live-rollout-plan.md`）。

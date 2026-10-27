@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   CEX_TIERS,
   VENUE_CATALOG,
+  createCexAdapter,
   createCcxtAdapter,
   createPublicRuntime,
   resolveCcxtExchangeId,
@@ -69,13 +70,21 @@ describe('venue catalog', () => {
 
   it('constructs an adapter for every catalog entry without network access', () => {
     for (const definition of Object.values(VENUE_CATALOG)) {
-      const adapter = createCcxtAdapter(definition.id, createPublicRuntime(1), {
+      const adapter = createCexAdapter(definition.id, createPublicRuntime(1), {
         readOnly: true,
       });
       expect(adapter.venueId).toBe(definition.id);
       expect(adapter.tier).toBe(definition.tier);
     }
     expect(CEX_TIERS.binance).toBe('A');
+    expect(CEX_TIERS.hotcoin).toBe('S');
     expect(CEX_TIERS.dydx).toBeUndefined();
+  });
+
+  it('routes Hotcoin through its custom adapter instead of CCXT', () => {
+    expect(() => createCcxtAdapter('hotcoin', createPublicRuntime(1))).toThrow(/HotcoinAdapter/);
+    const adapter = createCexAdapter('hotcoin', createPublicRuntime(1), { readOnly: true });
+    expect(adapter.venueId).toBe('hotcoin');
+    expect(adapter.capabilities.websocket).toBe(true);
   });
 });

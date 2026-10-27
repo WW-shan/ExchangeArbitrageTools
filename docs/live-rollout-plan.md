@@ -6,15 +6,15 @@ Initial test capital:
 
 ```text
 Gate.io:     60 USDT
-MEXC:        60 USDT
-WEEX:        40 USDT
-Hotcoin:     40 USDT
+Hotcoin:     60 USDT
 BSC wallet:  50 USDT + 0.05 BNB
 Reserve:     100 USDT
-Total:       350 USDT
+Total:       270 USDT
 ```
 
 Only allocate live funds after the corresponding venue adapter passes health checks.
+Hotcoin requires a 15 USDT minimum notional per order, so its allocation must support
+at least a few manual batches.
 
 ## Stage 0: environment and credentials
 
@@ -42,21 +42,16 @@ Duration: 1-2 days
 Scope:
 
 - Gate.io
-- MEXC
-- WEEX
 - Hotcoin
 - Tier A reference venues if rate limits allow
-- BSC aggregator quotes
 
 Tasks:
 
-1. Load markets and currencies.
-2. Build token mappings for whitelist tokens.
-3. Scan S1 CEX-CEX opportunities.
-4. Scan S2 triangular opportunities.
-5. Scan S3 CEX-DEX opportunities.
-6. Record venue health.
-7. Persist opportunity episodes.
+1. Load markets and execution metadata.
+2. Scan S1 CEX-CEX opportunities only.
+3. Record venue health and feed latency.
+4. Persist opportunity episodes.
+5. Validate that Gate.io and Hotcoin WebSocket books are fresh under the configured limits.
 
 Exit criteria:
 
@@ -92,24 +87,27 @@ Duration: 2-3 days
 Initial pair:
 
 ```text
-CAKE/USDT on Gate.io and MEXC
+CAKE/USDT on Gate.io and Hotcoin
 ```
 
 Fallback pair:
 
 ```text
-A medium-cap token listed on Gate.io and MEXC with stable BSC support
+A medium-cap token listed on Gate.io and Hotcoin with acceptable depth
 ```
 
 Limits:
 
 ```text
-notional per batch: 5-10 USDT
+notional per batch: 15-20 USDT
 max batches per day: 5
 max concurrent batches: 1
 manual confirmation: required
 daily max loss: 5 USDT
 ```
+
+The 15 USDT lower bound comes from Hotcoin's minimum order notional. Do not run a
+leg below that size.
 
 Exit criteria:
 
@@ -126,7 +124,7 @@ Duration: 5-7 days
 Limits:
 
 ```text
-notional per batch: 10-30 USDT
+notional per batch: 20-30 USDT
 max batches per day: 20
 max concurrent batches: 1
 daily max loss: 20 USDT
