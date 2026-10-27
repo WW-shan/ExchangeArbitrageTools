@@ -344,6 +344,8 @@ asset = "INC"
 network = "BSC"
 address = "0x..."
 address_tag = ""
+# Optional when the venue withdrawal endpoint requires a chain-qualified code.
+venue_currency = "INC(BSC)"
 min_amount = "15"
 max_amount = "200"
 daily_max_amount = "400"

@@ -146,6 +146,36 @@ design.
 | R3  | Stop conditions include unknown order, balance mismatch, and stale data.       | coordinator/gate tests; some live conditions remain unobserved   | [~]    |
 | R4  | Stage 0 credentials, 24h soak, and live rollout stages are executed.           | requires user participation                                      | [!]    |
 
+## Automated inventory transfers
+
+The transfer loop is cross-cutting functionality outside the four S1-S4 percentage rows.
+It moves inventory between venues after a trade; it does not create an arbitrage signal.
+
+| ID   | Requirement                                                                 | Evidence                                    | Status |
+| ---- | --------------------------------------------------------------------------- | ------------------------------------------- | ------ |
+| T-1  | All transfer amounts and caps use Decimal.                                  | transfer service and repository tests       | [x]    |
+| T-2  | read_only and trade keys cannot withdraw.                                   | secret-store validation and readiness check | [x]    |
+| T-3  | Withdrawal keys are separate and require IP attestation.                    | secret-store isolation tests                | [x]    |
+| T-4  | Destination address must equal both allowlist and live venue response.      | transfer preflight tests                    | [x]    |
+| T-5  | Network aliases are normalized before matching.                             | network helper and adapter tests            | [x]    |
+| T-6  | Ambiguous withdrawal results enter SAFE_STOP and are never retried.         | transfer service ambiguity test             | [x]    |
+| T-7  | The second direction waits for the first direction's ARRIVED state.         | two-leg ordered execution test              | [x]    |
+| T-8  | Source completed status alone is not destination arrival.                   | destination-deposit timeout test            | [x]    |
+| T-9  | Batch and leg state is persisted atomically.                                | migration v8 and repository tests           | [x]    |
+| T-10 | Per-leg, per-route daily, and balance limits are enforced.                  | preflight and daily-limit tests             | [x]    |
+| T-11 | Gate withdrawal/deposit APIs are normalized through CCXT.                   | CCXT adapter tests                          | [x]    |
+| T-12 | Hotcoin 2025-07-02 deposit/withdrawal APIs are signed and parsed.           | Hotcoin adapter tests                       | [x]    |
+| T-13 | Transfer execution defaults remain closed and manually confirmed.           | config tests and live-test.toml             | [x]    |
+| T-14 | Dry-run performs validation without calling createWithdrawal.               | dry-run test                                | [x]    |
+| T-E1 | Supply real, separate withdrawal keys for Gate.io and Hotcoin.              | no real withdrawal key supplied             | [!]    |
+| T-E2 | Verify live deposit addresses, chain, fee, minimum, and tag on both routes. | mock tests only; no venue account evidence  | [!]    |
+| T-E3 | Execute one small supervised withdrawal and confirm arrival.                | requires real funds and operator approval   | [!]    |
+| T-E4 | Execute one supervised two-direction inventory loop.                        | requires T-E3 to pass first                 | [!]    |
+| T-E5 | Observe repeated automated transfers and arrival latency.                   | requires real capital, time, and monitoring | [!]    |
+
+Transfer internal accounting is 14/14; external accounting is 0/5. This is separate from
+the four-goal percentages below.
+
 ## Current four-goal accounting
 
 Internal items below require code plus automated evidence. External items require real
