@@ -122,3 +122,25 @@ npm run smoke:s1 -- --venues gateio,weex --bases CAKE,ETH,BTC,INJ,APT,BNB,SOL,DO
 
 结论：乘数能力已经端到端可执行，但**当前这三个现货所没有产生额外别名机会**；它的价值是避免未来
 交易所改成 1000 倍单位时漏掉机会或下错数量，而不是今天立即增加有效条数。
+
+## 9. 2026-10-27 S1 端到端测试与只读复测
+
+新增 `apps/executor/tests/s1-pipeline.test.ts`，覆盖真实链路：
+
+- scanner 发现并持久化 S1；
+- handoff 选择最新有效机会并核对人工确认号；
+- executor 重新拉盘口、检查余额、提交双腿并写回 CLOSED；
+- 第二腿部分成交时进入 `SAFE_STOP`，记录剩余未对冲库存并打开 kill switch。
+
+S1 相关测试集合：16 个测试文件 / 100 个测试通过。全量：46 个文件 / 243 个测试 +
+20 批回测通过。
+
+真实只读 smoke（Gate/WEEX，0 费率，CAKE/ETH/BTC/PEPE）：
+
+- 代理链路本次抖动明显：Gate feed latency p95 约 5.6–6.0s，WEEX 约 3.7s；
+  默认 `max_feed_latency_ms=2000` 下所有盘口被判过期，有效 S1 为 0。
+- 将只读 smoke 阈值临时放宽到 8000ms 后，初始全量扫描出现 1 条有效 S1：
+  `gateio->weex`，净边际 **0.5023bps**，名义额 10 USDT。
+- 后续热扫周期没有新的有效行，`dirtyGroups=3–4`、`deferredGroups=0`。
+- 结论：本地 S1 链路逻辑正常；本次 0 条主要来自代理延迟和过热盘口，不是策略计算错误。
+  该结果不能替代真实低延迟网络和 24 小时 soak。

@@ -189,7 +189,7 @@ scan_interval_ms = 5000         # full pass: universe/S2/S3/REST fallback
   - BBO 变化后只评估 dirty group，并产生新的 S1。
 - `packages/storage/tests/route-stats.test.ts`：
   - 有效样本数、平均/最大净边际、episode 数、p50 寿命。
-- `npm run check`：42 个测试文件 / 227 个测试 + 20 批回测。
+- `npm run check`：46 个测试文件 / 243 个测试 + 20 批回测。
 
 ## 11. 实盘前仍需外部条件
 

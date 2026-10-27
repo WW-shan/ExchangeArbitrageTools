@@ -66,13 +66,16 @@ npm run analyze:feed -- --dir data/feed --pair CAKE/USDT --arrival-latency-ms 10
 
 当前结果：
 
-- `npm run check`：45 个测试文件 / 241 个测试 + 20 批回测。
-- `npm run coverage`：81.71% statements / 73.47% branches / 80.44% functions / 85.60% lines。
+- `npm run check`：46 个测试文件 / 243 个测试 + 20 批回测。
+- `npm run coverage`：81.71% statements / 73.49% branches / 80.44% functions / 85.60% lines。
 - `routes:stats` 在现有 SQLite 上可运行；当前历史样本没有有效 S1，输出为 0 valid，属于真实数据结果。
 - `analyze:feed` 合成样例：`arrival.checked=1`、`arrival.survived=0`、`survivalRate=0`。
 - 真实 Gate/WEEX 事件驱动 smoke（2026-10-23）：0 费率 11 条有效 S1（0.08–2.59bps），
   2bps 下 0 条有效；热扫 dirty 5–10 组、`deferredGroups=0`。证据：
   `docs/s1-real-data-findings-2026-10-22.md` 第 7 节。
+- S1 端到端链路测试（2026-10-27）：`apps/executor/tests/s1-pipeline.test.ts` 覆盖
+  scanner → SQLite → handoff → executor 的正常 CLOSED 成交，以及第二腿部分成交后的
+  `SAFE_STOP`、未对冲库存落库和 kill switch。S1 相关 16 个测试文件 / 100 个测试通过。
 
 ## 5. 仍然欠缺（不是“再加测试/风控”能解决）
 

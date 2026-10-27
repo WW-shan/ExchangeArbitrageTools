@@ -151,7 +151,7 @@ entry_gate_min_samples = 50
 
 ### 验证
 
-- `npm run check` 通过：45 个测试文件 / 241 个测试 + 20 批回测。
+- `npm run check` 通过：46 个测试文件 / 243 个测试 + 20 批回测。
 - 新增 `apps/scanner/tests/scanner-hot-scan.test.ts`：验证 WS 更新只评估 dirty 组、无更新时
   不空转、BBO 不变时不触发、BBO 变化后立即产生新的 S1。
 - 新增 `packages/storage/tests/route-stats.test.ts`：验证路线有效率、平均/最大净边际和

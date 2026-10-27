@@ -3,15 +3,15 @@
 Status legend: `[x]` verified, `[~]` partially verified or awaiting implementation,
 `[ ]` not implemented, `[!]` requires external/live evidence.
 
-Last verified: 2026-10-22 (Asia/Hong_Kong). The clause-by-clause audit is in
+Last verified: 2026-10-27 (Asia/Hong_Kong). The clause-by-clause audit is in
 `docs/design-acceptance-matrix.md`; this checklist is the working summary.
 
 ## Verification Baseline
 
-- [x] `npm run check` passed: typecheck, test typecheck, Prettier check, 42 test files /
-      230 tests, and synthetic backtest.
-- [x] `npm run coverage` passed with 81.00% statements, 72.39% branches, 79.22% functions,
-      and 85.01% lines.
+- [x] `npm run check` passed: typecheck, test typecheck, Prettier check, 46 test files /
+      243 tests, and synthetic backtest.
+- [x] `npm run coverage` passed with 81.71% statements, 73.49% branches, 80.44% functions,
+      and 85.60% lines.
 - [x] Focused regression set after the S3/S4 and zero-fee fixes passed: 46 tests across
       strategy, adapter, and executor files.
 - [x] Synthetic calibration passed: 20/20 actionable samples, 20/20 consecutive paper
@@ -319,6 +319,18 @@ broadcast, withdrawal, or real credential test was performed.
       one valid sample, so WS subscriptions survive a restart. Evidence:
       `packages/storage/tests/route-stats.test.ts`, `scripts/route-stats.ts`,
       `apps/scanner/tests/scanner-hot-scan.test.ts`.
+- [x] S1-O19 denomination multipliers/aliases: explicit `k*` and `1000*` aliases resolve
+      to one canonical asset; scanner/paper evaluate normalized books, and the executor
+      converts canonical quantity/price back to exchange units. A 2% normalized-mid guard
+      prevents wrong-asset pairing. Evidence: `docs/s1-base-multiplier-design.md`,
+      `packages/core/tests/market-units.test.ts`,
+      `apps/scanner/tests/scanner-alias.test.ts`,
+      `apps/executor/tests/coordinator-alias.test.ts`.
+- [x] S1-O20 scanner-to-executor pipeline tests: a discovered S1 opportunity is persisted,
+      selected by handoff, manually confirmed, and executed through the real coordinator;
+      the suite verifies a CLOSED two-leg batch and a leg-2 partial fill that enters
+      `SAFE_STOP`, persists the unhedged remainder, and turns the kill switch on. Evidence:
+      `apps/executor/tests/s1-pipeline.test.ts`.
 
 Detailed design: `docs/s1-event-driven-hot-path.md`.
 Clause-by-clause S1 audit: `docs/s1-completion-audit-2026-10-22.md`.
