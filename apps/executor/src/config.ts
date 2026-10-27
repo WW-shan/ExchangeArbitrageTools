@@ -1,8 +1,33 @@
 import { readFileSync } from 'node:fs';
 import { Decimal, type RiskLimits } from '@arb/core';
-import type { VenueFeeOverride } from '@arb/venues-cex';
+import { normalizeCurrencyNetwork, type VenueFeeOverride } from '@arb/venues-cex';
 import { parse } from 'smol-toml';
 import type { CexLiveExecutorOptions, LegExecutionMode } from './coordinator.js';
+
+export interface TransferAllowlistEntry {
+  fromVenue: string;
+  toVenue: string;
+  asset: string;
+  network: string;
+  address: string;
+  addressTag?: string;
+  minAmount: Decimal;
+  maxAmount: Decimal;
+  dailyMaxAmount: Decimal;
+  withdrawFee?: Decimal;
+}
+
+export interface TransferConfig {
+  enabled: boolean;
+  requireManualConfirmation: boolean;
+  maxInFlightBatches: number;
+  maxLegsPerBatch: number;
+  maxBalanceAgeMs: number;
+  pollIntervalMs: number;
+  withdrawalTimeoutMs: number;
+  depositTimeoutMs: number;
+  allowlist: TransferAllowlistEntry[];
+}
 
 export interface ExecutorConfig {
   databasePath: string;
@@ -17,6 +42,7 @@ export interface ExecutorConfig {
   fokVenues: string[];
   feeFile: string;
   feeOverrides: Record<string, VenueFeeOverride>;
+  transfers: TransferConfig;
   riskLimits: RiskLimits;
   settings: CexLiveExecutorOptions['settings'];
 }
@@ -28,6 +54,11 @@ function table(value: unknown, name: string): Table {
     throw new Error(`config section [${name}] is missing`);
   }
   return value as Table;
+}
+
+function optionalTable(value: unknown, name: string): Table {
+  if (value === undefined || value === null) return {};
+  return table(value, name);
 }
 
 function stringValue(source: Table, key: string, fallback?: string): string {
@@ -117,6 +148,75 @@ function feeOverrides(value: unknown): Record<string, VenueFeeOverride> {
   return result;
 }
 
+function transferAllowlist(value: unknown): TransferAllowlistEntry[] {
+  if (value === undefined) return [];
+  if (!Array.isArray(value)) {
+    throw new Error('config value transfers.allowlist must be an array of tables');
+  }
+  const seen = new Set<string>();
+  return value.map((raw, index) => {
+    const row = table(raw, `transfers.allowlist[${index}]`);
+    const fromVenue = stringValue(row, 'from_venue').trim();
+    const toVenue = stringValue(row, 'to_venue').trim();
+    const asset = stringValue(row, 'asset').trim().toUpperCase();
+    const network = stringValue(row, 'network').trim();
+    const address = stringValue(row, 'address').trim();
+    const addressTag =
+      typeof row.address_tag === 'string' && row.address_tag.trim() !== ''
+        ? row.address_tag.trim()
+        : undefined;
+    if (fromVenue === toVenue) {
+      throw new Error('transfers.allowlist from_venue and to_venue must differ');
+    }
+    const minAmount = decimalValue(row, 'min_amount', '0');
+    const maxAmount = decimalValue(row, 'max_amount');
+    const dailyMaxAmount = decimalValue(row, 'daily_max_amount');
+    const withdrawFee =
+      row.withdraw_fee === undefined ? undefined : decimalValue(row, 'withdraw_fee');
+    if (minAmount.lt(0)) throw new Error('transfers.allowlist min_amount cannot be negative');
+    if (maxAmount.lte(0)) throw new Error('transfers.allowlist max_amount must be positive');
+    if (dailyMaxAmount.lte(0)) {
+      throw new Error('transfers.allowlist daily_max_amount must be positive');
+    }
+    if (minAmount.gt(maxAmount)) {
+      throw new Error('transfers.allowlist min_amount cannot exceed max_amount');
+    }
+    if (withdrawFee !== undefined && withdrawFee.lt(0)) {
+      throw new Error('transfers.allowlist withdraw_fee cannot be negative');
+    }
+    const key = `${fromVenue}->${toVenue}:${asset}:${normalizeCurrencyNetwork(network)}`;
+    if (seen.has(key)) throw new Error(`duplicate transfer allowlist entry: ${key}`);
+    seen.add(key);
+    return {
+      fromVenue,
+      toVenue,
+      asset,
+      network,
+      address,
+      ...(addressTag ? { addressTag } : {}),
+      minAmount,
+      maxAmount,
+      dailyMaxAmount,
+      ...(withdrawFee !== undefined ? { withdrawFee } : {}),
+    };
+  });
+}
+
+function transferConfig(value: unknown): TransferConfig {
+  const transfers = optionalTable(value, 'transfers');
+  return {
+    enabled: booleanValue(transfers, 'enabled', false),
+    requireManualConfirmation: booleanValue(transfers, 'require_manual_confirmation', true),
+    maxInFlightBatches: numberValue(transfers, 'max_in_flight_batches', 1),
+    maxLegsPerBatch: numberValue(transfers, 'max_legs_per_batch', 2),
+    maxBalanceAgeMs: numberValue(transfers, 'max_balance_age_ms', 300_000),
+    pollIntervalMs: numberValue(transfers, 'poll_interval_ms', 15_000),
+    withdrawalTimeoutMs: numberValue(transfers, 'withdrawal_timeout_ms', 900_000),
+    depositTimeoutMs: numberValue(transfers, 'deposit_timeout_ms', 1_800_000),
+    allowlist: transferAllowlist(transfers.allowlist),
+  };
+}
+
 function validateSafetyBounds(config: ExecutorConfig): void {
   if (config.maxOpenBatches !== 1) throw new Error('MVP requires max_open_batches = 1');
   if (!config.manualConfirmation) {
@@ -130,6 +230,44 @@ function validateSafetyBounds(config: ExecutorConfig): void {
   }
   if (!Number.isInteger(config.handoffMaxAgeMs) || config.handoffMaxAgeMs <= 0) {
     throw new Error('execution.handoff_max_age_ms must be a positive integer');
+  }
+  const transfers = config.transfers;
+  if (transfers.maxInFlightBatches !== 1) {
+    throw new Error('transfers.max_in_flight_batches must be 1 for the MVP');
+  }
+  if (!transfers.requireManualConfirmation) {
+    throw new Error('transfers.require_manual_confirmation must remain true for the MVP');
+  }
+  if (
+    !Number.isInteger(transfers.maxLegsPerBatch) ||
+    transfers.maxLegsPerBatch < 1 ||
+    transfers.maxLegsPerBatch > 2
+  ) {
+    throw new Error('transfers.max_legs_per_batch must be 1 or 2');
+  }
+  for (const [name, value] of [
+    ['max_balance_age_ms', transfers.maxBalanceAgeMs],
+    ['poll_interval_ms', transfers.pollIntervalMs],
+    ['withdrawal_timeout_ms', transfers.withdrawalTimeoutMs],
+    ['deposit_timeout_ms', transfers.depositTimeoutMs],
+  ] as const) {
+    if (!Number.isInteger(value) || value <= 0) {
+      throw new Error(`transfers.${name} must be a positive integer`);
+    }
+  }
+  if (transfers.pollIntervalMs >= transfers.withdrawalTimeoutMs) {
+    throw new Error('transfers.poll_interval_ms must be below withdrawal_timeout_ms');
+  }
+  if (transfers.enabled) {
+    if (!config.liveEnabled) {
+      throw new Error('transfers.enabled requires execution.live_enabled=true');
+    }
+    if (config.killSwitch) {
+      throw new Error('transfers.enabled requires execution.kill_switch=false');
+    }
+    if (transfers.allowlist.length === 0) {
+      throw new Error('transfers.enabled requires at least one allowlist entry');
+    }
   }
 }
 
@@ -163,6 +301,7 @@ export function loadExecutorConfig(
     fokVenues: stringArray(execution, 'fok_venues', []),
     feeFile: typeof scanner.fee_file === 'string' ? scanner.fee_file : '',
     feeOverrides: feeOverrides(document.fees),
+    transfers: transferConfig(document.transfers),
     riskLimits: {
       maxOrderNotional,
       dailyMaxLoss: decimalValue(execution, 'daily_max_loss_usd', '20'),

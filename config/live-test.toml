@@ -74,6 +74,30 @@ handoff_max_age_ms = 15000
 ioc_venues = []
 fok_venues = []
 
+[transfers]
+enabled = false
+require_manual_confirmation = true
+max_in_flight_batches = 1
+max_legs_per_batch = 2
+max_balance_age_ms = 300000
+poll_interval_ms = 15000
+withdrawal_timeout_ms = 900000
+deposit_timeout_ms = 1800000
+# Keep this section closed until both venues expose the exact asset/network
+# and a separate withdrawal key. The first live test must use one leg only.
+# Add explicit [[transfers.allowlist]] entries for each direction, for example:
+# [[transfers.allowlist]]
+# from_venue = 'gateio'
+# to_venue = 'hotcoin'
+# asset = 'INC'
+# network = 'BSC'
+# address = '0x...'
+# address_tag = ''
+# min_amount = '15'
+# max_amount = '200'
+# daily_max_amount = '400'
+# withdraw_fee = '1'
+
 [database]
 path = "data/live-test.sqlite"
 

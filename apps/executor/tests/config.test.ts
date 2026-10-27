@@ -15,6 +15,15 @@ function configWith(replacement: [string, string]): string {
   return path;
 }
 
+function configWithAppendix(appendix: string): string {
+  const directory = mkdtempSync(join(tmpdir(), 'arb-executor-config-'));
+  directories.push(directory);
+  const source = readFileSync(resolve('config/default.toml'), 'utf8');
+  const path = join(directory, 'config.toml');
+  writeFileSync(path, `${source}\n${appendix}\n`);
+  return path;
+}
+
 afterEach(() => {
   while (directories.length > 0) rmSync(directories.pop()!, { recursive: true, force: true });
 });
@@ -31,6 +40,11 @@ describe('executor configuration', () => {
     expect(config.handoffMaxAgeMs).toBe(15_000);
     expect(config.legMode).toBe('serial');
     expect(config.iocVenues).toEqual([]);
+    expect(config.transfers.enabled).toBe(false);
+    expect(config.transfers.requireManualConfirmation).toBe(true);
+    expect(config.transfers.maxInFlightBatches).toBe(1);
+    expect(config.transfers.maxLegsPerBatch).toBe(2);
+    expect(config.transfers.allowlist).toEqual([]);
   });
 
   it('allows an explicitly configured live flag but still requires manual confirmation and one batch', () => {
@@ -72,5 +86,64 @@ describe('executor configuration', () => {
   it('accepts an explicitly selected parallel FOK mode', () => {
     const path = configWith([`leg_mode = 'serial'`, `leg_mode = 'parallel_fok'`]);
     expect(loadExecutorConfig(path, {}).legMode).toBe('parallel_fok');
+  });
+
+  it('parses explicit transfer allowlist limits without enabling transfers', () => {
+    const path = configWithAppendix(`
+[[transfers.allowlist]]
+from_venue = 'gateio'
+to_venue = 'hotcoin'
+asset = 'inc'
+network = 'BEP20'
+address = '0xAbC0000000000000000000000000000000000001'
+address_tag = ''
+min_amount = '15'
+max_amount = '200'
+daily_max_amount = '400'
+withdraw_fee = '1'
+`);
+    const config = loadExecutorConfig(path, {});
+    expect(config.transfers.enabled).toBe(false);
+    expect(config.transfers.allowlist[0]).toMatchObject({
+      fromVenue: 'gateio',
+      toVenue: 'hotcoin',
+      asset: 'INC',
+      network: 'BEP20',
+      address: '0xAbC0000000000000000000000000000000000001',
+    });
+    expect(config.transfers.allowlist[0]?.maxAmount.toFixed()).toBe('200');
+  });
+
+  it('rejects duplicate or unsafe transfer settings', () => {
+    const duplicate = configWithAppendix(`
+[[transfers.allowlist]]
+from_venue = 'gateio'
+to_venue = 'hotcoin'
+asset = 'INC'
+network = 'BSC'
+address = '0x1'
+min_amount = '1'
+max_amount = '10'
+daily_max_amount = '20'
+[[transfers.allowlist]]
+from_venue = 'gateio'
+to_venue = 'hotcoin'
+asset = 'INC'
+network = 'BEP20'
+address = '0x2'
+min_amount = '1'
+max_amount = '10'
+daily_max_amount = '20'
+`);
+    expect(() => loadExecutorConfig(duplicate, {})).toThrow('duplicate transfer allowlist');
+    expect(() =>
+      loadExecutorConfig(
+        configWith(['[transfers]\nenabled = false', '[transfers]\nenabled = true']),
+        {},
+      ),
+    ).toThrow('live_enabled');
+    expect(() =>
+      loadExecutorConfig(configWith(['max_legs_per_batch = 2', 'max_legs_per_batch = 3']), {}),
+    ).toThrow('max_legs_per_batch');
   });
 });
