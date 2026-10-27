@@ -9,6 +9,7 @@ export interface ScannerConfig {
   maxBaseAssets: number;
   quoteCurrencies: string[];
   min24hQuoteVolumeUsd: Decimal;
+  max24hQuoteVolumeUsd?: Decimal;
   universeRefreshMs: number;
   scanIntervalHotMs: number;
   scanIntervalTop100Ms: number;
@@ -270,6 +271,9 @@ export function loadConfig(path = 'config/default.toml'): AppConfig {
       maxBaseAssets: numberValue(scanner, 'max_base_assets', 100),
       quoteCurrencies,
       min24hQuoteVolumeUsd: decimalValue(scanner, 'min_24h_quote_volume_usd', '1000000'),
+      ...(scanner.max_24h_quote_volume_usd !== undefined
+        ? { max24hQuoteVolumeUsd: decimalValue(scanner, 'max_24h_quote_volume_usd', '0') }
+        : {}),
       universeRefreshMs: numberValue(scanner, 'universe_refresh_ms', 3_600_000),
       scanIntervalHotMs: numberValue(scanner, 'scan_interval_hot_ms', 30_000),
       scanIntervalTop100Ms: numberValue(scanner, 'scan_interval_top100_ms', 120_000),

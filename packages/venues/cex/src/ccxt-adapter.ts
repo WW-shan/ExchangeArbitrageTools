@@ -304,6 +304,12 @@ export class CcxtCexAdapter implements CexAdapter {
       options: {
         defaultType: this.#marketType === 'perp' ? 'swap' : 'spot',
         adjustForTimeDifference: true,
+        // Gate's CCXT fetchMarkets defaults to spot + swap + future + option.
+        // The extra delivery endpoint is irrelevant to S1 and can fail a
+        // spot-only probe on its own. Keep the public market load spot-only.
+        ...(this.#exchangeId === 'gate' && this.#marketType === 'spot'
+          ? { fetchMarkets: { types: ['spot'] } }
+          : {}),
       },
     };
     const socksProxy = process.env.ARB_SOCKS_PROXY;

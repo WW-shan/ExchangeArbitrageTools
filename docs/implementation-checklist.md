@@ -8,9 +8,9 @@ Last verified: 2026-10-27 (Asia/Hong_Kong). The clause-by-clause audit is in
 
 ## Verification Baseline
 
-- [x] `npm run check` passed: lint, 47 test files / 263 tests, and backtest.
-- [x] `npm run coverage` passed with 81.28% statements, 71.95% branches, 78.02% functions,
-      and 84.96% lines.
+- [x] `npm run check` passed: lint, 49 test files / 272 tests, and backtest.
+- [x] `npm run coverage` passed with 81.66% statements, 72.18% branches, 78.68% functions,
+      and 85.44% lines.
 - [x] Focused regression set after the S3/S4 and zero-fee fixes passed: 46 tests across
       strategy, adapter, and executor files.
 - [x] Synthetic calibration passed: 20/20 actionable samples, 20/20 consecutive paper
@@ -34,6 +34,15 @@ Last verified: 2026-10-27 (Asia/Hong_Kong). The clause-by-clause audit is in
       `/api/risk-events`, `/api/audit`, and `/` with HTTP 200.
 - [x] `npm run verify:tokens` matched all five BSC whitelist contracts and decimals using a
       read-only RPC call.
+
+- [x] Gate.io spot-only market loading verified: 2,181 markets and 2,183 tickers; the
+      CCXT fetchMarkets path is restricted to spot so delivery endpoints cannot fail S1.
+- [x] Low-liquidity discovery verified with Gate.io + Hotcoin: 229 shared USDT bases,
+      122 candidates in the 1,000-500,000 USD volume band, 244 books and 0 fetch errors.
+      The final snapshot produced one clean route (INC), one review route (TBK), one
+      near miss (HTX), and rejected price-outlier anomalies (EDGE, FAI). TBK reversed
+      to about -367 bps within roughly ten minutes, confirming that these are
+      short-lived opportunities rather than durable edges.
 
 ## Phase 0: Baseline and Safety
 
@@ -85,6 +94,14 @@ Last verified: 2026-10-27 (Asia/Hong_Kong). The clause-by-clause audit is in
       `--confirm-batch`. Default CLI smoke exits `no_s1_opportunity` without submitting.
 - [x] `npm run executor:venue -- --enable|--disable <venue>` updates the persisted
       `execution_enabled` gate and writes an operator audit row; `--status` lists venues.
+- [x] The low-volume scanner builds the shared base/quote intersection first, ranks by
+      ticker spread and volume, and emits both directions with a depth-walk capacity curve.
+- [x] Capacity analysis reports fee break-even, safety-adjusted profitability, eligible
+      notional, visible depth exhaustion, and the binding reason for every route.
+- [~] Capacity is not yet bounded by actual sell-venue inventory. A clean price curve can
+  still be untradable if the destination venue lacks the base asset.
+- [~] Low-volume candidates have been confirmed with repeated REST snapshots, but not yet
+  with a sustained WebSocket subscription and persistence/lifetime statistics.
 - [!] 24-hour read-only soak and 10 manually confirmed live batches require real
   credentials, an operator, and actual market opportunities.
 

@@ -52,23 +52,25 @@ does not mean the system is live-ready.
 
 ## S1: CEX-CEX spot arbitrage
 
-| ID    | Requirement                                                                    | Evidence                                                              | Status |
-| ----- | ------------------------------------------------------------------------------ | --------------------------------------------------------------------- | ------ |
-| S1-1  | Evaluate both directions using executable depth, fees, safety, and health.     | `evaluateS1Direction`; S1 tests; scanner S1 tests                     | [x]    |
-| S1-2  | Enforce amount/price precision, minimum amount/notional, and pair identity.    | `precision.ts`; S1 off-grid/minimum/identity tests                    | [x]    |
-| S1-3  | Use IOC/FOK and worst executable ask/bid as limit prices.                      | coordinator order construction; paper/coordinator tests               | [x]    |
-| S1-4  | Preflight refreshes books/balances, recalculates profit, and checks all gates. | coordinator preflight; persisted preflight tests                      | [x]    |
-| S1-5  | Reconcile leg 1 and size leg 2 from actual filled base amount.                 | coordinator reconciliation; partial-fill tests                        | [x]    |
-| S1-6  | Zero leg-1 fill closes without submitting leg 2.                               | coordinator partial/cancel branch and state machine                   | [x]    |
-| S1-7  | Unknown/partial leg outcomes stop safely and record unhedged inventory.        | coordinator failure tests; precision-residual regression test         | [x]    |
-| S1-8  | Persist orders, queries, fills, fees, risk events, and restart recovery.       | repository audit tests; bootstrap recovery tests                      | [x]    |
-| S1-9  | Complete 20 consecutive synthetic paper batches and failure paths.             | `npm run backtest`: 20/20; five failure scenarios entered `SAFE_STOP` | [x]    |
-| S1-10 | Provide the production executor entry and scanner-to-executor handoff.         | `main.ts`, `handoff.ts`, `config.ts`; handoff/config tests; CLI smoke | [x]    |
-| S1-11 | Expand the read-only universe with real tickers and expose near misses.        | Hotcoin `/v1/market/ticker`; `config/discovery.toml`; `topGrossRows`  | [x]    |
-| S1-E1 | Real API keys with no withdrawal permission and encrypted storage.             | requires user credentials and secret-store setup                      | [!]    |
-| S1-E2 | 24-hour read-only soak with all configured venues healthy.                     | requires time and live public endpoints                               | [!]    |
-| S1-E3 | 10 manually confirmed live batches with 80% full reconciliation.               | requires real capital, operator, and opportunities                    | [!]    |
-| S1-E4 | Stage 3-4 automation limits and daily profit criteria.                         | requires live execution history                                       | [!]    |
+| ID    | Requirement                                                                    | Evidence                                                                     | Status |
+| ----- | ------------------------------------------------------------------------------ | ---------------------------------------------------------------------------- | ------ |
+| S1-1  | Evaluate both directions using executable depth, fees, safety, and health.     | `evaluateS1Direction`; S1 tests; scanner S1 tests                            | [x]    |
+| S1-2  | Enforce amount/price precision, minimum amount/notional, and pair identity.    | `precision.ts`; S1 off-grid/minimum/identity tests                           | [x]    |
+| S1-3  | Use IOC/FOK and worst executable ask/bid as limit prices.                      | coordinator order construction; paper/coordinator tests                      | [x]    |
+| S1-4  | Preflight refreshes books/balances, recalculates profit, and checks all gates. | coordinator preflight; persisted preflight tests                             | [x]    |
+| S1-5  | Reconcile leg 1 and size leg 2 from actual filled base amount.                 | coordinator reconciliation; partial-fill tests                               | [x]    |
+| S1-6  | Zero leg-1 fill closes without submitting leg 2.                               | coordinator partial/cancel branch and state machine                          | [x]    |
+| S1-7  | Unknown/partial leg outcomes stop safely and record unhedged inventory.        | coordinator failure tests; precision-residual regression test                | [x]    |
+| S1-8  | Persist orders, queries, fills, fees, risk events, and restart recovery.       | repository audit tests; bootstrap recovery tests                             | [x]    |
+| S1-9  | Complete 20 consecutive synthetic paper batches and failure paths.             | `npm run backtest`: 20/20; five failure scenarios entered `SAFE_STOP`        | [x]    |
+| S1-10 | Provide the production executor entry and scanner-to-executor handoff.         | `main.ts`, `handoff.ts`, `config.ts`; handoff/config tests; CLI smoke        | [x]    |
+| S1-11 | Expand the read-only universe with real tickers and expose near misses.        | Hotcoin `/v1/market/ticker`; `config/discovery.toml`; `topGrossRows`         | [x]    |
+| S1-12 | Build a shared low-volume universe and report depth-walk capacity.             | `buildLongTailUniverse`; `analyzeS1Capacity`; low-liquidity tests; real scan | [x]    |
+| S1-13 | Bound the reported capacity by actual sell-venue inventory and buy-venue cash. | Requires private balance API/key; current curve is market-depth only         | [~]    |
+| S1-E1 | Real API keys with no withdrawal permission and encrypted storage.             | requires user credentials and secret-store setup                             | [!]    |
+| S1-E2 | 24-hour read-only soak with all configured venues healthy.                     | requires time and live public endpoints                                      | [!]    |
+| S1-E3 | 10 manually confirmed live batches with 80% full reconciliation.               | requires real capital, operator, and opportunities                           | [!]    |
+| S1-E4 | Stage 3-4 automation limits and daily profit criteria.                         | requires live execution history                                              | [!]    |
 
 ## S2: Intra-CEX triangular arbitrage
 

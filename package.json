@@ -45,7 +45,9 @@
     "rebalance:plan": "tsx scripts/rebalance-plan.ts",
     "routes:stats": "tsx scripts/route-stats.ts",
     "smoke:s1": "tsx scripts/smoke-s1.ts",
-    "smoke:discovery": "tsx scripts/smoke-s1.ts --venues gateio,hotcoin --universe top_volume --max-bases 30 --min-24h-volume 100000 --cycles 5 --warmup-ms 10000 --interval-ms 3000 --taker-bps 10 --maker-bps 2 --min-net-profit-bps 5 --min-profit-usd 0.01 --safety-buffer-bps 2 --min-sizing-notional 15"
+    "smoke:discovery": "tsx scripts/smoke-s1.ts --venues gateio,hotcoin --universe top_volume --max-bases 30 --min-24h-volume 100000 --cycles 5 --warmup-ms 10000 --interval-ms 3000 --taker-bps 10 --maker-bps 2 --min-net-profit-bps 5 --min-profit-usd 0.01 --safety-buffer-bps 2 --min-sizing-notional 15",
+    "scan:longtail": "tsx scripts/scan-longtail.ts --config config/longtail.toml",
+    "scan:longtail:test": "tsx scripts/scan-longtail.ts --config config/longtail.toml --bases INC,TBK,HTX --max-bases 10 --detail 10 --out data/longtail-smoke.json"
   },
   "devDependencies": {
     "@types/node": "^24.10.0",

@@ -84,6 +84,27 @@ Twenty one-second CAKE/USDT samples:
 - Replay: 20 frames, 0 valid opportunities, p50 feed latency 757 ms and p95
   2,238 ms. These are public-feed measurements, not execution latency.
 
+### Low-liquidity follow-up
+
+The top-volume profile above is useful as a plumbing check, but it is the
+wrong place to look for meaty S1 edges. A later low-liquidity scan built the
+Gate.io/Hotcoin intersection first, then filtered by a 1,000 to 500,000 USD
+24-hour quote-volume band. It found 122 dual-venue candidates and 244 books:
+
+- 1 clean eligible route: INC/USDT, about 86 bps gross and 63 USDT eligible
+  capacity in the final snapshot.
+- 1 review route: TBK/USDT, about 368 bps gross and 104 USDT eligible
+  capacity. It persisted across three independent scans but carries the
+  extreme_spread review flag. By 20:31 HKT the same direction had reversed to
+  about -367 bps, so this was a short-lived opportunity, not a durable edge.
+- 1 near miss: HTX/USDT, about 34 bps gross in the final snapshot.
+- Anomalies such as EDGE/USDT and FAI/USDT were rejected as price outliers,
+  despite enormous displayed gross spreads.
+
+Full method, capacity definitions, curves, and caveats are in
+docs/low-liquidity-capacity-discovery.md. These numbers use 10 bps/leg
+placeholder fees and do not prove live profitability.
+
 ## 5. Readiness
 
 With `config/discovery.toml` and the public proxy:
@@ -108,11 +129,17 @@ With `config/discovery.toml` and the public proxy:
    cross-quote paths are S2 work and remain disabled in this profile.
 5. No real private key, order, cancel, balance, FOK/IOC, or 24-hour soak has
    been verified. Those remain external/live gates.
+6. The top-volume profile is explicitly a screening profile. It should not be
+   used to conclude that S1 has no opportunities. Use config/longtail.toml and
+   scan:longtail for low-liquidity discovery.
 
 ## 7. What would actually increase the chance of finding a tradable edge
 
 - Use real VIP/maker rates and include maker rebates; at 10 bps/leg, a 2 bps
   gross edge cannot become positive.
+- Scan the Gate.io/Hotcoin low-volume intersection instead of each venue's
+  top-volume list. The low-volume profile found 50-368 bps gross edges where
+  top30 found about 2 bps.
 - Add more healthy venues or liquid pairs where the same base has deeper,
   faster books. A wider universe alone cannot overcome a 20 bps round trip.
 - Record a longer read-only feed and run `analyze:feed`/`replay:feed` with

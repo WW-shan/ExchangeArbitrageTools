@@ -18,6 +18,14 @@ describe('scanner configuration', () => {
     expect(config.bsc.enabled).toBe(false);
   });
 
+  it('loads the long-tail volume band', () => {
+    const config = loadConfig('config/longtail.toml');
+    expect(config.scanner.min24hQuoteVolumeUsd.toFixed()).toBe('1000');
+    expect(config.scanner.max24hQuoteVolumeUsd?.toFixed()).toBe('500000');
+    expect(config.execution.liveEnabled).toBe(false);
+    expect(config.execution.killSwitch).toBe(true);
+  });
+
   it('can run the scanner while the separate executor live flag is enabled', () => {
     const directory = mkdtempSync(join(tmpdir(), 'arb-config-live-'));
     const path = join(directory, 'live.toml');
