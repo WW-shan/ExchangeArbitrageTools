@@ -4,6 +4,7 @@ import { Decimal } from '@arb/core';
 import {
   HotcoinAdapter,
   HotcoinReadOnlyAdapter,
+  createPublicRuntime,
   hotcoinCanonicalQuery,
   hotcoinSignature,
   type HotcoinHttpClient,
@@ -128,6 +129,60 @@ describe('Hotcoin public market adapter', () => {
     expect(book.bids.map((level) => level.price.toFixed())).toEqual(['2.11', '2.1']);
     expect(book.exchangeTimestamp).toBe(now);
     expect(book.fetchedAt).toBe(now);
+  });
+
+  it('normalizes the public bulk ticker feed for volume-ranked discovery', async () => {
+    const { client, requests } = clientWith(() => ({
+      status: 'ok',
+      timestamp: now,
+      ticker: [
+        {
+          symbol: 'cake_usdt',
+          last: '2.12',
+          buy: '2.119',
+          sell: '2.122',
+          vol: '223490.87',
+          amount: '474017.17',
+          ts: now - 100,
+        },
+      ],
+    }));
+    const adapter = new HotcoinReadOnlyAdapter({ httpClient: client, clock: () => now });
+    const tickers = await adapter.fetchTickers();
+    expect(new URL(requests[0]!.url).pathname).toBe('/v1/market/ticker');
+    expect(tickers).toEqual([
+      {
+        venueId: 'hotcoin',
+        exchangeSymbol: 'cake_usdt',
+        last: expect.anything(),
+        bid: expect.anything(),
+        ask: expect.anything(),
+        baseVolume: expect.anything(),
+        quoteVolume: expect.anything(),
+        timestamp: now - 100,
+      },
+    ]);
+    expect(tickers[0]?.quoteVolume?.toFixed()).toBe('474017.17');
+    expect(tickers[0]?.baseVolume?.toFixed()).toBe('223490.87');
+  });
+
+  it('classifies HTTP 429 as a rate-limit backoff instead of a generic error', async () => {
+    const client: HotcoinHttpClient = async () => ({
+      status: 429,
+      headers: {},
+      text: async () => 'too many requests',
+    });
+    const backoffs: Array<{ rateLimited: boolean; retryAfterMs: number }> = [];
+    const adapter = new HotcoinReadOnlyAdapter({
+      httpClient: client,
+      clock: () => now,
+      runtime: createPublicRuntime(2, undefined, {
+        onBackoff: (state) =>
+          backoffs.push({ rateLimited: state.rateLimited, retryAfterMs: state.retryAfterMs }),
+      }),
+    });
+    await expect(adapter.fetchOrderBook('cake_usdt', 5)).rejects.toThrow(/HTTP 429/);
+    expect(backoffs).toEqual([{ rateLimited: true, retryAfterMs: 1000 }]);
   });
 
   it('uses the corrected server time for signed request timestamps', async () => {
@@ -305,9 +360,31 @@ describe('Hotcoin private adapter', () => {
     expect(order.remaining.toFixed()).toBe('4');
   });
 
+  it('uses successamount when leftcount is absent', async () => {
+    const { leftcount: _leftcount, ...row } = detailRow(3);
+    const { client } = clientWith(() => ({
+      code: 200,
+      msg: 'success',
+      time: now,
+      data: row,
+    }));
+    const adapter = new HotcoinAdapter({
+      httpClient: client,
+      credentials: keys,
+      readOnly: false,
+      clock: () => now,
+    });
+    const order = await adapter.fetchOrder({ venueOrderId: '12345', symbol: 'cake_usdt' }, keys);
+    expect(order.filled.toFixed()).toBe('6');
+    expect(order.remaining.toFixed()).toBe('4');
+  });
+
   it('paginates clientOrderId lookups before failing closed', async () => {
     const { client, requests } = clientWith((request) => {
       const url = new URL(request.url);
+      if (url.pathname === '/v1/order/detailByClOrdId') {
+        return { code: 200, msg: 'not found', time: now, data: null };
+      }
       expect(url.pathname).toBe('/v1/order/entrust');
       const page = Number(url.searchParams.get('page'));
       const rows =
@@ -331,9 +408,55 @@ describe('Hotcoin private adapter', () => {
       keys,
     );
     expect(order.venueOrderId).toBe('12345');
-    expect(requests).toHaveLength(2);
-    expect(new URL(requests[0]!.url).searchParams.get('page')).toBe('1');
-    expect(new URL(requests[1]!.url).searchParams.get('page')).toBe('2');
+    expect(requests).toHaveLength(3);
+    expect(new URL(requests[0]!.url).pathname).toBe('/v1/order/detailByClOrdId');
+    expect(new URL(requests[1]!.url).searchParams.get('page')).toBe('1');
+    expect(new URL(requests[2]!.url).searchParams.get('page')).toBe('2');
+  });
+
+  it('uses the official detailByClOrdId endpoint before paginating', async () => {
+    const { client, requests } = clientWith((request) => {
+      const url = new URL(request.url);
+      expect(url.pathname).toBe('/v1/order/detailByClOrdId');
+      expect(url.searchParams.get('clOrdId')).toBe('batch-L1');
+      return { code: 200, msg: 'success', time: now, data: detailRow(3) };
+    });
+    const adapter = new HotcoinAdapter({
+      httpClient: client,
+      credentials: keys,
+      readOnly: false,
+      clock: () => now,
+    });
+    const order = await adapter.fetchOrder({ clientOrderId: 'batch-L1' }, keys);
+    expect(order.venueOrderId).toBe('12345');
+    expect(requests).toHaveLength(1);
+  });
+
+  it('cancels by clOrdId when the venue order id is not known yet', async () => {
+    const { client, requests } = clientWith((request) => {
+      const url = new URL(request.url);
+      if (url.pathname === '/v1/order/cancel') {
+        expect(url.searchParams.get('clOrdId')).toBe('batch-L1');
+        return { code: 200, msg: 'success', time: now, data: true };
+      }
+      if (url.pathname === '/v1/order/detailByClOrdId') {
+        expect(url.searchParams.get('clOrdId')).toBe('batch-L1');
+        return { code: 200, msg: 'success', time: now, data: { ...detailRow(5), leftcount: '10' } };
+      }
+      throw new Error(`unexpected path ${url.pathname}`);
+    });
+    const adapter = new HotcoinAdapter({
+      httpClient: client,
+      credentials: keys,
+      readOnly: false,
+      clock: () => now,
+    });
+    const order = await adapter.cancelOrder({ clientOrderId: 'batch-L1' }, keys);
+    expect(order.status).toBe('canceled');
+    expect(requests.map((request) => new URL(request.url).pathname)).toEqual([
+      '/v1/order/cancel',
+      '/v1/order/detailByClOrdId',
+    ]);
   });
 
   it('places FOK limit orders with matchType=8 and the exact client id', async () => {

@@ -23,12 +23,23 @@ export function impliedProfitFloorBps(minProfitUsd: Decimal, maxNotional: Decima
   return minProfitUsd.div(maxNotional).mul(10_000);
 }
 
-/** Enabled venues that have no explicit taker fee and fall back to CCXT defaults. */
+/** Enabled venues without any explicit taker fee (venue-level or per-symbol). */
 export function missingFeeOverrideVenues(
   enabled: readonly string[],
-  fees: Record<string, { takerBps?: Decimal } | undefined>,
+  fees: Record<
+    string,
+    | {
+        takerBps?: Decimal;
+        symbols?: Record<string, { takerBps?: Decimal; makerBps?: Decimal }>;
+      }
+    | undefined
+  >,
 ): string[] {
-  return enabled.filter((venue) => fees[venue]?.takerBps === undefined);
+  return enabled.filter((venue) => {
+    const fee = fees[venue];
+    if (fee?.takerBps !== undefined) return false;
+    return !Object.values(fee?.symbols ?? {}).some((symbol) => symbol.takerBps !== undefined);
+  });
 }
 
 export function summarizeReadiness(checks: readonly ReadinessCheck[]): ReadinessSummary {

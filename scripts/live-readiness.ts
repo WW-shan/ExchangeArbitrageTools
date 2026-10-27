@@ -18,6 +18,9 @@ interface VenueProbe {
   restOk: boolean;
   wsOk: boolean;
   markets: number;
+  tickers: number;
+  tickersOk: boolean;
+  tickersError?: string;
   error?: string;
 }
 
@@ -38,7 +41,14 @@ function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise
 
 async function probeVenue(venueId: string, timeoutMs: number): Promise<VenueProbe> {
   const adapter = createCexAdapter(venueId, createPublicRuntime(2), { readOnly: true });
-  const row: VenueProbe = { venueId, restOk: false, wsOk: false, markets: 0 };
+  const row: VenueProbe = {
+    venueId,
+    restOk: false,
+    wsOk: false,
+    markets: 0,
+    tickers: 0,
+    tickersOk: false,
+  };
   try {
     const markets = await withTimeout(adapter.loadMarkets(), timeoutMs, 'rest');
     row.markets = markets.length;
@@ -50,6 +60,16 @@ async function probeVenue(venueId: string, timeoutMs: number): Promise<VenueProb
     if (!market) throw new Error('no USDT/USDC market');
     await withTimeout(adapter.fetchOrderBook(market.exchangeSymbol, 20), timeoutMs, 'book');
     row.restOk = true;
+    if (adapter.fetchTickers) {
+      try {
+        const tickers = await withTimeout(adapter.fetchTickers(), timeoutMs, 'tickers');
+        row.tickers = tickers.length;
+        row.tickersOk = true;
+      } catch (error) {
+        row.tickersOk = false;
+        row.tickersError = String(error).slice(0, 120);
+      }
+    }
     if (adapter.watchOrderBook) {
       const controller = new AbortController();
       try {
@@ -125,7 +145,11 @@ async function main(): Promise<void> {
   const effectiveFees = mergeAccountFeeFile(config.fees, config.scanner.feeFile);
   const missingFees = missingFeeOverrideVenues(enabled, effectiveFees);
   if (missingFees.length === 0) {
-    add('fees.taker_overrides', 'pass', 'all enabled venues have explicit taker_bps');
+    add(
+      'fees.taker_overrides',
+      'pass',
+      'all enabled venues have explicit taker fees (venue or symbol)',
+    );
   } else {
     add(
       'fees.taker_overrides',
@@ -268,6 +292,20 @@ async function main(): Promise<void> {
               .slice(0, 10)
               .join(',')}${missingReadOnly.length > 10 ? ',...' : ''}`,
       );
+      const hotcoinWithoutPassphrase = [...records.values()]
+        .filter((record) => record.venueId === 'hotcoin' && !record.password?.trim())
+        .map((record) => record.role);
+      add(
+        'secrets.hotcoin_passphrase',
+        hotcoinWithoutPassphrase.length === 0
+          ? 'pass'
+          : config.execution.liveEnabled
+            ? 'block'
+            : 'warn',
+        hotcoinWithoutPassphrase.length === 0
+          ? 'all Hotcoin credentials include a passphrase'
+          : `Hotcoin credentials missing passphrase: ${hotcoinWithoutPassphrase.join(',')}`,
+      );
       const unverifiedIp = [...records.values()]
         .filter((record) => record.role === 'trade' && record.ipWhitelistVerified !== true)
         .map((record) => record.venueId);
@@ -302,16 +340,25 @@ async function main(): Promise<void> {
     const failed = probes.filter((probe) => !probe.restOk).map((probe) => probe.venueId);
     const wsFailed = probes.filter((probe) => !probe.wsOk).map((probe) => probe.venueId);
     const websocketRequired = config.scanner.feedMode === 'websocket';
+    const tickersRequired = config.scanner.assetUniverseMode === 'top_volume';
+    const tickersOk = probes.filter((probe) => probe.tickersOk);
+    const tickersFailed = probes.filter((probe) => !probe.tickersOk).map((probe) => probe.venueId);
     const networkOk =
-      restOk.length === ids.length && (!websocketRequired || wsOk.length === ids.length);
+      restOk.length === ids.length &&
+      (!websocketRequired || wsOk.length === ids.length) &&
+      (!tickersRequired || tickersOk.length === ids.length);
     add(
       'network.venues',
       networkOk ? 'pass' : 'block',
-      `${restOk.length}/${ids.length} REST ok, ${wsOk.length}/${ids.length} WS ok${
-        failed.length > 0 ? `; REST failed: ${failed.join(',')}` : ''
-      }${
+      `${restOk.length}/${ids.length} REST ok, ${wsOk.length}/${ids.length} WS ok, ${
+        tickersOk.length
+      }/${ids.length} tickers ok${failed.length > 0 ? `; REST failed: ${failed.join(',')}` : ''}${
         websocketRequired && wsFailed.length > 0
           ? `; WS required and failed: ${wsFailed.join(',')}`
+          : ''
+      }${
+        tickersRequired && tickersFailed.length > 0
+          ? `; tickers required and failed: ${tickersFailed.join(',')}`
           : ''
       }`,
     );

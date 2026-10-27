@@ -79,6 +79,16 @@ async function main(): Promise<void> {
       await withTimeout(adapter.fetchOrderBook(market.exchangeSymbol, 5), timeoutMs, 'book');
       row.bookMs = Date.now() - bookStarted;
       row.restOk = true;
+      if (adapter.fetchTickers) {
+        try {
+          const tickers = await withTimeout(adapter.fetchTickers(), timeoutMs, 'tickers');
+          row.tickers = tickers.length;
+          row.tickersOk = true;
+        } catch (error) {
+          row.tickersOk = false;
+          row.tickersError = String(error);
+        }
+      }
       if (adapter.watchOrderBook) {
         try {
           const ws = await firstWsBook(adapter, market.exchangeSymbol, timeoutMs);

@@ -18,6 +18,14 @@ describe('readiness helpers', () => {
     expect(missingFeeOverrideVenues(['gateio', 'mexc', 'weex'], fees)).toEqual(['mexc', 'weex']);
   });
 
+  it('accepts per-symbol taker fees from data/fees.json', () => {
+    const fees = {
+      gateio: { symbols: { 'CAKE/USDT': { takerBps: new Decimal(10) } } },
+      hotcoin: { symbols: { cake_usdt: { makerBps: new Decimal(2) } } },
+    };
+    expect(missingFeeOverrideVenues(['gateio', 'hotcoin'], fees)).toEqual(['hotcoin']);
+  });
+
   it('summarizes blocked and warning checks', () => {
     const summary = summarizeReadiness([
       { id: 'a', level: 'pass', detail: '' },

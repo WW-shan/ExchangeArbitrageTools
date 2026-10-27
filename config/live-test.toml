@@ -6,6 +6,8 @@
 # Hotcoin requires a 15 USDT minimum notional, so the manual batch cap is 20.
 enabled_venues = ['gateio', 'hotcoin']
 quote_currency = "USDT"
+# Keep the first live batch narrow. Use config/discovery.toml for read-only
+# volume-ranked opportunity discovery.
 asset_universe_mode = "explicit"
 base_assets = ["CAKE", "ETH", "BTC"]
 quote_currencies = ["USDT"]

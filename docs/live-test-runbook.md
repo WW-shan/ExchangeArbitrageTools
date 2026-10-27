@@ -11,6 +11,8 @@
 - 私有链路尚未验证：余额、下单、撤单、订单状态、FOK/IOC 都需要真实 API key。
 - Hotcoin 目标交易对的最小名义额为 15 USDT，因此扫描器最小 sizing 与执行器最小下单额都必须不低于 15。
 - 当前没有真实 API key 时，`npm run live:readiness` 会因为 `secrets.store` 缺失而 block；这是预期行为，不是代码故障。
+- 只读机会发现使用独立配置 `config/discovery.toml`：成交量前 30、最低 100,000 USD 24h
+  quote volume、10 bps/腿占位费率。它不会打开实盘，也不代表真实费率。
 
 ## 1. 前提
 
@@ -107,10 +109,13 @@ npm run live:readiness
 
 - `liveTestReady: true` 且退出码为 0；
 - `network.venues` 同时满足 REST 与 WS 成功（`feed_mode=websocket` 时 WS 失败会 block）；
+- 若使用 `config/discovery.toml`（`asset_universe_mode=top_volume`），`network.venues`
+  还必须显示 `2/2 tickers ok`；
 - `sizing.hotcoin_min_notional` 通过：`min_sizing_notional>=15`、`max_order_notional>=15`，且最小额不大于最大额；
 - `fees.taker_overrides` 通过；
 - `secrets.trade_coverage` 覆盖 Gate.io 与 Hotcoin；
 - `secrets.read_only_coverage` 覆盖 Gate.io 与 Hotcoin（扫描器需要只读余额）；
+- `secrets.hotcoin_passphrase` 覆盖 Hotcoin 的 read_only 与 trade 凭证；
 - `database.open_executions` 没有未对账执行；
 - `execution.ioc_fok_venues` 在 API key 实测完成前允许 warn；`live_enabled=true` 时会 block。
 
@@ -130,6 +135,18 @@ npm run smoke:s1 -- --venues gateio,hotcoin --bases CAKE,ETH,BTC --notional 20 -
 - `validS1Rows` 若出现，方向应为 `gateio->hotcoin` 或 `hotcoin->gateio`；
 - 结果只用于验证数据链路。真实费率下的净机会必须重新扫描，不能把零费率结果当成可执行利润。
 
+### 成交量排序发现（只读）
+
+```powershell
+$env:ARB_CONFIG = 'config/discovery.toml'
+$env:ARB_SOCKS_PROXY = 'socks5://127.0.0.1:10808'
+npm run smoke:discovery
+```
+
+关注 `topGrossRows` 和 `topNetRows`，不要只看 `validS1Rows`。2026-10-27 的短窗口
+结果是：扩到 30 个 base 后最佳毛边约 2.00 bps，扣 10 bps/腿后最佳净边约 -22.46 bps，
+因此没有可执行 S1。详细说明见 `docs/s1-opportunity-discovery.md`。
+
 ## 7. 启动扫描器（只读）
 
 ```powershell
@@ -139,6 +156,8 @@ npm run scanner
 ```
 
 扫描器把 S1 机会写入 `data/live-test.sqlite`，不产生任何订单。确认 `live_enabled=false` 与 `kill_switch=true`。
+若只想扩大搜索面，改用 `ARB_CONFIG=config/discovery.toml`，数据库为
+`data/discovery.sqlite`。
 
 ## 8. 只读执行预演
 

@@ -9,6 +9,7 @@ import {
   runPaperBatch,
   ScriptedPaperGateway,
   type CostSettings,
+  type HealthState,
   type MarketMetadata,
   type OpportunityResult,
   type OrderBookSnapshot,
@@ -44,6 +45,8 @@ interface FixtureMarket {
   supportsFok: boolean;
 }
 
+type FixtureSample = { sampledAt: number } & Record<string, FixtureBook | number>;
+
 interface Fixture {
   name: string;
   kind: string;
@@ -51,8 +54,16 @@ interface Fixture {
   quote: string;
   requestedNotional: string;
   settings: Record<string, string>;
-  markets: Record<'gateio' | 'mexc', FixtureMarket>;
-  samples: Array<{ sampledAt: number; gateio: FixtureBook; mexc: FixtureBook }>;
+  markets: Record<string, FixtureMarket>;
+  samples: FixtureSample[];
+}
+
+function sampleBook(sample: FixtureSample, venueId: string): FixtureBook {
+  const value = sample[venueId];
+  if (!value || typeof value !== 'object') {
+    throw new Error(`fixture sample is missing a book for ${venueId}`);
+  }
+  return value;
 }
 
 function snapshot(book: FixtureBook): OrderBookSnapshot {
@@ -116,25 +127,37 @@ assert(
   'unknown fixture kind',
 );
 assert(fixture.samples.length >= 20, 'fixture must contain at least 20 samples');
+const venueIds = Object.keys(fixture.markets);
+assert(venueIds.length === 2, 'fixture must contain exactly two venues for S1 backtest');
+const [firstVenueId, secondVenueId] = venueIds as [string, string];
 for (const sample of fixture.samples) {
   assert(
-    sample.sampledAt >= sample.gateio.fetchedAt - 250,
-    `sample ${sample.sampledAt} was recorded before its Gate.io book`,
+    sample.sampledAt >= sampleBook(sample, firstVenueId).fetchedAt - 250,
+    `sample ${sample.sampledAt} was recorded before its ${firstVenueId} book`,
   );
   assert(
-    sample.sampledAt >= sample.mexc.fetchedAt - 250,
-    `sample ${sample.sampledAt} was recorded before its MEXC book`,
+    sample.sampledAt >= sampleBook(sample, secondVenueId).fetchedAt - 250,
+    `sample ${sample.sampledAt} was recorded before its ${secondVenueId} book`,
   );
 }
 const settings = settingsFrom(fixture);
-const gateMarket = market(fixture.markets.gateio);
-const mexcMarket = market(fixture.markets.mexc);
+const firstMarket = market(fixture.markets[firstVenueId]!);
+const secondMarket = market(fixture.markets[secondVenueId]!);
+const venueHealth: Record<string, HealthState> = {
+  [firstVenueId]: 'B',
+  [secondVenueId]: 'B',
+};
+const marketFor = (venueId: string): MarketMetadata => {
+  if (venueId === firstVenueId) return firstMarket;
+  if (venueId === secondVenueId) return secondMarket;
+  throw new Error(`fixture does not contain venue ${venueId}`);
+};
 const requestedNotional = new Decimal(fixture.requestedNotional);
 
 const db = openDatabase(':memory:');
 const repo = new ArbitrageRepository(db);
-repo.upsertVenue({ id: 'gateio', type: 'cex', name: 'Gate.io', tier: 'S' });
-repo.upsertVenue({ id: 'mexc', type: 'cex', name: 'MEXC', tier: 'S' });
+repo.upsertVenue({ id: firstVenueId, type: 'cex', name: firstVenueId, tier: 'S' });
+repo.upsertVenue({ id: secondVenueId, type: 'cex', name: secondVenueId, tier: 'S' });
 
 let consecutiveSuccesses = 0;
 let realizedProfit = new Decimal(0);
@@ -146,31 +169,31 @@ let bestNetProfitBps: Decimal | undefined;
 const rejectionCounts: Record<string, number> = {};
 
 for (const sample of fixture.samples) {
-  const gateBook = snapshot(sample.gateio);
-  const mexcBook = snapshot(sample.mexc);
+  const firstBook = snapshot(sampleBook(sample, firstVenueId));
+  const secondBook = snapshot(sampleBook(sample, secondVenueId));
   const forward = evaluateS1Direction({
     base: fixture.base,
     quote: fixture.quote,
-    buyMarket: gateMarket,
-    sellMarket: mexcMarket,
-    buyBook: gateBook,
-    sellBook: mexcBook,
+    buyMarket: firstMarket,
+    sellMarket: secondMarket,
+    buyBook: firstBook,
+    sellBook: secondBook,
     requestedNotional,
     settings,
     now: sample.sampledAt,
-    venueHealth: { gateio: 'B', mexc: 'B' },
+    venueHealth,
   });
   const reverse = evaluateS1Direction({
     base: fixture.base,
     quote: fixture.quote,
-    buyMarket: mexcMarket,
-    sellMarket: gateMarket,
-    buyBook: mexcBook,
-    sellBook: gateBook,
+    buyMarket: secondMarket,
+    sellMarket: firstMarket,
+    buyBook: secondBook,
+    sellBook: firstBook,
     requestedNotional,
     settings,
     now: sample.sampledAt,
-    venueHealth: { gateio: 'B', mexc: 'B' },
+    venueHealth,
   });
   const opportunity =
     forward.valid !== reverse.valid
@@ -195,13 +218,13 @@ for (const sample of fixture.samples) {
     continue;
   }
   validSamples += 1;
-  const buyBook = opportunity.venueBuy === 'gateio' ? gateBook : mexcBook;
-  const sellBook = opportunity.venueSell === 'mexc' ? mexcBook : gateBook;
+  const buyBook = opportunity.venueBuy === firstVenueId ? firstBook : secondBook;
+  const sellBook = opportunity.venueSell === secondVenueId ? secondBook : firstBook;
   const paper = new ScriptedPaperGateway({ leg1: { kind: 'full' }, leg2: { kind: 'full' } });
   const result = await runPaperBatch(opportunity, paper, {
     batchId: `backtest-${sample.sampledAt}`,
-    buyMarket: opportunity.venueBuy === 'gateio' ? gateMarket : mexcMarket,
-    sellMarket: opportunity.venueSell === 'mexc' ? mexcMarket : gateMarket,
+    buyMarket: marketFor(opportunity.venueBuy),
+    sellMarket: marketFor(opportunity.venueSell),
     buyBook,
     sellBook,
     riskLimits: defaultPaperRiskLimits(new Decimal('30')),
@@ -331,8 +354,8 @@ if (stage2) {
     const gate = createPaperGate(new Decimal('30'));
     const result = await runPaperBatch(lastOpportunity, paper, {
       batchId: `fault-${scenario.name}`,
-      buyMarket: lastOpportunity.venueBuy === 'gateio' ? gateMarket : mexcMarket,
-      sellMarket: lastOpportunity.venueSell === 'mexc' ? mexcMarket : gateMarket,
+      buyMarket: marketFor(lastOpportunity.venueBuy),
+      sellMarket: marketFor(lastOpportunity.venueSell),
       buyBook: lastBooks.buy,
       sellBook: lastBooks.sell,
       riskLimits: defaultPaperRiskLimits(new Decimal('30')),
@@ -363,8 +386,8 @@ if (stage2) {
   const killPaper = new ScriptedPaperGateway({ leg1: { kind: 'full' }, leg2: { kind: 'full' } });
   const killResult = await runPaperBatch(lastOpportunity, killPaper, {
     batchId: 'preflight-kill-switch',
-    buyMarket: lastOpportunity.venueBuy === 'gateio' ? gateMarket : mexcMarket,
-    sellMarket: lastOpportunity.venueSell === 'mexc' ? mexcMarket : gateMarket,
+    buyMarket: marketFor(lastOpportunity.venueBuy),
+    sellMarket: marketFor(lastOpportunity.venueSell),
     buyBook: lastBooks.buy,
     sellBook: lastBooks.sell,
     riskLimits: defaultPaperRiskLimits(new Decimal('30')),

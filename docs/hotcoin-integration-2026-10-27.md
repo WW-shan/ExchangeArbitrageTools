@@ -6,7 +6,11 @@
 
 - Gate.io 使用 CCXT/CCXT Pro，Hotcoin 使用自定义 `CexAdapter`。
 - Hotcoin 公开 REST 行情、gzip WebSocket 深度、ping/pong、服务器时间校正已实现并验证。
+- Hotcoin 批量 ticker（`/v1/market/ticker`）已接入，Gate.io 与 Hotcoin 都能参与
+  `top_volume` 成交量排序；真实探测分别返回 2,183 和 374 条 ticker。
 - Hotcoin 私有 REST（余额、下单、查单、撤单）已实现，但尚未用真实 key 验证。
+- 查单优先使用官方 `/v1/order/detailByClOrdId`，失败才回退到有界分页委托列表；
+  HTTP 429/418 会触发 rate-limit backoff，不再被当成普通错误。
 - Gate.io 与 Hotcoin 统一通过 `createCexAdapter` 创建，避免某个脚本误走 CCXT。
 - `config/live-test.toml` 已切到 Gate.io + Hotcoin，单批上限 20 USDT，Hotcoin 最小 sizing 15 USDT。
 - readiness 已覆盖 Hotcoin 最小额、IOC/FOK 覆盖、场所执行门、WebSocket 必需性。
@@ -29,6 +33,10 @@
 | `scripts/live-readiness.ts`                  | 实盘就绪门槛                         |
 | `scripts/smoke-s1.ts`                        | 公开行情 S1 链路验证                 |
 | `config/live-test.toml`                      | 小额实盘配置                         |
+| `config/discovery.toml`                      | 只读成交量排序机会发现配置           |
+| `scripts/capture-fixture.ts`                 | 真实盘口采集与通用 fixture 输出      |
+| `scripts/backtest.ts`                        | 任意两场所的捕获盘口回测             |
+| `docs/s1-opportunity-discovery.md`           | 机会发现流程、结果与剩余差距         |
 
 ## 3. Hotcoin 公开行情
 
@@ -36,6 +44,8 @@
 
 - 市场发现：`GET /v1/common/symbols`
 - 深度：`GET /v1/depth?symbol=<symbol>`
+- 批量 ticker：`GET /v1/market/ticker`；`amount` 映射为 24h quote volume，
+  `vol` 映射为 base volume，`buy/sell` 映射为 bid/ask，`ts` 为毫秒时间戳。
 - 适配器只接受 `state=enable` 的市场。
 - 使用 `pricePrecision` / `amountPrecision` 生成价格与数量步长。
 - `minOrderAmount` 映射为 `minNotional`；目标交易对当前为 15 USDT。
@@ -69,17 +79,24 @@ METHOD\nhost\npath\nsorted_query
 - `Timestamp` 为 UTC ISO 字符串；适配器使用服务器时钟偏移校正。
 - HMAC-SHA256 后 Base64。
 - `XH-PASSPHRASE` 放在 HTTP header，不放进 query。
-- POST 下单使用 query 参数，不依赖 JSON body；这与 Hotcoin 官方 `POST_SIGN_URL` 示例一致。
+- 官方 Java SDK 示例对下单/撤单使用 signed GET；实际接口同时接受 signed GET 与
+  POST。本项目保留 POST，并把参数放在 query；未用真实 key 前不能把“接口可达”
+  当作“下单已验证”。
 
 ### 接口
 
-| 操作          | 接口                                          |
-| ------------- | --------------------------------------------- |
-| 余额          | `GET /v3/balance`，失败回退 `GET /v1/balance` |
-| 下单          | `POST /v1/order/place`                        |
-| 订单详情      | `GET /v1/order/detailById?id=<id>`            |
-| 当前/历史委托 | `GET /v1/order/entrust`                       |
-| 撤单          | `POST /v1/order/cancel`                       |
+| 操作           | 接口                                          |
+| -------------- | --------------------------------------------- |
+| 余额           | `GET /v3/balance`，失败回退 `GET /v1/balance` |
+| 下单           | `POST /v1/order/place`                        |
+| 订单详情       | `GET /v1/order/detailById?id=<id>`            |
+| 按客户端订单号 | `GET /v1/order/detailByClOrdId?clOrdId=<id>`  |
+| 当前/历史委托  | `GET /v1/order/entrust`                       |
+| 撤单           | `POST /v1/order/cancel`                       |
+
+`detailByClOrdId` 来自 Hotcoin 官方 `hotcoin-api-java` 仓库（2026-01 更新）。
+适配器先调用该接口；只有在接口不可用、返回空数据或订单未找到时，才按
+`/v1/order/entrust` 最多 20 页、每页 100 条回退，仍然找不到就 fail closed。
 
 ### 余额规范化
 
@@ -103,7 +120,8 @@ METHOD\nhost\npath\nsorted_query
   - `4` 撤单中 → `open`
   - `5` 已撤单 → `canceled`
   - `8` 部分成交后撤单 → `canceled`
-- `fetchOrder` 支持 `venueOrderId`；也支持 `clientOrderId`，最多扫描 20 页、每页 100 条，找不到就 fail closed。
+  - `fetchOrder` 支持 `venueOrderId`；也支持 `clientOrderId`，先调用
+    `/v1/order/detailByClOrdId`，失败后再最多扫描 20 页、每页 100 条，找不到就 fail closed。
 - `createOrder` 对 FOK/IOC 仍使用限价参数，价格来自扫描器的可执行价；不会用市价单绕过滑点保护。
 
 ## 5. 执行链路
@@ -131,8 +149,9 @@ npx tsx scripts/probe-venues.ts --venues gateio,hotcoin --pair BTC/USDT --timeou
 
 - Gate.io：REST 成功，2,181 个市场，BTC/USDT 盘口成功，WS 成功。
 - Hotcoin：REST 成功，374 个市场，BTC/USDT 盘口成功，WS 成功。
+- Gate.io：2,183 条 ticker；Hotcoin：374 条 ticker；两者 `fetchTickers` 均成功。
 - Gate.io 的 WS 首包包含 CCXT Pro 初始化时间，约 20 秒；Hotcoin 首包约 2.6 秒。
-- 探测输出：`data/venue-probe-hotcoin.json`。
+- 探测输出：`data/venue-probe-hotcoin.json`、`data/venue-probe-hotcoin-tickers.json`。
 
 ### 五轮 smoke
 
@@ -170,6 +189,27 @@ npx tsx scripts/smoke-s1.ts --venues gateio,hotcoin --bases CAKE,ETH,BTC --notio
 
 这说明当前短窗口内没有扣费后的可执行 S1；零费率结果不能当作机会。真实费率确认后需要重新做更长窗口的只读 soak。
 
+### 成交量排序发现 smoke
+
+`config/discovery.toml` 使用 Gate.io + Hotcoin 的成交量前 30 个 USDT 市场，
+最低 24h quote volume 100,000 USD，10 bps/腿占位费率：
+
+```powershell
+$env:ARB_CONFIG='config/discovery.toml'
+$env:ARB_SOCKS_PROXY='socks5://127.0.0.1:10808'
+npm run smoke:discovery
+```
+
+2026-10-27 的 3 轮结果：
+
+- 发现 12 个有新鲜双边盘口的 base/quote 组，每轮 4–24 条 S1 评估。
+- 最佳毛边 2.0000 bps；扣 20 bps 往返费和安全缓冲后，最佳净边为 -22.4595 bps。
+- `validS1Rows: []`，52 次 `gross_profit_below_threshold`。
+- `topGrossRows`/`topNetRows` 会保留这些 near miss，避免只看到“0 个机会”而不知道差多少。
+
+这说明扩大量化范围确实找到了更多毛边，但在 10 bps/腿的保守假设下仍然不可执行。
+真正的下一步是拿到账户费率、maker rebate 和更长窗口数据，而不是把毛边当成利润。
+
 ### readiness
 
 命令：
@@ -184,10 +224,10 @@ npm run live:readiness
 
 - `liveTestReady: false`
 - 唯一 block：`secrets.store`
-- `network.venues`: `2/2 REST ok, 2/2 WS ok`
+- `network.venues`: `2/2 REST ok, 2/2 WS ok, 2/2 tickers ok`（`top_volume` 时 ticker 是必需项）
 - `sizing.hotcoin_min_notional`: pass（15 / 20）
 - `sizing.min_profit_vs_notional`: pass（5.00bps）
-- 输出：`data/live-readiness-hotcoin.json`
+- 输出：`data/live-readiness-hotcoin.json`、`data/live-readiness-discovery.json`
 
 ## 7. API key 阶段测试矩阵
 
@@ -215,7 +255,8 @@ npm run live:readiness
 3. 验证 `matchType=8` 与 `matchType=9` 的请求参数。
 4. 验证 `fetchOrder` 的状态码 1/2/3/4/5/8 与本地状态映射。
 5. 验证取消订单后最终状态和剩余数量。
-6. 验证 `clientOrderId` 在超过 100 条委托时仍能分页找到。
+6. 验证 `/v1/order/detailByClOrdId?clOrdId=...` 的真实返回结构；再验证
+   `clientOrderId` 在超过 100 条委托时仍能通过分页回退找到。
 7. 通过后再把场所写入 `ioc_venues` / `fok_venues`。
 
 ### 7.4 最小额与精度
@@ -238,10 +279,13 @@ npm run live:readiness
 
 - Hotcoin 没有已验证的账户费率查询接口，费率必须手工维护。
 - Hotcoin 没有 sandbox；不要尝试用 `sandbox` 模式。
+- Hotcoin 当前每个订阅 symbol 各开一个 WebSocket；`trade/multiple` 的多主题复用尚未实现，
+  discovery 配置用 30 个 base 控制连接数。
 - Hotcoin 深度推送约 1–3 秒一次，明显慢于 Gate.io；live-test 使用
   `max_feed_latency_ms=3000`、`ws_max_book_age_ms=3000`、`max_pair_skew_ms=2500` 作为当前折中。
 - Gate.io 的 CCXT Pro 首次 WS 初始化可能很慢，readiness 使用 30 秒超时。
 - Hotcoin 私有接口、FOK/IOC、订单状态、余额字段仍需真实 key 验证。
+- `/v1/order/detailByClOrdId` 已按官方 SDK 接入，但真实订单返回结构仍需 key 实测。
 - 当前只验证 S1；S2/S3/BSC 不在本轮实盘范围。
 - 没有真实费率时，零费率 smoke 的正收益不代表可执行机会。
 

@@ -8,12 +8,9 @@ Last verified: 2026-10-27 (Asia/Hong_Kong). The clause-by-clause audit is in
 
 ## Verification Baseline
 
-- [x] `npm run lint` passed: typecheck, test typecheck, and Prettier check.
-- [x] Full suite passed with a single worker: 47 test files / 257 tests.
-- [x] `npm run coverage` passed with 80.98% statements, 71.68% branches, 77.90% functions,
-      and 84.76% lines.
-- [x] `npm run backtest` passed with 20/20 actionable samples and 20/20 consecutive paper
-      batches.
+- [x] `npm run check` passed: lint, 47 test files / 263 tests, and backtest.
+- [x] `npm run coverage` passed with 81.28% statements, 71.95% branches, 78.02% functions,
+      and 84.96% lines.
 - [x] Focused regression set after the S3/S4 and zero-fee fixes passed: 46 tests across
       strategy, adapter, and executor files.
 - [x] Synthetic calibration passed: 20/20 actionable samples, 20/20 consecutive paper
@@ -22,9 +19,12 @@ Last verified: 2026-10-27 (Asia/Hong_Kong). The clause-by-clause audit is in
 - [x] Captured-market analysis was generated from `fixtures/backtest/captured-CAKE-USDT.json`:
       20 samples, 0 actionable, 11 stale/invalid books, 9 below profit threshold. This is
       fail-closed evidence, not proof of live profitability.
-- [x] Real SQLite is at schema versions 1-5; `PRAGMA integrity_check` returned `ok`.
-      Read-only counts: 225 opportunities, 0 episodes, 0 paper trades, 0 executions, 0 orders,
-      13 risk events. The database retains `kill_switch=true` and `live_enabled=false`.
+- [x] A new real Gate.io + Hotcoin capture (`data/captured-gateio-hotcoin-CAKE-USDT.json`)
+      ran through the generic backtest: 20 samples, 0 actionable, 16 below profit threshold,
+      4 stale/invalid books. The generic replay also ran on the same fixture.
+- [x] Real SQLite migrations are at schema version 6; `PRAGMA integrity_check` is checked by
+      `npm run live:readiness` for the active config. The live-test database retains
+      `kill_switch=true` and `live_enabled=false`.
 - [x] Short real scanner smoke previously completed three cycles. Gate.io discovery
       returned 2,181 markets; MEXC and WEEX discovery timed out but were isolated. S1 remained
       unavailable with only one healthy venue; 14 S2 paths were evaluated and all failed
@@ -349,18 +349,39 @@ broadcast, withdrawal, or real credential test was performed.
       `stale_orderbook` rejections. Evidence: `packages/venues/cex/tests/hotcoin.test.ts`,
       `packages/venues/cex/tests/catalog.test.ts`, `scripts/live-readiness.ts`,
       `data/venue-probe-hotcoin.json`, `data/live-readiness-hotcoin.json`.
+- [x] S1-O22 opportunity-discovery expansion: Hotcoin now implements
+      `fetchTickers()` against the official `/v1/market/ticker` endpoint; the scanner can
+      rank a 30-base `top_volume` universe instead of only the three explicit live-test
+      bases. `config/discovery.toml` is read-only and uses clearly labelled 10 bps/leg
+      placeholders. `scripts/smoke-s1.ts` prints `topGrossRows` and `topNetRows`, so rejected
+      near misses remain visible. `scripts/capture-fixture.ts` now uses `createCexAdapter`,
+      shared fee overrides, config-driven notional/settings, and closes adapters;
+      `scripts/backtest.ts` accepts any two venue ids. Hotcoin order lookup now prefers the
+      official `detailByClOrdId` endpoint and falls back to bounded pagination; HTTP 418/429
+      errors feed rate-limit backoff. Real probe: Gate.io 2,183 tickers, Hotcoin 374 tickers,
+      both REST/WS/ticker paths succeeded. Discovery smoke found 12 groups and a best gross
+      edge of 2.00 bps, but no net-positive S1 after 20 bps round-trip fees; captured
+      Gate/Hotcoin backtest had 0 actionable samples. Evidence:
+      `packages/venues/cex/tests/hotcoin.test.ts`, `docs/s1-opportunity-discovery.md`,
+      `config/discovery.toml`, `scripts/capture-fixture.ts`, `scripts/backtest.ts`,
+      `data/venue-probe-hotcoin-tickers.json`, `data/live-readiness-discovery.json`.
 
 Detailed design: `docs/s1-event-driven-hot-path.md`.
 Clause-by-clause S1 audit: `docs/s1-completion-audit-2026-10-22.md`.
+Opportunity discovery: `docs/s1-opportunity-discovery.md`.
 
 ## External Blockers
 
 - [x] Proxy connectivity: `ARB_SOCKS_PROXY=socks5://127.0.0.1:10808` reaches Gate.io and
       Hotcoin REST and WebSocket. Gate.io 2,181 markets; Hotcoin 374 markets; both WS feeds
       produced books. Evidence: `data/venue-probe-hotcoin.json`.
+- [x] Public ticker discovery: Gate.io 2,183 tickers and Hotcoin 374 tickers through the
+      proxy; `top_volume` readiness reports `2/2 tickers ok`. Evidence:
+      `data/venue-probe-hotcoin-tickers.json`, `data/live-readiness-discovery.json`.
 - [ ] Real API keys with withdrawal permission disabled and IP-whitelist verification.
 - [ ] Hotcoin private endpoints: balance, order placement, order query, cancel, status
-      mapping, clientOrderId lookup, and 15 USDT minimum order.
+      mapping, direct `detailByClOrdId` response shape, pagination fallback, and 15 USDT
+      minimum order.
 - [ ] Gate.io and Hotcoin FOK/IOC behavior verified with real orders before enabling
       `ioc_venues` / `fok_venues`.
 - [ ] Real account fee tiers for both venues; Hotcoin has no verified fee endpoint.

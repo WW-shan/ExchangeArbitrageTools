@@ -43,6 +43,14 @@ async function main(): Promise<void> {
     .split(',')
     .map((value) => value.trim().toUpperCase())
     .filter(Boolean);
+  const universeMode = arg('--universe', 'explicit');
+  if (universeMode !== 'explicit' && universeMode !== 'top_volume') {
+    throw new Error('--universe must be explicit or top_volume');
+  }
+  const maxBaseAssets = Math.max(1, Number(arg('--max-bases', String(bases.length))));
+  const min24hQuoteVolumeUsd = new Decimal(
+    arg('--min-24h-volume', config.scanner.min24hQuoteVolumeUsd.toFixed()),
+  );
   const cycles = Math.max(1, Number(arg('--cycles', '8')));
   const intervalMs = Math.max(100, Number(arg('--interval-ms', '3000')));
   const warmupMs = Math.max(0, Number(arg('--warmup-ms', '15000')));
@@ -96,10 +104,10 @@ async function main(): Promise<void> {
     settings,
     quoteCurrency: quotes[0]!,
     baseAssets: bases,
-    assetUniverseMode: 'explicit',
-    maxBaseAssets: bases.length,
+    assetUniverseMode: universeMode,
+    maxBaseAssets: universeMode === 'explicit' ? bases.length : maxBaseAssets,
     quoteCurrencies: quotes,
-    min24hQuoteVolumeUsd: new Decimal(0),
+    min24hQuoteVolumeUsd: universeMode === 'explicit' ? new Decimal(0) : min24hQuoteVolumeUsd,
     universeRefreshMs: Number.MAX_SAFE_INTEGER,
     scanIntervalHotMs: 0,
     scanIntervalTop100Ms: 0,
@@ -156,6 +164,14 @@ async function main(): Promise<void> {
     persistSnapshots: false,
     paperSimulation: false,
   });
+  console.log(
+    JSON.stringify({
+      universeMode,
+      bases: universeMode === 'explicit' ? bases : null,
+      maxBaseAssets: universeMode === 'explicit' ? bases.length : maxBaseAssets,
+      min24hQuoteVolumeUsd: min24hQuoteVolumeUsd.toFixed(),
+    }),
+  );
   const discovered = await scanner.initialize();
   console.log('discovered', JSON.stringify(discovered));
   if (warmupMs > 0) {
@@ -198,6 +214,52 @@ async function main(): Promise<void> {
         requestedNotional: row.requested_notional,
         sampledAt: row.sampled_at,
       })),
+    ),
+  );
+  const ranked = rows.map((row) => {
+    const notional = new Decimal(String(row.requested_notional ?? '0'));
+    const gross = new Decimal(String(row.gross_spread ?? '0'));
+    let reasons: string[] = [];
+    try {
+      reasons = JSON.parse(String(row.rejection_reasons ?? '[]')) as string[];
+    } catch {
+      reasons = [];
+    }
+    return {
+      direction: String(row.direction ?? ''),
+      valid: Number(row.valid) === 1,
+      netBps: new Decimal(String(row.net_profit_bps ?? '0')),
+      grossBps: notional.gt(0) ? gross.div(notional).mul(10_000) : new Decimal(0),
+      requestedNotional: notional,
+      reasons,
+      sampledAt: Number(row.sampled_at ?? 0),
+    };
+  });
+  const serialize = (row: (typeof ranked)[number]) => ({
+    direction: row.direction,
+    valid: row.valid,
+    netBps: row.netBps.toFixed(4),
+    grossBps: row.grossBps.toFixed(4),
+    requestedNotional: row.requestedNotional.toFixed(),
+    reasons: row.reasons,
+    sampledAt: row.sampledAt,
+  });
+  console.log(
+    'topNetRows',
+    JSON.stringify(
+      [...ranked]
+        .sort((left, right) => right.netBps.comparedTo(left.netBps))
+        .slice(0, 10)
+        .map(serialize),
+    ),
+  );
+  console.log(
+    'topGrossRows',
+    JSON.stringify(
+      [...ranked]
+        .sort((left, right) => right.grossBps.comparedTo(left.grossBps))
+        .slice(0, 10)
+        .map(serialize),
     ),
   );
   await scanner.close();

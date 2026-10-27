@@ -116,17 +116,26 @@ Hotcoin is implemented through the standard `CexAdapter` interface:
 - [x] REST order-book snapshots
 - [x] gzip WebSocket depth with keepalive
 - [x] signed balance reads (`/v3/balance`, `/v1/balance` fallback)
+- [x] bulk tickers (`/v1/market/ticker`) for `top_volume` discovery
 - [x] create order (`matchType=8` FOK, `matchType=9` IOC)
-- [x] fetch order and cancel order
-- [x] documented status mapping and bounded clientOrderId pagination
-- [ ] fetch tickers (not required for the explicit-base S1 path)
+- [x] fetch order by venue id or official `detailByClOrdId`, with bounded pagination fallback
+- [x] cancel order by venue id or `clOrdId`
+- [x] documented status mapping, HTTP 418/429 backoff, and bounded clientOrderId pagination
 - [ ] fetch currencies/networks (not required while BSC is disabled)
-- [ ] venue-specific rate-limit verification
+- [ ] venue-specific rate-limit verification with real keys
 
-The public REST/WS path has integration tests and real probe evidence. Private
+The public REST/WS/ticker path has integration tests and real probe evidence. Private
 endpoints are implemented but have not been exercised with real keys. No live
 execution is enabled until private-key integration tests, FOK/IOC verification,
 and a read-only soak pass.
+
+Reference used for the private endpoint names and request shape:
+`hotcoinexchange/hotcoin-api-java` (official SDK, pushed 2026-01-20). The SDK's
+examples use signed GET for order placement/cancel and expose
+`/v1/order/detailByClOrdId`; this project keeps signed POST for those operations
+because the public endpoint accepts both, but private POST behavior still needs
+real-key verification. It uses the direct client-order-id lookup before falling
+back to pagination.
 
 ## Legal and compliance notes
 

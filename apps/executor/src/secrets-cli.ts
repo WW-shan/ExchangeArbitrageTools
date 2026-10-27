@@ -7,6 +7,8 @@ function usage(): string {
     '',
     'Reads a JSON array of credentials from stdin. Example record:',
     '{"venueId":"gateio","role":"trade","withdrawalPermission":false,"apiKey":"...","secret":"..."}',
+    'Hotcoin records additionally require the API passphrase in "password":',
+    '{"venueId":"hotcoin","role":"trade","withdrawalPermission":false,"apiKey":"...","secret":"...","password":"..."}',
     '',
     'Set the master key in ARB_SECRET_STORE_KEY (at least 16 characters). The',
     'command prints fingerprints only; it never prints API keys or secrets.',

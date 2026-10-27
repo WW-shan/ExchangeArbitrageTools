@@ -7,6 +7,7 @@ import {
   resolveBaseUnits,
   type MarketMetadata,
   type OrderBookSnapshot,
+  type TickerSnapshot,
   type VenueTier,
 } from '@arb/core';
 import { HttpsProxyAgent } from 'https-proxy-agent';
@@ -41,6 +42,7 @@ interface HotcoinEnvelope<T> {
   time?: number;
   timestamp?: number;
   data?: T;
+  ticker?: unknown;
 }
 
 interface HotcoinDepthLevels {
@@ -188,10 +190,14 @@ function normalizeParams(
 
 function proxyAgent(proxyUrl: string | undefined): Agent | undefined {
   const explicit = proxyUrl?.trim();
-  const socks = explicit?.startsWith('socks') ? explicit : process.env.ARB_SOCKS_PROXY?.trim();
+  if (explicit) {
+    return explicit.startsWith('socks')
+      ? new SocksProxyAgent(explicit)
+      : new HttpsProxyAgent(explicit);
+  }
+  const socks = process.env.ARB_SOCKS_PROXY?.trim();
   if (socks) return new SocksProxyAgent(socks);
   const httpsProxy =
-    (explicit && !explicit.startsWith('socks') ? explicit : undefined) ??
     process.env.ARB_HTTPS_PROXY?.trim() ??
     process.env.HTTPS_PROXY?.trim() ??
     process.env.HTTP_PROXY?.trim();
@@ -298,18 +304,15 @@ function normalizeSide(row: Record<string, unknown>): 'buy' | 'sell' {
 
 function normalizeOrder(row: Record<string, unknown>, fallbackSymbol?: string): OrderState {
   const amount = firstDecimal(row, ['count', 'tradeAmount', 'amount', 'quantity']) ?? ZERO;
-  const left =
-    firstDecimal(row, ['leftcount', 'leftCount', 'remaining']) ??
-    firstDecimal(row, ['count', 'tradeAmount', 'amount', 'quantity']);
-  const filledFromLeft = left !== undefined ? amount.minus(left) : undefined;
+  const left = firstDecimal(row, ['leftcount', 'leftCount', 'remaining']);
   const filled = firstDecimal(row, [
     'successamount',
     'successAmount',
     'tradeTotalAmount',
     'filled',
   ]);
-  const filledAmount = filledFromLeft ?? filled ?? ZERO;
-  const remaining = left ?? Decimal.max(0, amount.minus(filledAmount));
+  const filledAmount = Decimal.max(0, left !== undefined ? amount.minus(left) : (filled ?? ZERO));
+  const remaining = Decimal.max(0, left ?? amount.minus(filledAmount));
   const price = firstDecimal(row, ['price', 'tradePrice']);
   const turnover = firstDecimal(row, ['tradeTurnover', 'turnover', 'successTurnover']);
   const average =
@@ -396,6 +399,7 @@ export class HotcoinAdapter implements CexAdapter {
   readonly #controllers = new Set<AbortController>();
   readonly #sockets = new Set<HotcoinWebSocketLike>();
   #clockOffsetMs = 0;
+  #consecutiveFailures = 0;
   #closed = false;
 
   constructor(options: HotcoinAdapterOptions = {}) {
@@ -443,12 +447,12 @@ export class HotcoinAdapter implements CexAdapter {
     return serverTime === undefined ? undefined : serverTime - this.#clockOffsetMs;
   }
 
-  private async request<T>(
+  private async requestEnvelope<T>(
     path: string,
     params: Readonly<Record<string, string | number | boolean | undefined>>,
     credentials?: ApiCredentials,
     method: 'GET' | 'POST' = 'GET',
-  ): Promise<{ data: T; serverTime?: number }> {
+  ): Promise<{ envelope: HotcoinEnvelope<T>; serverTime?: number }> {
     this.ensureOpen();
     const normalized = normalizeParams(params);
     const signed = credentials !== undefined;
@@ -490,7 +494,11 @@ export class HotcoinAdapter implements CexAdapter {
       const body = await response.text();
       const endedAt = this.#clock();
       if (response.status < 200 || response.status >= 300) {
-        throw new Error(`Hotcoin HTTP ${response.status}: ${body.slice(0, 200)}`);
+        const error = new Error(
+          `Hotcoin HTTP ${response.status}: ${body.slice(0, 200)}`,
+        ) as Error & { status?: number };
+        error.status = response.status;
+        throw error;
       }
       let envelope: HotcoinEnvelope<T>;
       try {
@@ -506,35 +514,74 @@ export class HotcoinAdapter implements CexAdapter {
           statusText !== 'success' &&
           statusText !== '0')
       ) {
-        throw new Error(
+        const error = new Error(
           `Hotcoin API ${envelope.code ?? statusText}: ${envelope.msg ?? 'unknown error'}`,
-        );
+        ) as Error & { status?: number; code?: number };
+        if (envelope.code !== undefined) error.code = envelope.code;
+        throw error;
       }
       const serverTime = numberOrUndefined(envelope.time ?? envelope.timestamp);
       this.updateClockOffset(serverTime, startedAt, endedAt);
+      const recovered = this.#consecutiveFailures > 0;
+      this.#consecutiveFailures = 0;
       this.#runtime?.onSuccess?.(endedAt - startedAt);
-      this.#runtime?.onRecover?.();
+      if (recovered) this.#runtime?.onRecover?.();
       return {
-        data: envelope.data as T,
+        envelope,
         ...(serverTime !== undefined ? { serverTime } : {}),
       };
     } catch (error) {
       const endedAt = this.#clock();
       const status = numberOrUndefined((error as { status?: unknown }).status);
+      const code = numberOrUndefined((error as { code?: unknown }).code);
       const message = error instanceof Error ? error.message : String(error);
-      const rateLimited = status === 429 || /rate.?limit|too many|429/i.test(message);
+      const rateLimited =
+        status === 418 ||
+        status === 429 ||
+        code === 418 ||
+        code === 429 ||
+        /rate.?limit|too many|429/i.test(message);
+      const transient =
+        rateLimited ||
+        (status ?? 0) >= 500 ||
+        /timeout|timed out|network|socket|econn|enotfound|eai_again|fetch failed|connection reset/i.test(
+          message,
+        );
+      this.#consecutiveFailures = Math.min(this.#consecutiveFailures + 1, 6);
       this.#runtime?.onFailure?.(endedAt - startedAt, rateLimited);
-      if (rateLimited) {
+      if (transient) {
+        const retryAfterMs = rateLimited
+          ? 1000
+          : Math.min(60_000, 1000 * 2 ** (this.#consecutiveFailures - 1));
+        this.#runtime?.rateLimiter.respectRetryAfter(retryAfterMs);
         this.#runtime?.onBackoff?.({
-          backoffUntil: endedAt + 1000,
-          retryAfterMs: 1000,
+          backoffUntil: endedAt + retryAfterMs,
+          retryAfterMs,
           reason: message,
-          consecutiveFailures: 1,
-          rateLimited: true,
+          consecutiveFailures: this.#consecutiveFailures,
+          rateLimited,
         });
       }
       throw error;
     }
+  }
+
+  private async request<T>(
+    path: string,
+    params: Readonly<Record<string, string | number | boolean | undefined>>,
+    credentials?: ApiCredentials,
+    method: 'GET' | 'POST' = 'GET',
+  ): Promise<{ data: T; serverTime?: number }> {
+    const { envelope, serverTime } = await this.requestEnvelope<T>(
+      path,
+      params,
+      credentials,
+      method,
+    );
+    return {
+      data: envelope.data as T,
+      ...(serverTime !== undefined ? { serverTime } : {}),
+    };
   }
 
   async loadMarkets(): Promise<MarketMetadata[]> {
@@ -570,6 +617,43 @@ export class HotcoinAdapter implements CexAdapter {
       });
     }
     return markets;
+  }
+
+  async fetchTickers(): Promise<TickerSnapshot[]> {
+    const { envelope } = await this.requestEnvelope<unknown>('/v1/market/ticker', {});
+    const rows = Array.isArray(envelope.ticker)
+      ? envelope.ticker
+      : Array.isArray(envelope.data)
+        ? envelope.data
+        : [];
+    const fetchedAt = this.#clock();
+    const envelopeTimestamp = numberOrUndefined(envelope.timestamp);
+    return rows.flatMap((value) => {
+      const row = recordOrUndefined(value);
+      if (!row) return [];
+      const symbol = firstString(row, ['symbol', 'exchangeSymbol']);
+      if (!symbol) return [];
+      const last = firstDecimal(row, ['last', 'close', 'price']);
+      const bid = firstDecimal(row, ['buy', 'bid']);
+      const ask = firstDecimal(row, ['sell', 'ask']);
+      const baseVolume = firstDecimal(row, ['vol', 'baseVolume', 'volume']);
+      const quoteVolume = firstDecimal(row, ['amount', 'quoteVolume', 'turnover']);
+      const rawTimestamp =
+        numberOrUndefined(row.ts ?? row.timestamp) ?? envelopeTimestamp ?? fetchedAt;
+      const timestamp = rawTimestamp < 1e11 ? rawTimestamp * 1000 : rawTimestamp;
+      return [
+        {
+          venueId: this.venueId,
+          exchangeSymbol: symbol,
+          ...(last !== undefined ? { last } : {}),
+          ...(bid !== undefined ? { bid } : {}),
+          ...(ask !== undefined ? { ask } : {}),
+          ...(baseVolume !== undefined ? { baseVolume } : {}),
+          ...(quoteVolume !== undefined ? { quoteVolume } : {}),
+          timestamp,
+        },
+      ];
+    });
   }
 
   async fetchOrderBook(symbol: string, depth: number): Promise<OrderBookSnapshot> {
@@ -739,6 +823,9 @@ export class HotcoinAdapter implements CexAdapter {
   }
 
   async fetchBalances(keys: ApiCredentials): Promise<BalanceSnapshot[]> {
+    if (!this.capabilities.privateBalances) {
+      throw new Error('Hotcoin adapter has no private credentials');
+    }
     let data: unknown;
     try {
       data = (await this.request<unknown>('/v3/balance', {}, keys)).data;
@@ -779,7 +866,9 @@ export class HotcoinAdapter implements CexAdapter {
   }
 
   async createOrder(request: OrderRequest, keys: ApiCredentials): Promise<OrderState> {
-    if (this.#readOnly) throw new Error('Hotcoin adapter is read-only');
+    if (!this.capabilities.createOrder) {
+      throw new Error('Hotcoin adapter is read-only or missing credentials');
+    }
     if (request.type === 'limit' && !request.price)
       throw new Error('Hotcoin limit order requires price');
     if (request.timeInForce === 'IOC' && !this.capabilities.ioc) {
@@ -826,7 +915,9 @@ export class HotcoinAdapter implements CexAdapter {
   }
 
   async fetchOrder(request: OrderQuery, keys: ApiCredentials): Promise<OrderState> {
-    if (this.#readOnly) throw new Error('Hotcoin adapter is read-only');
+    if (!this.capabilities.fetchOrder) {
+      throw new Error('Hotcoin adapter is read-only or missing credentials');
+    }
     if (request.venueOrderId) {
       const result = await this.request<unknown>(
         '/v1/order/detailById',
@@ -838,7 +929,20 @@ export class HotcoinAdapter implements CexAdapter {
       return normalizeOrder(row, request.symbol);
     }
     if (!request.clientOrderId) throw new Error('venueOrderId or clientOrderId is required');
-    if (!request.symbol) throw new Error('symbol is required for Hotcoin clientOrderId lookup');
+    try {
+      const direct = await this.request<unknown>(
+        '/v1/order/detailByClOrdId',
+        { clOrdId: request.clientOrderId },
+        keys,
+      );
+      const row = recordOrUndefined(direct.data);
+      if (row) return normalizeOrder(row, request.symbol);
+    } catch (error) {
+      if (/rate.?limit|429|auth|signature|permission|forbidden/i.test(String(error))) throw error;
+    }
+    if (!request.symbol) {
+      throw new Error('symbol is required when Hotcoin direct clientOrderId lookup misses');
+    }
     const pageSize = 100;
     const maxPages = 20;
     let pagesScanned = 0;
@@ -863,15 +967,24 @@ export class HotcoinAdapter implements CexAdapter {
   }
 
   async cancelOrder(request: OrderQuery, keys: ApiCredentials): Promise<OrderState> {
-    if (this.#readOnly) throw new Error('Hotcoin adapter is read-only');
-    let venueOrderId = request.venueOrderId;
-    if (!venueOrderId && request.clientOrderId) {
-      venueOrderId = (await this.fetchOrder(request, keys)).venueOrderId;
+    if (!this.capabilities.cancelOrder) {
+      throw new Error('Hotcoin adapter is read-only or missing credentials');
     }
-    if (!venueOrderId) throw new Error('venueOrderId or clientOrderId is required');
-    await this.request<unknown>('/v1/order/cancel', { id: venueOrderId }, keys, 'POST');
+    const venueOrderId = request.venueOrderId;
+    if (!venueOrderId && !request.clientOrderId) {
+      throw new Error('venueOrderId or clientOrderId is required');
+    }
+    await this.request<unknown>(
+      '/v1/order/cancel',
+      venueOrderId ? { id: venueOrderId } : { clOrdId: request.clientOrderId! },
+      keys,
+      'POST',
+    );
     return this.fetchOrder(
-      { venueOrderId, ...(request.symbol ? { symbol: request.symbol } : {}) },
+      {
+        ...(venueOrderId ? { venueOrderId } : { clientOrderId: request.clientOrderId! }),
+        ...(request.symbol ? { symbol: request.symbol } : {}),
+      },
       keys,
     );
   }

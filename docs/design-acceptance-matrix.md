@@ -1,6 +1,6 @@
 # Design Acceptance Matrix
 
-Last verified: 2026-10-21 (Asia/Hong_Kong).
+Last verified: 2026-10-27 (Asia/Hong_Kong).
 
 This file is the audit trail for the design documents. A row is `[x]` only when the
 implementation and an automated check were both inspected. `[~]` means the code path
@@ -64,6 +64,7 @@ does not mean the system is live-ready.
 | S1-8  | Persist orders, queries, fills, fees, risk events, and restart recovery.       | repository audit tests; bootstrap recovery tests                      | [x]    |
 | S1-9  | Complete 20 consecutive synthetic paper batches and failure paths.             | `npm run backtest`: 20/20; five failure scenarios entered `SAFE_STOP` | [x]    |
 | S1-10 | Provide the production executor entry and scanner-to-executor handoff.         | `main.ts`, `handoff.ts`, `config.ts`; handoff/config tests; CLI smoke | [x]    |
+| S1-11 | Expand the read-only universe with real tickers and expose near misses.        | Hotcoin `/v1/market/ticker`; `config/discovery.toml`; `topGrossRows`  | [x]    |
 | S1-E1 | Real API keys with no withdrawal permission and encrypted storage.             | requires user credentials and secret-store setup                      | [!]    |
 | S1-E2 | 24-hour read-only soak with all configured venues healthy.                     | requires time and live public endpoints                               | [!]    |
 | S1-E3 | 10 manually confirmed live batches with 80% full reconciliation.               | requires real capital, operator, and opportunities                    | [!]    |
