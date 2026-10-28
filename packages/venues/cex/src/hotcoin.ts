@@ -355,6 +355,10 @@ function normalizeOrderStatus(row: Record<string, unknown>): OrderState['status'
   return 'unknown';
 }
 
+function isHotcoinOrderNotFoundError(error: unknown): boolean {
+  return /40010|委单不存在|order not found/i.test(String(error));
+}
+
 function normalizeSide(row: Record<string, unknown>): 'buy' | 'sell' {
   const text = firstString(row, ['types', 'side'])?.toLowerCase();
   if (text === 'sell') return 'sell';
@@ -1212,17 +1216,26 @@ export class HotcoinAdapter implements CexAdapter {
     if (!this.capabilities.fetchOrder) {
       throw new Error('Hotcoin adapter is read-only or missing credentials');
     }
+    let missingVenueOrderError: unknown;
     if (request.venueOrderId) {
-      const result = await this.request<unknown>(
-        '/v1/order/detailById',
-        { id: request.venueOrderId },
-        keys,
-      );
-      const row = recordOrUndefined(result.data);
-      if (!row) throw new Error('Hotcoin order details are empty');
-      return normalizeOrder(row, request.symbol);
+      try {
+        const result = await this.request<unknown>(
+          '/v1/order/detailById',
+          { id: request.venueOrderId },
+          keys,
+        );
+        const row = recordOrUndefined(result.data);
+        if (!row) throw new Error('Hotcoin order details are empty');
+        return normalizeOrder(row, request.symbol);
+      } catch (error) {
+        if (!isHotcoinOrderNotFoundError(error)) throw error;
+        missingVenueOrderError = error;
+      }
     }
-    if (!request.clientOrderId) throw new Error('venueOrderId or clientOrderId is required');
+    if (!request.clientOrderId) {
+      if (missingVenueOrderError) throw missingVenueOrderError;
+      throw new Error('venueOrderId or clientOrderId is required');
+    }
     try {
       const direct = await this.request<unknown>(
         '/v1/order/detailByClOrdId',

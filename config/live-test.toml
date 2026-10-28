@@ -72,7 +72,7 @@ max_open_batches = 1
 daily_max_loss_usd = "5"
 handoff_max_age_ms = 15000
 ioc_venues = []
-fok_venues = []
+fok_venues = ['gateio', 'hotcoin']
 
 [transfers]
 enabled = false
@@ -140,5 +140,9 @@ taker_bps = 20
 maker_bps = 20
 rebate_pct = 80
 
-# Hotcoin documents matchType=8 (FOK) and matchType=9 (IOC). Keep both arrays
-# empty until the API-key phase verifies the exact order behaviour on both legs.
+# 2026-10-28 private probes verified the no-fill path on both venues:
+# - Gate.io returned FOK_NOT_FILL with zero fill and unchanged balance.
+# - Hotcoin matchType=8 accepted the order, then exposed no order and no frozen
+#   balance; the executor now confirms such IOC/FOK misses from pre-submit and
+#   post-submit balances before closing the batch.
+# Keep IOC empty: only the FOK path has been verified end-to-end on both venues.

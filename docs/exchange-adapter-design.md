@@ -111,8 +111,9 @@ Hotcoin is not supported by CCXT. The custom adapter implements:
 - clientOrderId lookup with bounded pagination and fail-closed behavior;
 - read-only and trade modes, with withdrawal capabilities absent by design.
 
-The public REST/WS path is verified. Private endpoints, FOK/IOC behavior, order-state
-transitions, and the 15 USDT minimum notional still require real API-key tests.
+The public REST/WS path is verified. Private balances and the zero-fill FOK/IOC path are
+verified; filled-order transitions, sell-side reconciliation, and the 15 USDT minimum
+notional still require real API-key tests (`docs/fok-private-probe-2026-10-28.md`).
 
 ### Tier A
 

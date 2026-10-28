@@ -118,12 +118,12 @@ Last verified: 2026-10-28 (Asia/Hong_Kong). The clause-by-clause audit is in
 - [x] Capacity is bounded by stored buy-venue quote and sell-venue base balances when
       available; missing or zero balances produce explicit flags and can fail closed with
       `--require-balances`.
-- [~] Real private balances have not been fetched or reconciled, so the balance-aware
-  path has automated and stored-fixture evidence only.
+- [~] Real private balances have been fetched (`Gate 20 USDT`, `Hotcoin 19.95 USDT`), but
+  no live opportunity has exercised balance-aware capacity end to end.
 - [~] Low-volume candidates have been confirmed with repeated REST snapshots, but not yet
   with a sustained WebSocket subscription and persistence/lifetime statistics.
-- [~] Sell-first execution is not implemented. Real Gate/Hotcoin IOC/FOK behaviour still
-  requires private API verification before either parallel or sell-first mode is enabled.
+- [~] Sell-first execution is not implemented. Real Gate/Hotcoin FOK no-fill behaviour is
+  verified; filled FOK and sell-side reconciliation still require a real batch.
 - [!] 24-hour read-only soak and 10 manually confirmed live batches require real
   credentials, an operator, and actual market opportunities.
 
@@ -421,8 +421,8 @@ Opportunity discovery: `docs/s1-opportunity-discovery.md`.
 - [ ] Hotcoin private endpoints: balance, order placement, order query, cancel, status
       mapping, direct `detailByClOrdId` response shape, pagination fallback, and 15 USDT
       minimum order.
-- [ ] Gate.io and Hotcoin FOK/IOC behavior verified with real orders before enabling
-      `ioc_venues` / `fok_venues`.
+- [~] Gate.io and Hotcoin FOK no-fill behavior verified with real orders; filled FOK and
+  sell-side still pending before enabling `ioc_venues` / broader live use.
 - [x] Real account fee tiers for both venues: Gate personal-fee API and Hotcoin
       official VIP0 schedule, with 70% / 80% spot rebates configured as gross
       rates plus `rebate_pct`. Evidence: `docs/fee-rate-sources-2026-10-28.md`.

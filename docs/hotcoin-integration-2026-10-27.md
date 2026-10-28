@@ -259,6 +259,11 @@ npm run live:readiness
    `clientOrderId` 在超过 100 条委托时仍能通过分页回退找到。
 7. 通过后再把场所写入 `ioc_venues` / `fok_venues`。
 
+2026-10-28 实测补充：零成交 FOK/IOC 订单在 `detailById`、`detailByClOrdId`
+和 `/v1/order/entrust`（type 0/1/2）中都查不到，余额也不会冻结。执行器因此
+增加了“提交前后余额连续两次不变”的零成交确认；余额有任何变化仍然 fail closed。
+详见 `docs/fok-private-probe-2026-10-28.md`。
+
 ### 7.4 最小额与精度
 
 1. Hotcoin 15 USDT 最小名义额：确认 14.99 被拒绝、15.00 可下单。
@@ -284,7 +289,7 @@ npm run live:readiness
 - Hotcoin 深度推送约 1–3 秒一次，明显慢于 Gate.io；live-test 使用
   `max_feed_latency_ms=3000`、`ws_max_book_age_ms=3000`、`max_pair_skew_ms=2500` 作为当前折中。
 - Gate.io 的 CCXT Pro 首次 WS 初始化可能很慢，readiness 使用 30 秒超时。
-- Hotcoin 私有接口、FOK/IOC、订单状态、余额字段仍需真实 key 验证。
+- Hotcoin 私有余额、FOK/IOC 零成交已验证；成交订单的查单、状态映射和卖出腿仍需实测。
 - `/v1/order/detailByClOrdId` 已按官方 SDK 接入，但真实订单返回结构仍需 key 实测。
 - 当前只验证 S1；S2/S3/BSC 不在本轮实盘范围。
 - 没有真实费率时，零费率 smoke 的正收益不代表可执行机会。

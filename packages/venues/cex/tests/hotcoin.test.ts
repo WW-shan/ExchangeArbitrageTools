@@ -464,6 +464,34 @@ describe('Hotcoin private adapter', () => {
     expect(new URL(requests[2]!.url).searchParams.get('page')).toBe('2');
   });
 
+  it('falls back to clientOrderId when detailById reports not found', async () => {
+    const { client, requests } = clientWith((request) => {
+      const path = new URL(request.url).pathname;
+      if (path === '/v1/order/detailById') {
+        return { code: 40010, msg: '委单不存在', time: now, data: null };
+      }
+      if (path === '/v1/order/detailByClOrdId') {
+        return { code: 200, msg: 'success', time: now, data: detailRow(3) };
+      }
+      throw new Error(`unexpected path ${path}`);
+    });
+    const adapter = new HotcoinAdapter({
+      httpClient: client,
+      credentials: keys,
+      readOnly: false,
+      clock: () => now,
+    });
+    const order = await adapter.fetchOrder(
+      { venueOrderId: '999', clientOrderId: 'batch-L1', symbol: 'cake_usdt' },
+      keys,
+    );
+    expect(order.venueOrderId).toBe('12345');
+    expect(requests.map((request) => new URL(request.url).pathname)).toEqual([
+      '/v1/order/detailById',
+      '/v1/order/detailByClOrdId',
+    ]);
+  });
+
   it('uses the official detailByClOrdId endpoint before paginating', async () => {
     const { client, requests } = clientWith((request) => {
       const url = new URL(request.url);

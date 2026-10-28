@@ -25,7 +25,13 @@ import {
   type RiskLimits,
 } from '@arb/core';
 import type { ArbitrageRepository } from '@arb/storage';
-import type { ApiCredentials, CexAdapter, OrderQuery, OrderState } from '@arb/venues-cex';
+import type {
+  ApiCredentials,
+  BalanceSnapshot,
+  CexAdapter,
+  OrderQuery,
+  OrderState,
+} from '@arb/venues-cex';
 
 export interface ExecutionVenue {
   adapter: CexAdapter;
@@ -68,6 +74,11 @@ interface PreparedLimitOrder {
   clientOrderId: string;
 }
 
+interface VenueBalanceBaseline {
+  base?: BalanceSnapshot;
+  quote?: BalanceSnapshot;
+}
+
 interface ParallelFokPlan {
   request: LiveExecutionRequest;
   executionId: number;
@@ -78,10 +89,76 @@ interface ParallelFokPlan {
   sellAmount: Decimal;
   buyMultiplier: Decimal;
   sellMultiplier: Decimal;
+  buyBalanceBaseline: VenueBalanceBaseline;
+  sellBalanceBaseline: VenueBalanceBaseline;
   transition: (to: BatchState) => void;
   safeStop: (reason: string) => LiveExecutionResult;
   outcome: (value: LiveExecutionOutcome, realized?: Decimal) => LiveExecutionResult;
   states: () => readonly BatchState[];
+}
+
+function findBalance(
+  rows: readonly BalanceSnapshot[],
+  venueId: string,
+  currency: string,
+): BalanceSnapshot | undefined {
+  return rows.find(
+    (balance) =>
+      balance.venueId === venueId && balance.currency.toUpperCase() === currency.toUpperCase(),
+  );
+}
+
+function venueBalanceBaseline(
+  venue: ExecutionVenue,
+  rows: readonly BalanceSnapshot[],
+): VenueBalanceBaseline {
+  const base = findBalance(rows, venue.adapter.venueId, marketExchangeBase(venue.market));
+  const quote = findBalance(rows, venue.adapter.venueId, venue.market.quote);
+  return {
+    ...(base ? { base } : {}),
+    ...(quote ? { quote } : {}),
+  };
+}
+
+function sameBalanceValue(left?: BalanceSnapshot, right?: BalanceSnapshot): boolean {
+  const normalize = (value?: BalanceSnapshot): string =>
+    value ? `${value.free.toFixed()}|${value.used.toFixed()}|${value.total.toFixed()}` : 'missing';
+  return normalize(left) === normalize(right);
+}
+
+function syntheticNoFillOrder(
+  order: {
+    venueOrderId?: string;
+    clientOrderId: string;
+    symbol: string;
+    side: 'buy' | 'sell';
+    type: string;
+    price?: Decimal;
+    amount: Decimal;
+  },
+  reason: string,
+): OrderState {
+  return {
+    venueOrderId: order.venueOrderId ?? order.clientOrderId,
+    clientOrderId: order.clientOrderId,
+    symbol: order.symbol,
+    side: order.side,
+    type: order.type,
+    ...(order.price ? { price: order.price } : {}),
+    amount: order.amount,
+    filled: ZERO,
+    remaining: order.amount,
+    status: 'canceled',
+    raw: { reconciliation: reason },
+  };
+}
+
+function isDefinitiveNoFillCreateError(error: unknown): boolean {
+  return /FOK_NOT_FILL|cannot be filled completely|ioc[^\n]*not[^\n]*fill/i.test(String(error));
+}
+
+function isOrderNotFoundError(message: string): boolean {
+  return /委单不存在|order not found/i.test(message);
 }
 
 export interface CexLiveExecutorOptions {
@@ -414,6 +491,7 @@ export class CexLiveExecutor {
       transition('PREFLIGHT_FAILED');
       return outcome('PREFLIGHT_FAILED');
     }
+    const balanceBaselines = { buy: balances.buy, sell: balances.sell };
     const preflightAt = this.#clock();
     const decision = this.#gate.preflight({
       requestedNotional: refreshed.requestedNotional,
@@ -571,6 +649,8 @@ export class CexLiveExecutor {
         sellAmount: plannedLeg2Amount,
         buyMultiplier,
         sellMultiplier,
+        buyBalanceBaseline: balanceBaselines.buy,
+        sellBalanceBaseline: balanceBaselines.sell,
         transition,
         safeStop,
         outcome,
@@ -591,35 +671,55 @@ export class CexLiveExecutor {
     };
     this.prepareOrder(request, 1, leg1Request);
     let leg1: OrderState;
+    let leg1NoFill = false;
     ordersSubmitted += 1;
     try {
       leg1 = await request.buy.adapter.createOrder!(leg1Request, request.buy.credentials);
       this.persistOrder(request, 1, leg1);
     } catch (error) {
-      this.markSubmissionUnknown(request, 1, leg1Request, error);
-      this.#repository.updateExecutionStatus(executionId, 'LEG1_UNKNOWN', {
-        safeModeReason: 'ambiguous_leg1_submission',
-      });
-      transition('LEG1_UNKNOWN');
-      const recovered = await this.reconcile(request, request.buy, 1);
-      if (recovered.ok && recovered.order.filled.gt(0)) {
-        this.recordUnhedgedInventory(
-          request,
-          executionId,
-          canonicalAmountFromExchange(recovered.order.filled, buyMultiplier),
-          this.conservativePrice(
-            recovered.order.averagePrice
-              ? canonicalPriceFromExchange(recovered.order.averagePrice, buyMultiplier)
-              : refreshed.expectedBuyPrice,
-            refreshed.expectedSellPrice,
-          ),
-          'ambiguous_leg1_fill_reconciled',
+      if (isDefinitiveNoFillCreateError(error)) {
+        leg1 = syntheticNoFillOrder(leg1Request, 'definitive_ioc_or_fok_no_fill');
+        leg1NoFill = true;
+        this.persistOrder(request, 1, leg1);
+        this.#repository.recordRiskEvent(
+          'info',
+          'definitive_no_fill_submission',
+          'venue explicitly rejected an IOC/FOK order without filling',
+          {
+            batchId: request.batchId,
+            leg: 1,
+            venueId: request.buy.adapter.venueId,
+            error: String(error),
+          },
         );
+      } else {
+        this.markSubmissionUnknown(request, 1, leg1Request, error);
+        this.#repository.updateExecutionStatus(executionId, 'LEG1_UNKNOWN', {
+          safeModeReason: 'ambiguous_leg1_submission',
+        });
+        transition('LEG1_UNKNOWN');
+        const recovered = await this.reconcile(request, request.buy, 1);
+        if (recovered.ok && recovered.order.filled.gt(0)) {
+          this.recordUnhedgedInventory(
+            request,
+            executionId,
+            canonicalAmountFromExchange(recovered.order.filled, buyMultiplier),
+            this.conservativePrice(
+              recovered.order.averagePrice
+                ? canonicalPriceFromExchange(recovered.order.averagePrice, buyMultiplier)
+                : refreshed.expectedBuyPrice,
+              refreshed.expectedSellPrice,
+            ),
+            'ambiguous_leg1_fill_reconciled',
+          );
+        }
+        return safeStop('ambiguous_leg1_submission');
       }
-      return safeStop('ambiguous_leg1_submission');
     }
 
-    const reconciledLeg1 = await this.reconcile(request, request.buy, 1, leg1);
+    const reconciledLeg1 = leg1NoFill
+      ? { ok: true as const, order: leg1 }
+      : await this.reconcile(request, request.buy, 1, leg1, balanceBaselines.buy, leg1TimeInForce);
     transition('LEG1_RECONCILING');
     if (!reconciledLeg1.ok) return safeStop(reconciledLeg1.reason);
     let first = reconciledLeg1.order;
@@ -797,28 +897,62 @@ export class CexLiveExecutor {
     };
     this.prepareOrder(request, 2, leg2Request);
     let leg2: OrderState;
+    let leg2NoFill = false;
     ordersSubmitted += 1;
     try {
       leg2 = await request.sell.adapter.createOrder!(leg2Request, request.sell.credentials);
       this.persistOrder(request, 2, leg2);
     } catch (error) {
-      this.markSubmissionUnknown(request, 2, leg2Request, error);
-      this.#repository.updateExecutionStatus(executionId, 'LEG2_UNKNOWN');
-      transition('LEG2_UNKNOWN');
-      const recovered = await this.reconcile(request, request.sell, 2);
-      const reconciledFill = recovered.ok ? recovered.order.filled : ZERO;
-      const reconciledCanonical = canonicalAmountFromExchange(reconciledFill, sellMultiplier);
-      this.recordUnhedgedInventory(
-        request,
-        executionId,
-        Decimal.max(0, boughtCanonical.minus(reconciledCanonical)),
-        this.conservativePrice(buyCanonicalAverage, executionSellDepth.averagePrice),
-        'ambiguous_leg2_submission',
-      );
-      return safeStop('ambiguous_leg2_submission');
+      if (isDefinitiveNoFillCreateError(error)) {
+        leg2 = syntheticNoFillOrder(leg2Request, 'definitive_ioc_or_fok_no_fill');
+        leg2NoFill = true;
+        this.persistOrder(request, 2, leg2);
+        this.#repository.recordRiskEvent(
+          'warning',
+          'definitive_no_fill_submission',
+          'venue explicitly rejected the hedge IOC/FOK order without filling',
+          {
+            batchId: request.batchId,
+            leg: 2,
+            venueId: request.sell.adapter.venueId,
+            error: String(error),
+          },
+        );
+      } else {
+        this.markSubmissionUnknown(request, 2, leg2Request, error);
+        this.#repository.updateExecutionStatus(executionId, 'LEG2_UNKNOWN');
+        transition('LEG2_UNKNOWN');
+        const recovered = await this.reconcile(
+          request,
+          request.sell,
+          2,
+          undefined,
+          balanceBaselines.sell,
+          leg2TimeInForce,
+        );
+        const reconciledFill = recovered.ok ? recovered.order.filled : ZERO;
+        const reconciledCanonical = canonicalAmountFromExchange(reconciledFill, sellMultiplier);
+        this.recordUnhedgedInventory(
+          request,
+          executionId,
+          Decimal.max(0, boughtCanonical.minus(reconciledCanonical)),
+          this.conservativePrice(buyCanonicalAverage, executionSellDepth.averagePrice),
+          'ambiguous_leg2_submission',
+        );
+        return safeStop('ambiguous_leg2_submission');
+      }
     }
 
-    const reconciledLeg2 = await this.reconcile(request, request.sell, 2, leg2);
+    const reconciledLeg2 = leg2NoFill
+      ? { ok: true as const, order: leg2 }
+      : await this.reconcile(
+          request,
+          request.sell,
+          2,
+          leg2,
+          balanceBaselines.sell,
+          leg2TimeInForce,
+        );
     transition('LEG2_RECONCILING');
     if (!reconciledLeg2.ok) {
       this.recordUnhedgedInventory(
@@ -982,12 +1116,21 @@ export class CexLiveExecutor {
 
     plan.transition('PARALLEL_RECONCILING');
     const [buyReconciliation, sellReconciliation] = await Promise.all([
-      this.reconcile(request, request.buy, 1, buySubmission.ok ? buySubmission.order : undefined),
+      this.reconcile(
+        request,
+        request.buy,
+        1,
+        buySubmission.ok ? buySubmission.order : undefined,
+        plan.buyBalanceBaseline,
+        'FOK',
+      ),
       this.reconcile(
         request,
         request.sell,
         2,
         sellSubmission.ok ? sellSubmission.order : undefined,
+        plan.sellBalanceBaseline,
+        'FOK',
       ),
     ]);
     let buyOrderState = buyReconciliation.ok ? buyReconciliation.order : undefined;
@@ -1181,6 +1324,22 @@ export class CexLiveExecutor {
       this.persistOrder(request, leg, state);
       return { ok: true, order: state, submittedAt, respondedAt: this.#clock() };
     } catch (error) {
+      if (isDefinitiveNoFillCreateError(error)) {
+        const state = syntheticNoFillOrder(order, 'definitive_ioc_or_fok_no_fill');
+        this.persistOrder(request, leg, state);
+        this.#repository.recordRiskEvent(
+          'info',
+          'definitive_no_fill_submission',
+          'venue explicitly rejected a parallel FOK order without filling',
+          {
+            batchId: request.batchId,
+            leg,
+            venueId: venue.adapter.venueId,
+            error: String(error),
+          },
+        );
+        return { ok: true, order: state, submittedAt, respondedAt: this.#clock() };
+      }
       this.markSubmissionUnknown(request, leg, order, error);
       return { ok: false, error: String(error), submittedAt, respondedAt: this.#clock() };
     }
@@ -1226,7 +1385,10 @@ export class CexLiveExecutor {
     request: LiveExecutionRequest,
     requiredQuote: Decimal,
     requiredBase: Decimal,
-  ): Promise<{ ok: true } | { ok: false; reasons: string[] }> {
+  ): Promise<
+    | { ok: true; buy: VenueBalanceBaseline; sell: VenueBalanceBaseline }
+    | { ok: false; reasons: string[] }
+  > {
     try {
       const buyBalances = await request.buy.adapter.fetchBalances!(request.buy.credentials);
       const sellBalances = await request.sell.adapter.fetchBalances!(request.sell.credentials);
@@ -1260,7 +1422,13 @@ export class CexLiveExecutor {
         : ZERO;
       if (!baseBalance || baseFreeCanonical.lt(requiredBase))
         reasons.push('sell_base_balance_insufficient');
-      return reasons.length === 0 ? { ok: true } : { ok: false, reasons };
+      return reasons.length === 0
+        ? {
+            ok: true,
+            buy: venueBalanceBaseline(request.buy, buyBalances),
+            sell: venueBalanceBaseline(request.sell, sellBalances),
+          }
+        : { ok: false, reasons };
     } catch (error) {
       return { ok: false, reasons: [`balance_fetch_failed: ${String(error)}`] };
     }
@@ -1293,6 +1461,8 @@ export class CexLiveExecutor {
     venue: ExecutionVenue,
     legNumber: 1 | 2,
     submitted?: OrderState,
+    baseline?: VenueBalanceBaseline,
+    timeInForce?: 'IOC' | 'FOK',
   ): Promise<{ ok: true; order: OrderState } | { ok: false; reason: string }> {
     let lastError = '';
     for (let attempt = 0; attempt < 3; attempt += 1) {
@@ -1315,11 +1485,111 @@ export class CexLiveExecutor {
       }
       await this.#sleep(250 * (attempt + 1));
     }
+    if (submitted && baseline && timeInForce && isOrderNotFoundError(lastError)) {
+      const confirmed = await this.confirmNoFillFromBalances(
+        request,
+        venue,
+        legNumber,
+        submitted,
+        baseline,
+      );
+      if (confirmed.ok) return confirmed;
+      lastError = confirmed.reason;
+    }
     this.#repository.updateExecutionLeg(`${request.batchId}-L${legNumber}`, {
       status: 'unknown',
       error: lastError,
     });
     return { ok: false, reason: lastError };
+  }
+
+  private async confirmNoFillFromBalances(
+    request: LiveExecutionRequest,
+    venue: ExecutionVenue,
+    legNumber: 1 | 2,
+    submitted: OrderState,
+    baseline: VenueBalanceBaseline,
+  ): Promise<{ ok: true; order: OrderState } | { ok: false; reason: string }> {
+    if (!venue.adapter.fetchBalances) {
+      return { ok: false, reason: `leg${legNumber}_no_fill_confirmation_unsupported` };
+    }
+    if (!submitted.filled.eq(0)) {
+      return { ok: false, reason: `leg${legNumber}_no_fill_confirmation_has_fill` };
+    }
+    if ((legNumber === 1 && !baseline.quote) || (legNumber === 2 && !baseline.base)) {
+      return { ok: false, reason: `leg${legNumber}_no_fill_confirmation_missing_balance` };
+    }
+    let lastError = '';
+    for (let attempt = 1; attempt <= 2; attempt += 1) {
+      await this.#sleep(750);
+      try {
+        const rows = await venue.adapter.fetchBalances(venue.credentials);
+        for (const balance of rows) {
+          this.#repository.recordBalance(balance);
+          this.#repository.recordInventorySnapshot({
+            venueId: balance.venueId,
+            accountId: balance.accountId,
+            asset: balance.currency,
+            free: balance.free,
+            used: balance.used,
+            total: balance.total,
+            capturedAt: balance.fetchedAt,
+          });
+        }
+        const current = venueBalanceBaseline(venue, rows);
+        const unchanged =
+          sameBalanceValue(baseline.base, current.base) &&
+          sameBalanceValue(baseline.quote, current.quote);
+        this.#repository.recordAudit(
+          'executor',
+          'no_fill_balance_check',
+          {
+            batchId: request.batchId,
+            leg: legNumber,
+            venueId: venue.adapter.venueId,
+            attempt,
+            unchanged,
+            baselineBase: baseline.base?.total.toFixed() ?? null,
+            baselineQuote: baseline.quote?.total.toFixed() ?? null,
+            currentBase: current.base?.total.toFixed() ?? null,
+            currentQuote: current.quote?.total.toFixed() ?? null,
+          },
+          this.#clock(),
+        );
+        if (!unchanged) {
+          return { ok: false, reason: `leg${legNumber}_not_found_balance_changed` };
+        }
+      } catch (error) {
+        lastError = `leg${legNumber}_no_fill_balance_query_failed: ${String(error)}`;
+      }
+    }
+    if (lastError) return { ok: false, reason: lastError };
+
+    const order = syntheticNoFillOrder(
+      {
+        venueOrderId: submitted.venueOrderId,
+        clientOrderId: submitted.clientOrderId ?? `${request.batchId}-L${legNumber}`,
+        symbol: submitted.symbol,
+        side: submitted.side,
+        type: submitted.type,
+        ...(submitted.price ? { price: submitted.price } : {}),
+        amount: submitted.amount,
+      },
+      'balance_confirmed_no_fill_after_not_found',
+    );
+    this.updatePersistedOrder(request, legNumber, order, 'balance_confirmed_no_fill');
+    this.#repository.recordRiskEvent(
+      'warning',
+      'order_not_found_confirmed_no_fill',
+      'venue did not expose the IOC/FOK order, but balances prove it did not fill or rest',
+      {
+        batchId: request.batchId,
+        leg: legNumber,
+        venueId: venue.adapter.venueId,
+        venueOrderId: submitted.venueOrderId,
+      },
+    );
+    return { ok: true, order };
   }
 
   private persistOrder(request: LiveExecutionRequest, leg: 1 | 2, order: OrderState): void {

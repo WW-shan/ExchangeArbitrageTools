@@ -73,8 +73,8 @@ does not mean the system is live-ready.
 | S1-E2 | 24-hour read-only soak with all configured venues healthy.                     | requires time and live public endpoints                                      | [!]    |
 | S1-E3 | 10 manually confirmed live batches with 80% full reconciliation.               | requires real capital, operator, and opportunities                           | [!]    |
 | S1-E4 | Stage 3-4 automation limits and daily profit criteria.                         | requires live execution history                                              | [!]    |
-| S1-E5 | Verify real Gate/Hotcoin FOK semantics before enabling parallel mode.          | requires private API orders and reconciliation evidence                      | [!]    |
-| S1-E6 | Verify balance-aware capacity against real Gate/Hotcoin accounts.              | requires read_only credentials and refreshed balances                        | [!]    |
+| S1-E5 | Verify real Gate/Hotcoin FOK semantics before enabling parallel mode.          | Gate/Hotcoin FOK no-fill verified; filled/sell-side pending                  | [~]    |
+| S1-E6 | Verify balance-aware capacity against real Gate/Hotcoin accounts.              | real balances fetched; capacity not exercised                                | [~]    |
 
 ## S2: Intra-CEX triangular arbitrage
 

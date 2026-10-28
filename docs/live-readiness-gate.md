@@ -59,7 +59,7 @@ npm run live:readiness
 2. 用 `npm run executor:secrets` 写入加密凭证库，确认只输出指纹。
 3. 在 `config/live-test.toml` 的 `[fees.gateio]` 与 `[fees.hotcoin]` 写入真实 taker/maker 费率。
 4. 运行 `npm run executor:balances`，确认两个场所余额可读。
-5. 在 API key 实测中确认 Gate.io 与 Hotcoin 的 FOK/IOC 行为，再把对应场所写入 `ioc_venues` / `fok_venues`。
+5. Gate.io 与 Hotcoin 的 FOK 零成交路径已实测，`fok_venues` 已写入；成交腿和卖出腿验证后再考虑启用 IOC。
 6. 在数据库中显式打开场所执行门：
 
 ```powershell
@@ -74,6 +74,6 @@ npm run executor:venue -- --enable hotcoin
 
 - 真实 VIP/maker 费率与返佣。
 - 可交易、无提现权限的 API key（含 IP 白名单）。
-- Gate.io 与 Hotcoin 的实际 FOK/IOC 行为、订单状态映射、clientOrderId 查询。
+- Gate.io 与 Hotcoin 的 FOK 成交订单状态映射、卖出腿对账和 clientOrderId 成交回查。
 - 目标币种的真实盘口深度、成交概率和库存再平衡成本。
 - 若启用 BSC：0x/1inch key、钱包余额、swap 模拟与手动确认。

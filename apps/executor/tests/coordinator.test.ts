@@ -121,6 +121,9 @@ interface FakeOptions {
   cancelStaysOpen?: boolean;
   queryUnknown?: boolean;
   queryUnknownSide?: 'buy' | 'sell';
+  queryNotFound?: boolean;
+  queryNotFoundSide?: 'buy' | 'sell';
+  balanceAfterCreate?: (venueId: string) => BalanceSnapshot[];
   baseFree?: Decimal;
   onFetchBook?: () => void;
   bookFetchedAt?: () => number;
@@ -189,7 +192,10 @@ function fakeAdapter(venueId: string, options: FakeOptions = {}) {
         ? book(venueId, '2.500', '2.490', fetchedAt)
         : book(venueId, '2.560', '2.550', fetchedAt);
     },
-    fetchBalances: async () => balances(venueId, options.baseFree),
+    fetchBalances: async () =>
+      options.balanceAfterCreate && state.createCalls > 0
+        ? options.balanceAfterCreate(venueId)
+        : balances(venueId, options.baseFree),
     createOrder: async (request) => {
       state.createCalls += 1;
       state.createSides.push(request.side);
@@ -226,6 +232,12 @@ function fakeAdapter(venueId: string, options: FakeOptions = {}) {
     },
     fetchOrder: async (request) => {
       const isBuy = request.clientOrderId?.endsWith('-L1') ?? true;
+      if (
+        options.queryNotFound &&
+        (!options.queryNotFoundSide || (options.queryNotFoundSide === 'buy') === isBuy)
+      ) {
+        throw new Error('Hotcoin API 40010: 委单不存在，请确认AccessKeyId或id是否正确');
+      }
       if (
         options.queryUnknown &&
         (!options.queryUnknownSide || (options.queryUnknownSide === 'buy') === isBuy)
@@ -564,6 +576,82 @@ describe('live executor safety gates', () => {
     expect(riskEvents.map((event) => event.rule)).toEqual(
       expect.arrayContaining(['unhedged_inventory', 'execution_safe_stop']),
     );
+    expect(repo.getSetting('kill_switch')).toBe('true');
+    repo.close();
+  });
+
+  it('closes cleanly when Gate explicitly rejects an unfilled FOK order', async () => {
+    const { repo, buy, sell } = setup({
+      createError: new Error('gate FOK_NOT_FILL: Order cannot be filled completely'),
+    });
+    const result = await new CexLiveExecutor({
+      repository: repo,
+      gate: new ExecutionGate(limits),
+      limits,
+      liveEnabled: true,
+      settings,
+      sleep: async () => {},
+      clock: () => now,
+    }).execute(
+      request(
+        { adapter: buy.adapter, market: market('gateio'), credentials: keys, healthState: 'A' },
+        { adapter: sell.adapter, market: market('mexc'), credentials: keys, healthState: 'A' },
+      ),
+    );
+    expect(result.outcome).toBe('CLOSED');
+    expect(result.reasons).not.toContain('ambiguous_leg1_submission');
+    expect(repo.getSetting('kill_switch')).toBe('false');
+    repo.close();
+  });
+
+  it('closes cleanly when Hotcoin omits an unfilled FOK order and balances are unchanged', async () => {
+    const { repo, buy, sell } = setup({
+      leg1FillRatio: new Decimal(0),
+      leg1PartialOpen: true,
+      queryNotFound: true,
+    });
+    const result = await new CexLiveExecutor({
+      repository: repo,
+      gate: new ExecutionGate(limits),
+      limits,
+      liveEnabled: true,
+      settings,
+      sleep: async () => {},
+      clock: () => now,
+    }).execute(
+      request(
+        { adapter: buy.adapter, market: market('gateio'), credentials: keys, healthState: 'A' },
+        { adapter: sell.adapter, market: market('mexc'), credentials: keys, healthState: 'A' },
+      ),
+    );
+    expect(result.outcome).toBe('CLOSED');
+    expect(repo.getSetting('kill_switch')).toBe('false');
+    repo.close();
+  });
+
+  it('safe-stops when a missing IOC/FOK order cannot be confirmed as zero-fill', async () => {
+    const { repo, buy, sell } = setup({
+      leg1FillRatio: new Decimal(0),
+      leg1PartialOpen: true,
+      queryNotFound: true,
+      balanceAfterCreate: (venueId) => balances(venueId, new Decimal(101)),
+    });
+    const result = await new CexLiveExecutor({
+      repository: repo,
+      gate: new ExecutionGate(limits),
+      limits,
+      liveEnabled: true,
+      settings,
+      sleep: async () => {},
+      clock: () => now,
+    }).execute(
+      request(
+        { adapter: buy.adapter, market: market('gateio'), credentials: keys, healthState: 'A' },
+        { adapter: sell.adapter, market: market('mexc'), credentials: keys, healthState: 'A' },
+      ),
+    );
+    expect(result.outcome).toBe('SAFE_STOP');
+    expect(result.reasons).toContain('leg1_not_found_balance_changed');
     expect(repo.getSetting('kill_switch')).toBe('true');
     repo.close();
   });
@@ -1218,6 +1306,36 @@ describe('parallel FOK two-leg execution', () => {
     expect(result.states).toContain('PARALLEL_REJECTED');
     expect(repo.countOpenExecutions()).toBe(0);
     expect(repo.openUnhedgedInventory()).toHaveLength(0);
+    expect(repo.getSetting('kill_switch')).toBe('false');
+    repo.close();
+  });
+
+  it('treats definitive FOK rejection on both parallel legs as terminal rejection', async () => {
+    const { repo, executor, buy, sell } = setup(
+      {
+        createError: new Error('FOK_NOT_FILL'),
+        leg1FillRatio: new Decimal(0),
+        leg2FillRatio: new Decimal(0),
+      },
+      'parallel_fok',
+    );
+    const result = await executor.execute(
+      request(
+        {
+          adapter: buy.adapter,
+          market: fokMarket('gateio'),
+          credentials: keys,
+          healthState: 'A',
+        },
+        {
+          adapter: sell.adapter,
+          market: fokMarket('mexc'),
+          credentials: keys,
+          healthState: 'A',
+        },
+      ),
+    );
+    expect(result.outcome).toBe('PARALLEL_REJECTED');
     expect(repo.getSetting('kill_switch')).toBe('false');
     repo.close();
   });

@@ -2,13 +2,13 @@
 
 目标：用最小资金验证“扫描 → 就绪检查 → 只读预演 → 手动确认下单 → 双腿对账”的完整链路。当前只做 S1，只开 Gate.io 与 Hotcoin，单批名义额上限 20 USDT。
 
-## 0. 当前状态（2026-10-27）
+## 0. 当前状态（2026-10-28）
 
 - `config/live-test.toml`：`enabled_venues=['gateio','hotcoin']`、`max_order_notional=20`、`min_sizing_notional=15`、`min_profit_usd=0.01`、`feed_mode='websocket'`。
 - 行情门槛：`max_feed_latency_ms=3000`、`ws_max_book_age_ms=3000`、`max_pair_skew_ms=2500`。Gate.io 经代理的 WS feed latency 可能接近 2.5 秒，不能沿用 500ms 门槛。
-- 默认安全状态：`live_enabled=false`、`kill_switch=true`、`leg_mode='serial'`、`ioc_venues=[]`、`fok_venues=[]`、`manual_confirmation=true`。
+- 默认安全状态：`live_enabled=false`、`kill_switch=true`、`leg_mode='serial'`、`ioc_venues=[]`、`fok_venues=['gateio','hotcoin']`、`manual_confirmation=true`。
 - 公开链路已验证：Gate.io 与 Hotcoin 的 REST、WS 均可通过 `socks5://127.0.0.1:10808` 连接；Hotcoin 深度 WS 为 gzip 推送，约 1–3 秒更新一次。
-- 私有链路尚未验证：余额、下单、撤单、订单状态、FOK/IOC 都需要真实 API key。
+- 私有链路已部分验证：真实余额、Gate FOK 未成交、Hotcoin FOK/IOC 零成交已实测；成交腿与卖出腿仍未验证。详见 `docs/fok-private-probe-2026-10-28.md`。
 - Hotcoin 目标交易对的最小名义额为 15 USDT，因此扫描器最小 sizing 与执行器最小下单额都必须不低于 15。
 - 当前没有真实 API key 时，`npm run live:readiness` 会因为 `secrets.store` 缺失而 block；这是预期行为，不是代码故障。
 - 只读机会发现使用独立配置 `config/discovery.toml`：成交量前 30、最低 100,000 USD 24h
@@ -189,7 +189,7 @@ npm run executor -- --opportunity <机会ID>
 
 1. readiness 全部通过；
 2. `executor:balances` 能看到两个场所余额；
-3. Gate.io 与 Hotcoin 的 FOK/IOC 行为已经实测并写入 `ioc_venues` / `fok_venues`；
+3. Gate.io 与 Hotcoin 的 FOK 零成交路径已经实测并写入 `fok_venues`；成交腿、卖出腿和对账仍需单独验证；
 4. 已完成只读预演与至少一条公开行情 smoke；
 5. 操作者明确知道该机会的真实费率与库存风险。
 
