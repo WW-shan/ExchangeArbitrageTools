@@ -1,10 +1,31 @@
 [CmdletBinding()]
 param(
-  [string]$Path = (Join-Path $PSScriptRoot '..\.env.live-test'),
+  [string]$Path,
   [switch]$PromptMasterKey
 )
 
 $ErrorActionPreference = 'Stop'
+
+$scriptDir = $PSScriptRoot
+if ([string]::IsNullOrWhiteSpace($scriptDir)) {
+  $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+}
+if ([string]::IsNullOrWhiteSpace($Path)) {
+  $Path = Join-Path $scriptDir '..\.env.live-test'
+}
+
+$masterKeyFile = Join-Path $scriptDir '..\data\master-key.dpapi'
+if (-not $env:ARB_SECRET_STORE_KEY -and (Test-Path -LiteralPath $masterKeyFile -PathType Leaf)) {
+  $encrypted = (Get-Content -LiteralPath $masterKeyFile -Raw).Trim()
+  $secure = ConvertTo-SecureString $encrypted
+  $bstr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secure)
+  try {
+    $env:ARB_SECRET_STORE_KEY = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($bstr)
+  } finally {
+    [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr)
+  }
+  Write-Host 'Loaded ARB_SECRET_STORE_KEY from local DPAPI file.'
+}
 
 if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
   throw ('Environment file not found: ' + $Path)

@@ -276,7 +276,7 @@ async function main(): Promise<void> {
       add(
         'secrets.store',
         'pass',
-        `${records.size} credentials loaded; non-withdrawal keys are withdrawal-disabled`,
+        `${records.size} credentials loaded; read_only/trade records declare withdrawalPermission=false`,
       );
       const unsafeWithdrawalKeys = [...records.values()]
         .filter((record) => record.role !== 'withdrawal' && record.withdrawalPermission !== false)
@@ -285,8 +285,21 @@ async function main(): Promise<void> {
         'secrets.withdrawal_isolation',
         unsafeWithdrawalKeys.length === 0 ? 'pass' : 'block',
         unsafeWithdrawalKeys.length === 0
-          ? 'read_only and trade keys cannot withdraw'
+          ? 'read_only and trade records declare withdrawalPermission=false'
           : `withdrawal enabled on non-withdrawal keys: ${unsafeWithdrawalKeys.join(',')}`,
+      );
+      const sharedWithdrawalKeys = [...records.values()]
+        .filter((record) => {
+          if (record.role !== 'withdrawal') return false;
+          return records.get(`${record.venueId}:trade`)?.apiKey === record.apiKey;
+        })
+        .map((record) => record.venueId);
+      add(
+        'secrets.shared_withdrawal_key',
+        sharedWithdrawalKeys.length === 0 ? 'pass' : 'warn',
+        sharedWithdrawalKeys.length === 0
+          ? 'withdrawal credentials use separate API keys'
+          : `withdrawal shares trade API key: ${sharedWithdrawalKeys.slice(0, 10).join(',')}`,
       );
       const missingTrade = enabled.filter((venue) => !keys.has(`${venue}:trade`));
       add(
