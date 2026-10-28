@@ -2,6 +2,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import {
   createEncryptedSecretStore,
   filterFilledCredentials,
+  filterWithdrawalCredentials,
   loadEncryptedSecretStore,
   mergeCredentialRecords,
   type StoredCredential,
@@ -9,7 +10,7 @@ import {
 
 function usage(): string {
   return [
-    'Usage: npm run executor:secrets -- [--path <file>] [--merge] [--skip-empty]',
+    'Usage: npm run executor:secrets -- [--path <file>] [--merge] [--skip-empty] [--skip-withdrawal]',
     '',
     'Reads a JSON array of credentials from stdin. Example record:',
     'Withdrawal records use role=withdrawal, withdrawalPermission=true,',
@@ -19,6 +20,7 @@ function usage(): string {
     '{"venueId":"hotcoin","role":"trade","withdrawalPermission":false,"apiKey":"...","secret":"...","password":"..."}',
     'Use --merge to load the existing store and upsert records by venueId:role.',
     'Use --skip-empty to ignore template records with blank apiKey or secret.',
+    'Use --skip-withdrawal to import read-only/trade records only.',
     '',
     'Set the master key in ARB_SECRET_STORE_KEY (at least 16 characters). The',
     'command prints fingerprints only; it never prints API keys or secrets.',
@@ -29,12 +31,14 @@ interface CliOptions {
   path: string;
   merge: boolean;
   skipEmpty: boolean;
+  skipWithdrawal: boolean;
 }
 
 function parseOptions(argv: string[]): CliOptions {
   let path = process.env.ARB_SECRET_STORE_PATH ?? 'data/secrets.enc.json';
   let merge = false;
   let skipEmpty = false;
+  let skipWithdrawal = false;
   for (let index = 0; index < argv.length; index += 1) {
     if (argv[index] === '--help' || argv[index] === '-h') {
       console.log(usage());
@@ -48,6 +52,10 @@ function parseOptions(argv: string[]): CliOptions {
       skipEmpty = true;
       continue;
     }
+    if (argv[index] === '--skip-withdrawal') {
+      skipWithdrawal = true;
+      continue;
+    }
     if (argv[index] === '--path') {
       const value = argv[index + 1];
       if (!value) throw new Error('--path requires a value');
@@ -57,7 +65,7 @@ function parseOptions(argv: string[]): CliOptions {
     }
     throw new Error(`unknown argument: ${argv[index]}`);
   }
-  return { path, merge, skipEmpty };
+  return { path, merge, skipEmpty, skipWithdrawal };
 }
 
 async function main(): Promise<void> {
@@ -74,6 +82,13 @@ async function main(): Promise<void> {
     const skipped = before - incoming.length;
     if (skipped > 0) console.error(`skipped ${skipped} empty credential record(s)`);
     if (incoming.length === 0) throw new Error('no filled credentials found');
+  }
+  if (options.skipWithdrawal) {
+    const before = incoming.length;
+    incoming = filterWithdrawalCredentials(incoming);
+    const skipped = before - incoming.length;
+    if (skipped > 0) console.error(`skipped ${skipped} withdrawal credential record(s)`);
+    if (incoming.length === 0) throw new Error('no non-withdrawal credentials found');
   }
   let records = incoming;
   if (options.merge && existsSync(options.path)) {

@@ -199,6 +199,10 @@ export function filterFilledCredentials(records: StoredCredential[]): StoredCred
   return records.filter((record) => record.apiKey.trim() !== '' && record.secret.trim() !== '');
 }
 
+export function filterWithdrawalCredentials(records: StoredCredential[]): StoredCredential[] {
+  return records.filter((record) => record.role !== 'withdrawal');
+}
+
 export function mergeCredentialRecords(
   existing: Iterable<StoredCredential>,
   incoming: StoredCredential[],

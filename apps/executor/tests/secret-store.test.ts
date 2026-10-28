@@ -6,6 +6,7 @@ import {
   createEncryptedSecretStore,
   credentialFingerprint,
   filterFilledCredentials,
+  filterWithdrawalCredentials,
   loadEncryptedSecretStore,
   mergeCredentialRecords,
   type StoredCredential,
@@ -152,6 +153,18 @@ describe('encrypted local secret store', () => {
       secret: '',
     };
     expect(filterFilledCredentials([blank, records[0]!])).toEqual([records[0]]);
+  });
+
+  it('filters withdrawal credentials for non-withdrawal imports', () => {
+    const withdrawal: StoredCredential = {
+      venueId: 'gateio',
+      role: 'withdrawal',
+      withdrawalPermission: true,
+      ipWhitelistVerified: true,
+      apiKey: 'gate-withdraw-key',
+      secret: 'gate-withdraw-secret',
+    };
+    expect(filterWithdrawalCredentials([records[0]!, withdrawal])).toEqual([records[0]]);
   });
 
   it('rejects an explicitly empty passphrase', async () => {
