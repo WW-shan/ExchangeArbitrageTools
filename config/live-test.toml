@@ -124,9 +124,10 @@ max_transfer_arrival_ms = 1800000
 # Negative maker_bps means a rebate. Hotcoin does not expose an account fee
 # endpoint in its current public SDK, so its tier must be entered manually.
 # Do not enable live until both venues have explicit taker fees.
-# [fees.gateio]
-# taker_bps = <gateio taker>
-# maker_bps = <gateio maker>
+[fees.gateio]
+# Fetched from the Gate account fee endpoint on 2026-10-28.
+taker_bps = 9.9
+maker_bps = 9.9
 # [fees.hotcoin]
 # taker_bps = <hotcoin taker>
 # maker_bps = <hotcoin maker>
