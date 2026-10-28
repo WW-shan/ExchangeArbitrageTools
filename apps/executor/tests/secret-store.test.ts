@@ -6,6 +6,7 @@ import {
   createEncryptedSecretStore,
   credentialFingerprint,
   loadEncryptedSecretStore,
+  mergeCredentialRecords,
   type StoredCredential,
 } from '../src/secret-store.js';
 
@@ -114,6 +115,31 @@ describe('encrypted local secret store', () => {
         { scryptN: 2 ** 14 },
       ),
     ).rejects.toThrow('duplicate trade credential for gateio');
+  });
+
+  it('merges incoming credentials without dropping existing venue roles', () => {
+    const incoming: StoredCredential[] = [
+      {
+        venueId: 'hotcoin',
+        role: 'read_only',
+        withdrawalPermission: false,
+        apiKey: 'hotcoin-read-key',
+        secret: 'hotcoin-read-secret',
+        password: 'hotcoin-passphrase',
+      },
+    ];
+    const merged = mergeCredentialRecords(records, incoming);
+    expect(merged.map((record) => `${record.venueId}:${record.role}`).sort()).toEqual([
+      'gateio:trade',
+      'hotcoin:read_only',
+      'mexc:read_only',
+    ]);
+  });
+
+  it('rejects duplicate venue roles inside a merge input', () => {
+    expect(() => mergeCredentialRecords([], [records[0]!, records[0]!])).toThrow(
+      'duplicate trade credential for gateio',
+    );
   });
 
   it('fails closed on a wrong master key or tampered ciphertext', async () => {

@@ -192,6 +192,25 @@ export function credentialFingerprints(records: StoredCredential[]): Record<stri
   );
 }
 
+export function mergeCredentialRecords(
+  existing: Iterable<StoredCredential>,
+  incoming: StoredCredential[],
+): StoredCredential[] {
+  const merged = new Map<string, StoredCredential>();
+  for (const record of existing) merged.set(credentialKey(record), record);
+
+  const seen = new Set<string>();
+  for (const record of incoming) {
+    const key = credentialKey(record);
+    if (seen.has(key)) {
+      throw new Error(`duplicate ${record.role} credential for ${record.venueId}`);
+    }
+    seen.add(key);
+    merged.set(key, record);
+  }
+  return [...merged.values()];
+}
+
 export async function createEncryptedSecretStore(
   path: string,
   masterKey: string,
