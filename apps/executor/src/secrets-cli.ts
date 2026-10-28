@@ -14,7 +14,7 @@ function usage(): string {
     '',
     'Reads a JSON array of credentials from stdin. Example record:',
     'Withdrawal records use role=withdrawal, withdrawalPermission=true,',
-    'ipWhitelistVerified=true, and a separate API key from the trade key.',
+    'ipWhitelistVerified=true, and may reuse the trade API key.',
     '{"venueId":"gateio","role":"trade","withdrawalPermission":false,"apiKey":"...","secret":"..."}',
     'Hotcoin records additionally require the API passphrase in "password":',
     '{"venueId":"hotcoin","role":"trade","withdrawalPermission":false,"apiKey":"...","secret":"...","password":"..."}',

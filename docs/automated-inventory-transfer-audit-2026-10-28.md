@@ -128,8 +128,8 @@ The percentages are engineering accounting, not a live-readiness claim.
 ### 3.7 Security and audit
 
 - Read-only and trade credentials are forced to `withdrawalPermission=false`.
-- Withdrawal credentials require `withdrawalPermission=true`, a separate API key
-  and `ipWhitelistVerified=true`.
+- Withdrawal credentials require `withdrawalPermission=true` and
+  `ipWhitelistVerified=true`; the trade API key may be reused.
 - Secrets use scrypt + AES-256-GCM and are stored outside SQLite.
 - Transfer batches, legs, source/destination record IDs, tx IDs, errors, risk
   events and operator actions are persisted.
@@ -154,8 +154,9 @@ The percentages are engineering accounting, not a live-readiness claim.
 
 ### P0 - required before real money
 
-- Real read-only, trade and withdrawal keys for Gate.io and Hotcoin, with IP
-  whitelists and no withdrawal permission on the read/trade keys.
+- Real read-only, trade and withdrawal credentials for Gate.io and Hotcoin,
+  with IP whitelists. Shared trade/withdrawal keys are allowed by default and
+  increase the blast radius if the shared key is compromised.
 - One exact asset/network pair supported by both venues. Do not use `INC/BSC`;
   Gate currently exposes INC on ERC20 only.
 - Hotcoin live deposit address, chain/tag, withdrawal enabled state, fee and

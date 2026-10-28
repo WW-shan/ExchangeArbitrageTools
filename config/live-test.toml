@@ -84,7 +84,9 @@ poll_interval_ms = 15000
 withdrawal_timeout_ms = 900000
 deposit_timeout_ms = 1800000
 # Keep this section closed until both venues expose the exact asset/network
-# and a separate withdrawal key. The first live test must use one leg only.
+# and explicit withdrawal credentials. The withdrawal key may reuse the trade
+# key, but that increases the blast radius; IP whitelist attestation is still
+# required. The first live test must use one leg only.
 # Gate's 2026-10-28 currency data shows INC on ERC20 only and TBK/HTX on TRC20
 # only; CAKE/ETH/USDT are available on BSC/BEP20. Do not assume INC/BSC.
 # Add explicit [[transfers.allowlist]] entries for each direction, for example:

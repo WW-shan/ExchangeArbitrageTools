@@ -18,8 +18,8 @@ function tempPath(): { path: string; cleanup: () => void } {
   };
 }
 
-describe('withdrawal credential isolation', () => {
-  it('accepts a separate withdrawal key with explicit IP attestation', async () => {
+describe('withdrawal credential policy', () => {
+  it('accepts a withdrawal key with explicit IP attestation', async () => {
     const { path, cleanup } = tempPath();
     try {
       const records: StoredCredential[] = [
@@ -77,33 +77,30 @@ describe('withdrawal credential isolation', () => {
     }
   });
 
-  it('rejects reusing a trade key as the withdrawal key', async () => {
+  it('accepts reusing the trade key for withdrawal with IP attestation', async () => {
     const { path, cleanup } = tempPath();
     try {
-      await expect(
-        createEncryptedSecretStore(
-          path,
-          masterKey,
-          [
-            {
-              venueId: 'gateio',
-              role: 'trade',
-              withdrawalPermission: false,
-              apiKey: 'same-key',
-              secret: 'trade-secret',
-            },
-            {
-              venueId: 'gateio',
-              role: 'withdrawal',
-              withdrawalPermission: true,
-              ipWhitelistVerified: true,
-              apiKey: 'same-key',
-              secret: 'withdraw-secret',
-            },
-          ],
-          { scryptN: 2 ** 14 },
-        ),
-      ).rejects.toThrow('different API key');
+      const records: StoredCredential[] = [
+        {
+          venueId: 'gateio',
+          role: 'trade',
+          withdrawalPermission: false,
+          apiKey: 'same-key',
+          secret: 'trade-secret',
+        },
+        {
+          venueId: 'gateio',
+          role: 'withdrawal',
+          withdrawalPermission: true,
+          ipWhitelistVerified: true,
+          apiKey: 'same-key',
+          secret: 'withdraw-secret',
+        },
+      ];
+      await createEncryptedSecretStore(path, masterKey, records, { scryptN: 2 ** 14 });
+      const loaded = await loadEncryptedSecretStore(path, masterKey);
+      expect(loaded.get('gateio:trade')?.apiKey).toBe('same-key');
+      expect(loaded.get('gateio:withdrawal')?.apiKey).toBe('same-key');
     } finally {
       cleanup();
     }

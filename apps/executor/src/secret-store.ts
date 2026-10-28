@@ -106,20 +106,6 @@ function validateRecords(records: StoredCredential[]): StoredCredential[] {
     };
   });
 
-  const keysByVenue = new Map<string, StoredCredential[]>();
-  for (const record of validated) {
-    const key = `${record.venueId}\u0000${record.apiKey}`;
-    const existing = keysByVenue.get(key) ?? [];
-    existing.push(record);
-    keysByVenue.set(key, existing);
-  }
-  for (const owners of keysByVenue.values()) {
-    if (owners.length < 2) continue;
-    if (owners.some((record) => record.role === 'withdrawal')) {
-      const venueId = owners[0]!.venueId;
-      throw new Error(`withdrawal credential for ${venueId} must use a different API key`);
-    }
-  }
   return validated;
 }
 

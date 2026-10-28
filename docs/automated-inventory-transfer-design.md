@@ -83,10 +83,13 @@ controls are mandatory:
 2. `execution.live_enabled` defaults to `false` and `execution.kill_switch`
    defaults to `true`.
 3. The existing `read_only` and `trade` credentials keep
-   `withdrawalPermission=false`.
-4. A separate `withdrawal` credential is required. It must:
+   `withdrawalPermission=false`. This is a record-level declaration; if the
+   same underlying API key is also used for withdrawal, the operator accepts
+   the shared-key risk.
+4. A `withdrawal` credential is required. It must:
    - declare `withdrawalPermission=true`;
-   - be a different API key from the venue's trade key;
+   - may reuse the venue's trade API key (allowed by default, but this
+     increases the blast radius if that key is compromised);
    - declare `ipWhitelistVerified=true` (operator attestation);
    - have the minimum exchange permissions and IP allowlist.
 5. A destination address is used only when all of the following match:
@@ -113,8 +116,8 @@ controls are mandatory:
 
 ```text
 read_only : balances, deposit history, optional deposit address
-trade     : orders only; cannot withdraw
-withdrawal: withdrawals and their history; separate key
+trade     : orders only; withdrawalPermission=false at the record level
+withdrawal: withdrawals and their history; may reuse the trade key
 ```
 
 The secret store remains encrypted with scrypt + AES-256-GCM. It still prints
@@ -395,8 +398,8 @@ before live use.
 | ID   | Requirement                                                              | Test / evidence                |
 | ---- | ------------------------------------------------------------------------ | ------------------------------ |
 | T-1  | All monetary amounts use Decimal                                         | type review and transfer tests |
-| T-2  | Trade/read-only keys cannot withdraw                                     | secret-store tests             |
-| T-3  | Withdrawal key must be separate and IP-whitelisted                       | secret-store tests             |
+| T-2  | Trade/read-only records declare withdrawalPermission=false               | secret-store tests             |
+| T-3  | Withdrawal credential requires IP attestation; shared key is allowed     | secret-store tests             |
 | T-4  | Destination address must match allowlist and live response               | preflight tests                |
 | T-5  | Network aliases match only when safe                                     | network tests                  |
 | T-6  | Unknown withdrawal result becomes SAFE_STOP, never retried               | transfer-service test          |
@@ -424,7 +427,7 @@ before live use.
 
 ### Phase B: read-only venue verification
 
-- Add separate withdrawal keys with no IP mismatch.
+- Add withdrawal credentials with no IP mismatch.
 - Fetch both deposit addresses; compare against allowlist.
 - Fetch both currency networks and withdrawal fees where the venue exposes
   them; otherwise require manual attestation and a configured fee.

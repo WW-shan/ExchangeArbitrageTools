@@ -24,12 +24,12 @@
 ```text
 read_only : 余额、充值地址、充值历史
 trade     : 下单、查单、撤单，禁止提现
-withdrawal: 提币、提币历史，禁止下单；单独 API key
+withdrawal: 提币、提币历史，禁止下单；可与 trade 共用 API key
 ```
 
 提现 key 必须：
 
-- 与 trade key 不同；
+- 可以复用 trade key；复用会增加 key 泄露后的资金风险；
 - 只给必要权限；
 - 开启 IP 白名单；
 - 在凭证记录里声明 `withdrawalPermission=true` 和
@@ -307,7 +307,7 @@ npm run rebalance:execute -- --batch <batchId> --resolve --status BLOCKED --reas
 
 ## 8. 仍未完成的外部条件
 
-- Gate.io 与 Hotcoin 的真实提现 key（独立、IP 白名单、无多余权限）。
+- Gate.io 与 Hotcoin 的真实提现 key（可复用 trade key，但需 IP 白名单、无多余权限）。
 - 两个方向的真实充值地址、网络、tag、手续费和最小额；Gate 当前 INC/TBK/HTX
   不在 BSC，不能直接套用示例资产。
 - Hotcoin 适配器没有公开的币种网络/最小额元数据接口，必须用真实 key 返回的
@@ -330,13 +330,13 @@ npm run live:readiness
 
 与调拨相关的新检查：
 
-| 检查项                         | 含义                                                        | 失败级别 |
-| ------------------------------ | ----------------------------------------------------------- | -------- |
-| `secrets.withdrawal_isolation` | read_only/trade key 的 `withdrawalPermission` 必须为 false  | block    |
-| `transfers.allowlist`          | 开启调拨时必须至少有一条 allowlist                          | block    |
-| `transfers.credentials`        | 每条路线的场所需要 read_only/trade；源场所还需要 withdrawal | block    |
-| `transfers.ip_whitelist`       | withdrawal key 必须标记 `ipWhitelistVerified=true`          | block    |
-| `transfers.execution`          | 调拨关闭时显示 pass                                         | pass     |
+| 检查项                         | 含义                                                                                       | 失败级别 |
+| ------------------------------ | ------------------------------------------------------------------------------------------ | -------- |
+| `secrets.withdrawal_isolation` | read_only/trade 记录必须声明 `withdrawalPermission=false`；共用 key 时实际权限由交易所决定 | block    |
+| `transfers.allowlist`          | 开启调拨时必须至少有一条 allowlist                                                         | block    |
+| `transfers.credentials`        | 每条路线的场所需要 read_only/trade；源场所还需要 withdrawal                                | block    |
+| `transfers.ip_whitelist`       | withdrawal key 必须标记 `ipWhitelistVerified=true`                                         | block    |
+| `transfers.execution`          | 调拨关闭时显示 pass                                                                        | pass     |
 
 `liveTestReady=true` 只表示工程闸门通过，不表示交易所已经允许提币，也不表示
 第一笔真实调拨已经成功。真实 key、地址、手续费和到账时间仍必须按第 7 节记录。
