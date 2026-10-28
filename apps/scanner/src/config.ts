@@ -1,5 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { Decimal, type CostSettings, type ExecutionMode } from '@arb/core';
+import type { VenueFeeOverride } from '@arb/venues-cex';
 import { parse } from 'smol-toml';
 
 export interface ScannerConfig {
@@ -124,12 +125,7 @@ export interface ApiConfig {
   port: number;
 }
 
-export interface FeeOverride {
-  takerBps?: Decimal;
-  makerBps?: Decimal;
-  source?: 'config' | 'account' | 'ccxt' | 'default';
-  symbols?: Record<string, { takerBps?: Decimal; makerBps?: Decimal }>;
-}
+export type FeeOverride = VenueFeeOverride;
 
 export interface AppConfig {
   scanner: ScannerConfig;
@@ -197,6 +193,11 @@ function feeOverrides(value: unknown): Record<string, FeeOverride> {
     const row = table(raw, `fees.${venueId}`);
     const taker = row.taker_bps === undefined ? undefined : decimalValue(row, 'taker_bps', '0');
     const maker = row.maker_bps === undefined ? undefined : decimalValue(row, 'maker_bps', '0');
+    const rebatePct =
+      row.rebate_pct === undefined ? undefined : decimalValue(row, 'rebate_pct', '0');
+    if (rebatePct !== undefined && (rebatePct.lt(0) || rebatePct.gt(100))) {
+      throw new Error(`config value fees.${venueId}.rebate_pct must be between 0 and 100`);
+    }
     let symbols: Record<string, { takerBps?: Decimal; makerBps?: Decimal }> | undefined;
     if (row.symbols !== undefined) {
       const symbolTable = table(row.symbols, `fees.${venueId}.symbols`);
@@ -219,6 +220,7 @@ function feeOverrides(value: unknown): Record<string, FeeOverride> {
     result[venueId] = {
       ...(taker !== undefined ? { takerBps: taker } : {}),
       ...(maker !== undefined ? { makerBps: maker } : {}),
+      ...(rebatePct !== undefined ? { rebatePct } : {}),
       ...(symbols !== undefined ? { symbols } : {}),
       source: 'config',
     };

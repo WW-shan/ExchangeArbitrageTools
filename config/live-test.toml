@@ -120,17 +120,25 @@ inventory_mode = true
 estimated_transfer_arrival_ms = 900000
 max_transfer_arrival_ms = 1800000
 
-# Real fee tiers are REQUIRED. Uncomment and replace with your account rates.
-# Negative maker_bps means a rebate. Hotcoin does not expose an account fee
-# endpoint in its current public SDK, so its tier must be entered manually.
-# Do not enable live until both venues have explicit taker fees.
+# Fee values are GROSS account rates before commission rebate. Effective fee =
+# gross_bps x (1 - rebate_pct / 100). Account rates from data/fees.json are
+# also gross, so rerunning `npm run fees:fetch` keeps the rebate effective.
+# Negative maker_bps means the venue pays the maker. Do not enable live until
+# both venues have explicit taker fees and the rebates are confirmed in the UI.
 [fees.gateio]
-# Gate account fee endpoint: 9.9 bps gross; operator-confirmed 70% spot rebate.
-taker_bps = 2.97
-maker_bps = 2.97
-# [fees.hotcoin]
-# taker_bps = <hotcoin taker>
-# maker_bps = <hotcoin maker>
+# Gate personal trading fee API: 9.9 bps gross on 2026-10-28.
+# Operator-confirmed 70% spot rebate -> 2.97 bps effective.
+taker_bps = 9.9
+maker_bps = 9.9
+rebate_pct = 70
+
+[fees.hotcoin]
+# Hotcoin official VIP0 spot schedule: maker 0.20%, taker 0.20%.
+# Source: https://www.hotcoin.com/en_US/rateStandard/index (2026-10-28).
+# Operator-confirmed 80% spot rebate -> 4 bps effective.
+taker_bps = 20
+maker_bps = 20
+rebate_pct = 80
 
 # Hotcoin documents matchType=8 (FOK) and matchType=9 (IOC). Keep both arrays
 # empty until the API-key phase verifies the exact order behaviour on both legs.

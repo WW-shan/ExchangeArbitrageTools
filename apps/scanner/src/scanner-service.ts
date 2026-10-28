@@ -35,7 +35,12 @@ import {
   type TriangularEdge,
 } from '@arb/core';
 import type { ArbitrageRepository, MarketUniverseEntry, StoredOpportunity } from '@arb/storage';
-import { BookStore, type BookSubscription, type CexAdapter } from '@arb/venues-cex';
+import {
+  applyFeeOverride,
+  BookStore,
+  type BookSubscription,
+  type CexAdapter,
+} from '@arb/venues-cex';
 import { persistSimulatedOpportunity } from './persistence.js';
 import { buildMarketUniverse } from './universe.js';
 import { FeedRecorder } from './feed-recorder.js';
@@ -446,7 +451,7 @@ export class ScannerService {
       const markets = await venue.adapter.loadMarkets();
       venue.markets = markets
         .filter((market) => market.active && market.venueId === venue.adapter.venueId)
-        .map((market) => this.withFeeOverride(market));
+        .map((market) => applyFeeOverride(market, this.#feeOverrides));
     } catch (error) {
       venue.markets = [];
       const observedAt = this.#clock();
@@ -1628,22 +1633,6 @@ export class ScannerService {
           market.quote.trim().toUpperCase() === canonicalQuote,
       )
     );
-  }
-
-  private withFeeOverride(market: MarketMetadata): MarketMetadata {
-    const override = this.#feeOverrides[market.venueId];
-    if (!override) return market;
-    const symbolOverride =
-      override.symbols?.[market.exchangeSymbol] ?? override.symbols?.[market.unifiedSymbol];
-    const taker = symbolOverride?.takerBps ?? override.takerBps;
-    const maker = symbolOverride?.makerBps ?? override.makerBps;
-    if (taker === undefined && maker === undefined) return market;
-    return {
-      ...market,
-      ...(taker !== undefined ? { feeTakerBps: taker } : {}),
-      ...(maker !== undefined ? { makerFeeBps: maker } : {}),
-      feeProvenance: override.source ?? 'config',
-    };
   }
 
   private syncSubscriptions(): void {

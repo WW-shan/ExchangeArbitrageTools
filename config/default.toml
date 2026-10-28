@@ -177,11 +177,13 @@ deposit_timeout_ms = 1800000
 [database]
 path = "data/arbitrage.sqlite"
 
-# Per-venue fee overrides. Set these to your real account tier; CCXT market fees
-# are often generic. Negative maker_bps means a rebate.
+# Per-venue fee overrides. Rates are gross account fees; rebate_pct is applied
+# afterwards. CCXT market fees are often generic. Negative maker_bps means the
+# venue pays the maker.
 # [fees.gateio]
 # taker_bps = 10
 # maker_bps = 2
+# rebate_pct = 0
 # [fees.mexc]
 # taker_bps = 10
 # maker_bps = 2

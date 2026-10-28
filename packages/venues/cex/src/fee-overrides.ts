@@ -7,6 +7,8 @@ export interface SymbolFeeOverride {
 }
 
 export interface VenueFeeOverride extends SymbolFeeOverride {
+  /** Percentage of the gross fee returned by the venue, from 0 to 100. */
+  rebatePct?: Decimal;
   source?: 'config' | 'account' | 'ccxt' | 'default';
   symbols?: Record<string, SymbolFeeOverride>;
 }
@@ -26,10 +28,23 @@ function decimalOrUndefined(value: string | number | undefined): Decimal | undef
   }
 }
 
+export function feeAfterRebate(
+  grossBps: Decimal | undefined,
+  rebatePct: Decimal | undefined,
+): Decimal | undefined {
+  if (grossBps === undefined) return undefined;
+  if (rebatePct === undefined || rebatePct.eq(0)) return grossBps;
+  if (rebatePct.lt(0) || rebatePct.gt(100)) {
+    throw new Error('rebate_pct must be between 0 and 100');
+  }
+  return grossBps.mul(new Decimal(100).minus(rebatePct)).div(100);
+}
+
 /**
  * Merge per-symbol fees produced by `npm run fees:fetch` into configured venue
- * overrides. Account fees take precedence over static `[fees.<venue>]` values
- * for the same symbol and are marked `source=account`.
+ * overrides. Account fees are gross and take precedence over static
+ * `[fees.<venue>]` values for the same symbol; the venue rebate is applied
+ * later, so rerunning `fees:fetch` cannot silently remove it.
  */
 export function mergeAccountFeeFile(
   base: Record<string, VenueFeeOverride>,
@@ -73,8 +88,8 @@ export function applyFeeOverride(
   if (!override) return market;
   const symbolOverride =
     override.symbols?.[market.exchangeSymbol] ?? override.symbols?.[market.unifiedSymbol];
-  const taker = symbolOverride?.takerBps ?? override.takerBps;
-  const maker = symbolOverride?.makerBps ?? override.makerBps;
+  const taker = feeAfterRebate(symbolOverride?.takerBps ?? override.takerBps, override.rebatePct);
+  const maker = feeAfterRebate(symbolOverride?.makerBps ?? override.makerBps, override.rebatePct);
   if (taker === undefined && maker === undefined) return market;
   return {
     ...market,

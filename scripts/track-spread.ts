@@ -5,6 +5,7 @@ import {
   applyFeeOverride,
   createCexAdapter,
   createPublicRuntime,
+  feeAfterRebate,
   mergeAccountFeeFile,
 } from '@arb/venues-cex';
 import { costSettings, loadConfig } from '../apps/scanner/src/config.js';
@@ -106,9 +107,13 @@ async function main(): Promise<void> {
   const feeOverrides = mergeAccountFeeFile(config.fees, config.scanner.feeFile);
   if (takerBpsArg) {
     for (const venueId of venues) {
+      const existing = feeOverrides[venueId] ?? {};
+      const existingMaker = feeAfterRebate(existing.makerBps, existing.rebatePct);
       feeOverrides[venueId] = {
-        ...(feeOverrides[venueId] ?? {}),
+        ...(existingMaker !== undefined ? { makerBps: existingMaker } : {}),
         takerBps: new Decimal(takerBpsArg),
+        rebatePct: new Decimal(0),
+        source: 'config',
       };
     }
   }

@@ -100,6 +100,19 @@ describe('executor configuration', () => {
     expect(loadExecutorConfig(path, {}).legMode).toBe('parallel_fok');
   });
 
+  it('parses gross venue fees with a rebate percentage', () => {
+    const path = configWithAppendix(`
+[fees.hotcoin]
+taker_bps = 20
+maker_bps = 20
+rebate_pct = 80
+`);
+    const fee = loadExecutorConfig(path, {}).feeOverrides.hotcoin;
+    expect(fee?.takerBps?.toFixed()).toBe('20');
+    expect(fee?.makerBps?.toFixed()).toBe('20');
+    expect(fee?.rebatePct?.toFixed()).toBe('80');
+  });
+
   it('parses explicit transfer allowlist limits without enabling transfers', () => {
     const path = configWithAppendix(`
 [[transfers.allowlist]]

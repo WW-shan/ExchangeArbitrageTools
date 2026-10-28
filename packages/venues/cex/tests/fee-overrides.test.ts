@@ -46,6 +46,38 @@ describe('venue fee overrides', () => {
     expect(symbolEffective.feeProvenance).toBe('account');
   });
 
+  it('applies the rebate to gross venue and account fees', () => {
+    const gateway = applyFeeOverride(market(), {
+      hotcoin: {
+        takerBps: new Decimal(20),
+        makerBps: new Decimal(20),
+        rebatePct: new Decimal(80),
+        source: 'config',
+      },
+    });
+    expect(gateway.feeTakerBps?.toFixed()).toBe('4');
+    expect(gateway.makerFeeBps?.toFixed()).toBe('4');
+
+    const account = applyFeeOverride(market(), {
+      hotcoin: {
+        takerBps: new Decimal(20),
+        symbols: { cake_usdt: { takerBps: new Decimal(20), makerBps: new Decimal(20) } },
+        rebatePct: new Decimal(80),
+        source: 'account',
+      },
+    });
+    expect(account.feeTakerBps?.toFixed()).toBe('4');
+    expect(account.makerFeeBps?.toFixed()).toBe('4');
+  });
+
+  it('fails closed for an invalid rebate percentage', () => {
+    expect(() =>
+      applyFeeOverride(market(), {
+        hotcoin: { takerBps: new Decimal(20), rebatePct: new Decimal(101) },
+      }),
+    ).toThrow('between 0 and 100');
+  });
+
   it('merges account fee files and preserves configured values for other symbols', () => {
     const directory = mkdtempSync(join(tmpdir(), 'arb-fee-overrides-'));
     directories.push(directory);
@@ -60,13 +92,14 @@ describe('venue fee overrides', () => {
     );
     const merged = mergeAccountFeeFile(
       {
-        gateio: { takerBps: new Decimal(10), source: 'config' },
+        gateio: { takerBps: new Decimal(10), rebatePct: new Decimal(70), source: 'config' },
         hotcoin: { takerBps: new Decimal(12), source: 'config' },
       },
       path,
     );
     expect(merged.gateio?.source).toBe('account');
     expect(merged.gateio?.takerBps?.toFixed()).toBe('10');
+    expect(merged.gateio?.rebatePct?.toFixed()).toBe('70');
     expect(merged.gateio?.symbols?.CAKE_USDT?.takerBps?.toFixed()).toBe('7');
     expect(merged.hotcoin?.takerBps?.toFixed()).toBe('12');
   });

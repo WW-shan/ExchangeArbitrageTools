@@ -417,7 +417,9 @@ Opportunity discovery: `docs/s1-opportunity-discovery.md`.
       minimum order.
 - [ ] Gate.io and Hotcoin FOK/IOC behavior verified with real orders before enabling
       `ioc_venues` / `fok_venues`.
-- [ ] Real account fee tiers for both venues; Hotcoin has no verified fee endpoint.
+- [x] Real account fee tiers for both venues: Gate personal-fee API and Hotcoin
+      official VIP0 schedule, with 70% / 80% spot rebates configured as gross
+      rates plus `rebate_pct`. Evidence: `docs/fee-rate-sources-2026-10-28.md`.
 - [ ] 24-hour continuous read-only soak; a 4-minute soak and 3-minute INJ-focused run are
       recorded, but the full 24-hour gate is not yet complete.
 - At least one real actionable S1 opportunity, 20 real-market paper batches, and 10

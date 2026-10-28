@@ -28,24 +28,36 @@
 
 ## 2. 写入真实费率
 
-编辑 `config/live-test.toml`，按账户实际等级填写：
+费率有两种数值，不能混用：
+
+- `taker_bps` / `maker_bps`：交易所返回的**毛费率**；
+- `rebate_pct`：现货返佣百分比，程序在覆盖逐币种费率后统一折算。
+
+当前 `config/live-test.toml`：
 
 ```toml
 [fees.gateio]
-taker_bps = 10
-maker_bps = 2
+taker_bps = 9.9
+maker_bps = 9.9
+rebate_pct = 70
 
 [fees.hotcoin]
-taker_bps = 10
-maker_bps = 2
+taker_bps = 20
+maker_bps = 20
+rebate_pct = 80
 ```
 
 说明：
 
-- 负数 `maker_bps` 表示 rebate。
-- Hotcoin 当前没有已验证的账户费率查询接口，必须手工填写。
-- `data/fees.json` 可由 `npm run fees:fetch` 生成，但 Hotcoin 会被跳过。
+- 有效费率 = `毛费率 × (1 - rebate_pct / 100)`。以上配置的有效成本为
+  Gate.io `2.97 bps/腿`、Hotcoin `4 bps/腿`。
+- 负数 `maker_bps` 表示交易所向 maker 付费；返佣仍按同一公式折算。
+- Gate.io 的毛费率来自认证后的个人费率接口；Hotcoin 的 VIP0 毛费率来自官方
+  费率页和 `/hk-web/vip/level-fee-rate`，私有 API 仍没有账户费率查询接口。
+- `data/fees.json` 可由 `npm run fees:fetch` 生成，保存的是毛费率；Hotcoin 会被跳过。
+  返佣在读取后统一应用，因此重新拉取不会丢失返佣。
 - 当 `live_enabled=true` 且任一启用场所缺少 taker 费率时，readiness 会 block；`live_enabled=false` 时只是 warn。
+- 来源、公式与首笔成交后的复核步骤见 `docs/fee-rate-sources-2026-10-28.md`。
 
 ## 3. 写入加密凭证
 

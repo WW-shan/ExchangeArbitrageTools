@@ -97,11 +97,45 @@ port = 8787
 [fees.gateio]
 taker_bps = 2
 maker_bps = -1
+rebate_pct = 70
 `,
       );
       const config = loadConfig(path);
       expect(config.fees.gateio?.takerBps?.toFixed()).toBe('2');
       expect(config.fees.gateio?.makerBps?.toFixed()).toBe('-1');
+      expect(config.fees.gateio?.rebatePct?.toFixed()).toBe('70');
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects an out-of-range fee rebate', () => {
+    const directory = mkdtempSync(join(tmpdir(), 'arb-config-rebate-'));
+    const path = join(directory, 'fees.toml');
+    try {
+      writeFileSync(
+        path,
+        `
+[scanner]
+max_order_notional = '30'
+
+[execution]
+live_enabled = false
+kill_switch = true
+
+[database]
+path = ':memory:'
+
+[api]
+host = '127.0.0.1'
+port = 8787
+
+[fees.hotcoin]
+taker_bps = 20
+rebate_pct = 101
+`,
+      );
+      expect(() => loadConfig(path)).toThrow('rebate_pct must be between 0 and 100');
     } finally {
       rmSync(directory, { recursive: true, force: true });
     }

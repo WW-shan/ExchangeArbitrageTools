@@ -3,6 +3,7 @@ import { ArbitrageRepository, openDatabase } from '@arb/storage';
 import {
   createCexAdapter,
   createPublicRuntime,
+  feeAfterRebate,
   isCcxtShutdownError,
   mergeAccountFeeFile,
 } from '@arb/venues-cex';
@@ -69,10 +70,15 @@ async function main(): Promise<void> {
   if (takerBpsArg || makerBpsArg) {
     for (const venueId of venueIds) {
       const existing = feeOverrides[venueId] ?? {};
+      const existingTaker = feeAfterRebate(existing.takerBps, existing.rebatePct);
+      const existingMaker = feeAfterRebate(existing.makerBps, existing.rebatePct);
       feeOverrides[venueId] = {
-        ...existing,
+        ...(existingTaker !== undefined ? { takerBps: existingTaker } : {}),
+        ...(existingMaker !== undefined ? { makerBps: existingMaker } : {}),
         ...(takerBpsArg ? { takerBps: new Decimal(takerBpsArg) } : {}),
         ...(makerBpsArg ? { makerBps: new Decimal(makerBpsArg) } : {}),
+        rebatePct: new Decimal(0),
+        source: 'config',
       };
     }
   }
