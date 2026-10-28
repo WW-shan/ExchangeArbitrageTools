@@ -5,6 +5,7 @@ coverage/
 .env
 .env.*
 !.env.example
+config/api-keys.json
 data/
 *.sqlite
 *.sqlite-*

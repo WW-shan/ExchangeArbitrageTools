@@ -1,0 +1,49 @@
+[
+  {
+    "venueId": "gateio",
+    "role": "read_only",
+    "withdrawalPermission": false,
+    "apiKey": "",
+    "secret": ""
+  },
+  {
+    "venueId": "gateio",
+    "role": "trade",
+    "withdrawalPermission": false,
+    "apiKey": "",
+    "secret": ""
+  },
+  {
+    "venueId": "gateio",
+    "role": "withdrawal",
+    "withdrawalPermission": true,
+    "ipWhitelistVerified": true,
+    "apiKey": "",
+    "secret": ""
+  },
+  {
+    "venueId": "hotcoin",
+    "role": "read_only",
+    "withdrawalPermission": false,
+    "apiKey": "",
+    "secret": "",
+    "password": ""
+  },
+  {
+    "venueId": "hotcoin",
+    "role": "trade",
+    "withdrawalPermission": false,
+    "apiKey": "",
+    "secret": "",
+    "password": ""
+  },
+  {
+    "venueId": "hotcoin",
+    "role": "withdrawal",
+    "withdrawalPermission": true,
+    "ipWhitelistVerified": true,
+    "apiKey": "",
+    "secret": "",
+    "password": ""
+  }
+]
