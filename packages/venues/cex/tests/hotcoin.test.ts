@@ -6,6 +6,7 @@ import {
   HotcoinReadOnlyAdapter,
   createPublicRuntime,
   hotcoinCanonicalQuery,
+  parseHotcoinCandles,
   hotcoinSignature,
   type HotcoinHttpClient,
   type HotcoinHttpRequest,
@@ -118,6 +119,55 @@ describe('Hotcoin public market adapter', () => {
     expect(markets[0]?.minNotional?.toFixed()).toBe('15');
     expect(markets[0]?.amountStep?.toFixed()).toBe('0.01');
     expect(markets[0]?.priceStep?.toFixed()).toBe('0.001');
+  });
+
+  it('fetches and normalizes OHLCV candles', async () => {
+    const interval = 15 * 60_000;
+    const since = now - 3 * interval;
+    const { client, requests } = clientWith(() => ({
+      code: 200,
+      msg: 'ok',
+      time: now,
+      data: [
+        [`${since}`, '2.00', '2.10', '1.90', '2.05', '100', '204'],
+        [`${since + interval}`, '2.05', '2.20', '2.00', '2.15', '120', '255'],
+        [`${now}`, '2.15', '2.30', '2.10', '2.25', '130', '290'],
+      ],
+    }));
+    const adapter = new HotcoinReadOnlyAdapter({ httpClient: client, clock: () => now });
+    const candles = await adapter.fetchOHLCV('cake_usdt', '15m', since, 100);
+    expect(requests).toHaveLength(1);
+    expect(new URL(requests[0]!.url).pathname).toBe('/v1/market/candles');
+    expect(candles).toHaveLength(2);
+    expect(candles[0]).toMatchObject({
+      timestamp: since,
+      open: expect.anything(),
+      high: expect.anything(),
+      low: expect.anything(),
+      close: expect.anything(),
+      volume: expect.anything(),
+      quoteVolume: expect.anything(),
+    });
+    expect(candles[1]?.close.toFixed()).toBe('2.15');
+    expect(candles[1]?.quoteVolume?.toFixed()).toBe('255');
+  });
+
+  it('filters malformed and out-of-window candle rows', () => {
+    const since = now - 60_000;
+    const until = now + 60_000;
+    const candles = parseHotcoinCandles(
+      [
+        [`${since - 1}`, '1', '1', '1', '1', '1'],
+        [`${since}`, '2', '3', '1', '2.5', '10', '25'],
+        ['bad', '1', '1', '1', '1', '1'],
+        [`${until}`, '1', '1', '1', '1', '1'],
+      ],
+      since,
+      until,
+    );
+    expect(candles).toHaveLength(1);
+    expect(candles[0]?.close.toFixed()).toBe('2.5');
+    expect(candles[0]?.quoteVolume?.toFixed()).toBe('25');
   });
 
   it('parses REST depth, sorts levels, truncates depth, and corrects server clock offset', async () => {

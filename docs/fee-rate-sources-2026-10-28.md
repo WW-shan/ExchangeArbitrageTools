@@ -24,7 +24,7 @@ but not the separately settled referral/commission rebate.
 - The API response for `spotVip` level 0 returned:
 
 ```json
-{level:0,name:VIP0,makerFee:0.2,takerFee:0.2}
+{ "level": 0, "name": "VIP0", "makerFee": "0.2", "takerFee": "0.2" }
 ```
 
 `makerFee` and `takerFee` are percentages: `0.2% = 20 bps` on each side.

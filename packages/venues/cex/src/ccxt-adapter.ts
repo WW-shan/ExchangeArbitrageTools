@@ -7,6 +7,7 @@ import {
   type CurrencyMetadata,
   type HealthState,
   type MarketMetadata,
+  type OhlcvCandle,
   type OrderBookSnapshot,
   type TickerSnapshot,
   type VenueTier,
@@ -528,6 +529,39 @@ export class CcxtCexAdapter implements CexAdapter {
       };
     }
     return result;
+  }
+
+  async fetchOHLCV(
+    symbol: string,
+    timeframe: string,
+    since: number,
+    limit: number,
+  ): Promise<OhlcvCandle[]> {
+    if (!Number.isFinite(since) || since <= 0) throw new Error('OHLCV since must be positive');
+    if (!Number.isInteger(limit) || limit <= 0) throw new Error('OHLCV limit must be positive');
+    const rows = await this.call(false, () =>
+      this.#exchange.fetchOHLCV(symbol, timeframe, since, Math.min(limit, 1000)),
+    );
+    return rows.flatMap((row) => {
+      const timestamp = Number(row[0]);
+      const open = decimalOrUndefined(row[1]);
+      const high = decimalOrUndefined(row[2]);
+      const low = decimalOrUndefined(row[3]);
+      const close = decimalOrUndefined(row[4]);
+      const volume = decimalOrUndefined(row[5]);
+      if (
+        !Number.isFinite(timestamp) ||
+        timestamp <= 0 ||
+        open === undefined ||
+        high === undefined ||
+        low === undefined ||
+        close === undefined ||
+        volume === undefined
+      ) {
+        return [];
+      }
+      return [{ timestamp, open, high, low, close, volume }];
+    });
   }
 
   async watchOrderBook(

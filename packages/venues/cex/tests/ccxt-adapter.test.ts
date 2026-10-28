@@ -317,3 +317,24 @@ describe('ccxt account trading fees', () => {
     }
   });
 });
+
+describe('ccxt OHLCV mapping', () => {
+  it('maps exchange candles to decimal candles', async () => {
+    const prototype = (ccxt.gate as unknown as { prototype: Record<string, unknown> }).prototype;
+    const original = prototype.fetchOHLCV;
+    prototype.fetchOHLCV = async () => [
+      [1_700_000_000_000, 2, 2.1, 1.9, 2.05, 100],
+      [1_700_000_900_000, 2.05, 2.2, 2, 2.15, 120],
+    ];
+    try {
+      const adapter = createCcxtAdapter('gateio', createPublicRuntime(1), { readOnly: true });
+      const candles = await adapter.fetchOHLCV!('CAKE/USDT', '15m', 1_700_000_000_000, 500);
+      expect(candles).toHaveLength(2);
+      expect(candles[0]?.open.toFixed()).toBe('2');
+      expect(candles[1]?.close.toFixed()).toBe('2.15');
+      expect(candles[1]?.volume.toFixed()).toBe('120');
+    } finally {
+      prototype.fetchOHLCV = original;
+    }
+  });
+});

@@ -3,12 +3,12 @@
 Status legend: `[x]` verified, `[~]` partially verified or awaiting implementation,
 `[ ]` not implemented, `[!]` requires external/live evidence.
 
-Last verified: 2026-10-27 (Asia/Hong_Kong). The clause-by-clause audit is in
+Last verified: 2026-10-28 (Asia/Hong_Kong). The clause-by-clause audit is in
 `docs/design-acceptance-matrix.md`; this checklist is the working summary.
 
 ## Verification Baseline
 
-- [x] `npm run check` passed: lint, 50 test files / 274 tests, and backtest.
+- [x] `npm run check` passed: lint, 55 test files / 334 tests, and backtest.
 - [x] `npm run coverage` passed with 81.79% statements, 72.23% branches, 79.02% functions,
       and 85.58% lines.
 - [x] Focused regression set after the S3/S4 and zero-fee fixes passed: 46 tests across
@@ -100,6 +100,12 @@ Last verified: 2026-10-27 (Asia/Hong_Kong). The clause-by-clause audit is in
       notional, visible depth exhaustion, and the binding reason for every route.
 - [x] Spread persistence tracking records eligible ratio, longest eligible streak, time
       to first loss, p50/p95 gross edge, and maximum capacity per direction.
+- [x] Historical OHLCV backtesting covers Gate/Hotcoin pagination, next-candle-open fills,
+      rebated fees, extra slippage, volume filters, stress fills at the next high/low, and
+      multi-period ranking. The 30-day sweep plus 5m/1m reruns selected the active
+      `config/s1-watchlist.json` set.
+- [x] `npm run watch:s1` scans only the selected S1 pairs with a 20 USDT notional cap and
+      real order-book capacity curves.
 - [x] The two-leg execution order is documented and verified in code: leg 1 buy, reconcile,
       refresh leg 2 book, recalculate post-fill profit, then leg 2 sell from actual fill.
 - [x] An explicit `leg_mode=parallel_fok` path submits both FOK legs concurrently, uses a

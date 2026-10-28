@@ -4,6 +4,7 @@ import {
   type Clock,
   type CurrencyMetadata,
   type MarketMetadata,
+  type OhlcvCandle,
   type OrderBookSnapshot,
   type TickerSnapshot,
   type VenueTier,
@@ -145,6 +146,12 @@ export interface CexAdapter {
   readonly capabilities: VenueCapabilities;
   loadMarkets(): Promise<MarketMetadata[]>;
   fetchTickers?(): Promise<TickerSnapshot[]>;
+  fetchOHLCV?(
+    symbol: string,
+    timeframe: string,
+    since: number,
+    limit: number,
+  ): Promise<OhlcvCandle[]>;
   fetchTradingFees?(): Promise<Record<string, { takerBps?: Decimal; makerBps?: Decimal }>>;
   fetchOrderBook(symbol: string, depth: number): Promise<OrderBookSnapshot>;
   watchOrderBook?(

@@ -103,6 +103,19 @@ export interface TickerSnapshot {
   timestamp: number;
 }
 
+export interface OhlcvCandle {
+  /** Candle open time in UTC milliseconds. */
+  timestamp: number;
+  open: Decimal;
+  high: Decimal;
+  low: Decimal;
+  close: Decimal;
+  /** Base-asset volume. */
+  volume: Decimal;
+  /** Quote-asset turnover when the venue provides it. */
+  quoteVolume?: Decimal;
+}
+
 export interface CurrencyNetwork {
   network: string;
   nativeName: string;

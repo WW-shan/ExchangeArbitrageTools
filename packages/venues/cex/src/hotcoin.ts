@@ -6,6 +6,7 @@ import {
   Decimal,
   resolveBaseUnits,
   type MarketMetadata,
+  type OhlcvCandle,
   type OrderBookSnapshot,
   type TickerSnapshot,
   type VenueTier,
@@ -117,6 +118,54 @@ const ZERO = new Decimal(0);
 const DEFAULT_BASE_URL = 'https://api.hotcoinfin.com';
 const DEFAULT_WS_URL = 'wss://wss.hotcoinfin.com/trade/multiple';
 const DEFAULT_SIGN_HOST = 'api.hotcoinfin.com';
+
+const HOTCOIN_INTERVAL_MS: Readonly<Record<string, number>> = {
+  '1m': 60_000,
+  '5m': 5 * 60_000,
+  '15m': 15 * 60_000,
+  '30m': 30 * 60_000,
+  '1h': 60 * 60_000,
+  '1d': 24 * 60 * 60_000,
+  '1w': 7 * 24 * 60 * 60_000,
+  '1mo': 30 * 24 * 60 * 60_000,
+};
+
+export function parseHotcoinCandles(raw: unknown, since: number, until: number): OhlcvCandle[] {
+  if (!Array.isArray(raw)) return [];
+  const candles: OhlcvCandle[] = [];
+  for (const row of raw) {
+    if (!Array.isArray(row) || row.length < 6) continue;
+    const timestamp = Number(row[0]);
+    const open = decimalOrUndefined(row[1]);
+    const high = decimalOrUndefined(row[2]);
+    const low = decimalOrUndefined(row[3]);
+    const close = decimalOrUndefined(row[4]);
+    const volume = decimalOrUndefined(row[5]);
+    const quoteVolume = row.length >= 7 ? decimalOrUndefined(row[6]) : undefined;
+    if (
+      !Number.isFinite(timestamp) ||
+      timestamp < since ||
+      timestamp >= until ||
+      open === undefined ||
+      high === undefined ||
+      low === undefined ||
+      close === undefined ||
+      volume === undefined
+    ) {
+      continue;
+    }
+    candles.push({
+      timestamp,
+      open,
+      high,
+      low,
+      close,
+      volume,
+      ...(quoteVolume !== undefined ? { quoteVolume } : {}),
+    });
+  }
+  return candles.sort((left, right) => left.timestamp - right.timestamp);
+}
 
 function numberOrUndefined(value: unknown): number | undefined {
   const parsed = typeof value === 'number' ? value : Number(value);
@@ -716,6 +765,28 @@ export class HotcoinAdapter implements CexAdapter {
       });
     }
     return markets;
+  }
+
+  async fetchOHLCV(
+    symbol: string,
+    timeframe: string,
+    since: number,
+    limit: number,
+  ): Promise<OhlcvCandle[]> {
+    const intervalMs = HOTCOIN_INTERVAL_MS[timeframe];
+    if (intervalMs === undefined) throw new Error(`unsupported Hotcoin timeframe: ${timeframe}`);
+    if (!Number.isFinite(since) || since <= 0) throw new Error('OHLCV since must be positive');
+    if (!Number.isInteger(limit) || limit <= 0) throw new Error('OHLCV limit must be positive');
+    const requested = Math.min(500, Math.max(100, limit));
+    const until = Math.min(since + intervalMs * requested, this.#clock());
+    if (until <= since) return [];
+    const result = await this.request<unknown>('/v1/market/candles', {
+      symbol,
+      interval: timeframe,
+      to: until,
+      limit: requested,
+    });
+    return parseHotcoinCandles(result.data, since, until);
   }
 
   async fetchTickers(): Promise<TickerSnapshot[]> {

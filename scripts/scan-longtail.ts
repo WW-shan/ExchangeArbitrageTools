@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import {
   Decimal,
@@ -41,6 +41,15 @@ function listArg(name: string, fallback: string): string[] {
 
 function decimalList(name: string, fallback: string): Decimal[] {
   return listArg(name, fallback).map((value) => new Decimal(value));
+}
+
+function watchlistBases(path: string): string[] {
+  if (!existsSync(path)) throw new Error(`watchlist not found: ${path}`);
+  const parsed = JSON.parse(readFileSync(path, 'utf8')) as { bases?: unknown };
+  if (!Array.isArray(parsed.bases) || parsed.bases.some((value) => typeof value !== 'string')) {
+    throw new Error('watchlist must contain a string bases array');
+  }
+  return parsed.bases.map((value) => value.trim().toUpperCase()).filter(Boolean);
 }
 
 function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
@@ -161,7 +170,12 @@ async function main(): Promise<void> {
   );
   const maxCandidates = Math.max(1, Number(arg('--max-bases', arg('--max-candidates', '200'))));
   const maxBookCandidates = Math.max(0, Number(arg('--max-book-candidates', '60')));
-  const bases = new Set(listArg('--bases', '').map((value) => value.toUpperCase()));
+  const watchlistPath = arg('--watchlist', '');
+  const bases = new Set(
+    [...listArg('--bases', ''), ...(watchlistPath ? watchlistBases(watchlistPath) : [])].map(
+      (value) => value.toUpperCase(),
+    ),
+  );
   const depth = Math.max(1, Number(arg('--depth', String(config.scanner.orderBookDepth))));
   const rps = Math.max(1, Number(arg('--rps', '4')));
   const timeoutMs = Math.max(1000, Number(arg('--timeout-ms', '30000')));
@@ -495,6 +509,8 @@ async function main(): Promise<void> {
       parameters: {
         venues,
         quotes,
+        watchlist: watchlistPath || null,
+        bases: [...bases],
         minVolume: minVolume.toFixed(),
         maxVolume: maxVolume.toFixed(),
         maxBookCandidates,

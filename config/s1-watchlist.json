@@ -1,0 +1,14 @@
+{
+  "asOf": "2026-10-28",
+  "notionalUsd": 20,
+  "bases": ["ULTIMA", "LIGHT", "KAT", "KAIA", "BREV", "AEON", "LA"],
+  "notes": {
+    "ULTIMA": "primary; two-sided and 548 stress samples over 6d 1m",
+    "LIGHT": "high frequency; confirm live depth because stress rate is lower",
+    "KAT": "high frequency; Hotcoin transfer is closed, use two-sided inventory rotation",
+    "KAIA": "two-sided; Hotcoin withdrawal fee is high, rotate instead of transferring",
+    "BREV": "balanced two-sided candidates; lower frequency",
+    "AEON": "balanced two-sided candidates; lower stress rate",
+    "LA": "higher stress and wider net edge; lower frequency and larger Hotcoin minimum"
+  }
+}
