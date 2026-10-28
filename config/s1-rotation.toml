@@ -1,0 +1,35 @@
+# Two-sided S1 inventory rotation plan. This file is descriptive; live
+# automatic order submission is not enabled until the rotation supervisor and
+# the dust preflight are implemented and the soak gates pass.
+
+as_of = '2026-10-29'
+mode = 'two_sided_inventory_rotation'
+auto_execution = false
+
+[[pairs]]
+base = 'KAT'
+quote = 'USDT'
+priority = 1
+starting_notional_usd = '10'
+max_notional_usd = '20'
+max_dust_usd = '0.01'
+
+[[pairs]]
+base = 'LIGHT'
+quote = 'USDT'
+priority = 2
+starting_notional_usd = '10'
+max_notional_usd = '20'
+max_dust_usd = '0.02'
+
+[[watch_only]]
+base = 'ULTIMA'
+quote = 'USDT'
+reason = '0.0001 step creates about 0.10 USDT dust per 20 USDT buy'
+
+[rotation_rules]
+max_open_batches = 1
+entry_requires_fresh_books = true
+entry_requires_balance_refresh = true
+entry_requires_dust_check = true
+manual_confirmation_during_soak = true

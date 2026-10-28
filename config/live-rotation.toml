@@ -1,0 +1,148 @@
+# Two-sided S1 rotation profile: KAT/LIGHT only, small manual batches.
+# live_enabled and kill_switch must stay closed until dust preflight and the
+# rotation supervisor are verified.
+
+[scanner]
+# Hotcoin minimums are per symbol. The executor enforces market.minNotional.
+enabled_venues = ['gateio', 'hotcoin']
+quote_currency = "USDT"
+# Keep the first live batch narrow. Use config/discovery.toml for read-only
+# volume-ranked opportunity discovery.
+asset_universe_mode = "explicit"
+base_assets = ["KAT", "LIGHT"]
+quote_currencies = ["USDT"]
+max_base_assets = 2
+fetch_concurrency = 4
+scan_interval_hot_ms = 30000
+scan_interval_top100_ms = 120000
+scan_interval_top500_ms = 600000
+signal_cooldown_ms = 60000
+max_order_notional = "20"
+max_orderbook_age_ms = 3000
+max_feed_latency_ms = 3000
+max_freeze_ms = 5000
+feed_mode = 'websocket'
+ws_max_book_age_ms = 3000
+ws_max_subscriptions = 200
+ws_max_reconnect_attempts = 5
+ws_rest_fallback_per_venue = 4
+ws_scan_interval_ms = 1000
+orderbook_depth = 20
+min_net_profit_bps = 5
+safety_buffer_bps = 2
+min_profit_usd = "0.01"
+max_slippage_bps = 30
+max_gas_cost_usd = "0.50"
+max_transfer_tax_bps = 0
+max_pair_skew_ms = 2500
+min_reliability_score = '0.3'
+max_price_deviation_bps = 500
+suspicious_spread_bps = 200
+rebalance_cost_bps = 0
+execution_mode = 'taker_taker'
+maker_fill_probability = '0.5'
+optimal_sizing = true
+min_sizing_notional = "9.5"
+sizing_step = "0.01"
+max_sizing_candidates_per_cycle = 20
+sizing_samples = 12
+persist_snapshots = true
+scan_interval_ms = 5000
+fee_file = 'data/fees.json'
+max_triangular_paths = 0
+max_candidates_per_cycle = 20
+max_hops = 3
+max_legs_per_currency = 2
+cross_venue_mode = "off"
+max_venue_switches = 1
+balance_max_age_ms = 300000
+require_balances_for_s1 = true
+min_top_depth_qty = "0"
+liquidity_top_levels = 5
+
+[execution]
+live_enabled = false
+kill_switch = true
+manual_confirmation = true
+# serial = buy leg, reconcile, then sell leg.
+# parallel_fok = submit both FOK legs concurrently. It is still NOT atomic
+# across venues. Keep serial until both private FOK paths are verified.
+leg_mode = 'serial'
+max_open_batches = 1
+daily_max_loss_usd = "5"
+handoff_max_age_ms = 15000
+ioc_venues = []
+fok_venues = ['gateio', 'hotcoin']
+
+[transfers]
+enabled = false
+require_manual_confirmation = true
+max_in_flight_batches = 1
+max_legs_per_batch = 2
+max_balance_age_ms = 300000
+poll_interval_ms = 15000
+withdrawal_timeout_ms = 900000
+deposit_timeout_ms = 1800000
+# Keep this section closed until both venues expose the exact asset/network
+# and explicit withdrawal credentials. The withdrawal key may reuse the trade
+# key, but that increases the blast radius; IP whitelist attestation is still
+# required. The first live test must use one leg only.
+# Gate's 2026-10-28 currency data shows INC on ERC20 only and TBK/HTX on TRC20
+# only; CAKE/ETH/USDT are available on BSC/BEP20. Do not assume INC/BSC.
+# Add explicit [[transfers.allowlist]] entries for each direction, for example:
+# [[transfers.allowlist]]
+# from_venue = 'gateio'
+# to_venue = 'hotcoin'
+# asset = 'CAKE'
+# network = 'BSC'
+# address = '0x...'
+# address_tag = ''
+# min_amount = '15'
+# max_amount = '200'
+# daily_max_amount = '400'
+# withdraw_fee = '1'
+
+[database]
+path = "data/rotation.sqlite"
+
+[api]
+host = "127.0.0.1"
+port = 8789
+
+[bsc]
+enabled = false
+primary_provider = "0x"
+backup_provider = "1inch"
+token_symbols = ["CAKE", "BNB", "USDT", "USDC"]
+bnb_usd = "600"
+slippage_bps = 10
+inventory_mode = true
+estimated_transfer_arrival_ms = 900000
+max_transfer_arrival_ms = 1800000
+
+# Fee values are GROSS account rates before commission rebate. Effective fee =
+# gross_bps x (1 - rebate_pct / 100). Account rates from data/fees.json are
+# also gross, so rerunning `npm run fees:fetch` keeps the rebate effective.
+# Negative maker_bps means the venue pays the maker. Do not enable live until
+# both venues have explicit taker fees and the rebates are confirmed in the UI.
+[fees.gateio]
+# Gate personal trading fee API: 9.9 bps gross on 2026-10-28.
+# Operator-confirmed 70% spot rebate -> 2.97 bps effective.
+taker_bps = 9.9
+maker_bps = 9.9
+rebate_pct = 70
+
+[fees.hotcoin]
+# Hotcoin official VIP0 spot schedule: maker 0.20%, taker 0.20%.
+# Source: https://www.hotcoin.com/en_US/rateStandard/index (2026-10-28).
+# Operator-confirmed 80% spot rebate -> 4 bps effective.
+taker_bps = 20
+maker_bps = 20
+rebate_pct = 80
+
+# 2026-10-28 private probes verified the no-fill path on both venues:
+# - Gate.io returned FOK_NOT_FILL with zero fill and unchanged balance.
+# - Hotcoin matchType=8 accepted the order, then exposed no order and no frozen
+#   balance; the executor now confirms such IOC/FOK misses from pre-submit and
+#   post-submit balances before closing the batch.
+# Keep IOC empty: only the FOK path has been verified end-to-end on both venues.

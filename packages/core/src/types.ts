@@ -6,6 +6,7 @@ export type HealthState = 'A' | 'B' | 'C' | 'D';
 export type OrderSide = 'buy' | 'sell';
 export type TokenRiskLevel = 'low' | 'medium' | 'high' | 'blocked';
 export type ExecutionMode = 'taker_taker' | 'maker_buy_taker_sell' | 'taker_buy_maker_sell';
+export type FeeChargeAsset = 'base' | 'quote' | 'unknown';
 
 export type RejectionReason =
   | 'insufficient_depth'

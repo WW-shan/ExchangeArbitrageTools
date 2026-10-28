@@ -18,3 +18,4 @@ export * from './paper.js';
 export * from './recovery.js';
 export * from './rebalance.js';
 export * from './inventory-netting.js';
+export * from './rotation.js';
