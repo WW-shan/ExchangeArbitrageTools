@@ -65,6 +65,26 @@ maker_bps = 20
 rebate_pct = 80
 ```
 
+## First Live Fill Reconciliation (2026-10-28)
+
+The first real S1 batch (`S1-47-1793200774229`) confirmed that both venues
+charge the gross fee at fill time and settle rebates separately:
+
+- Gate charged `0.0396 TBK` on a `40 TBK` buy at `0.23728`, i.e. `9.9 bps`.
+  The 70% rebate is an accrued USDT receivable of `0.0065774016`, not an
+  immediate discount.
+- Hotcoin charged `0.0191 USDT` on a `40 TBK` sell at `0.23888`, i.e. about
+  `20 bps`. The 80% rebate is an accrued USDT receivable of `0.0152888`.
+- Gross spread was `0.064 USDT`; gross fees were `0.028507288 USDT`; accrued
+  rebates were `0.0218662016 USDT`; net fees were `0.0066410864 USDT`.
+- Cash profit was `0.035492712 USDT`; economic profit including accrued rebates
+  was `0.0573589136 USDT`.
+
+The executor now reconciles closed trades from actual balance deltas, so fees
+charged in the base asset are not lost. It records cash profit and rebate
+receivable separately in execution metadata. See
+`docs/s1-live-test-tbk-2026-10-28.md`.
+
 ## What Still Requires Live Verification
 
 1. After the first real fills, compare `/v1/order/matchresults` (Hotcoin) and

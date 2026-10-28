@@ -1,4 +1,4 @@
-import { ExecutionGate, type HealthState, type MarketMetadata } from '@arb/core';
+import { ExecutionGate, type Decimal, type HealthState, type MarketMetadata } from '@arb/core';
 import { ArbitrageRepository, openDatabase } from '@arb/storage';
 import {
   CEX_TIERS,
@@ -189,6 +189,7 @@ function executionVenue(
   instrument: { base: string; quote: string },
   adapters: Record<string, RecoveryVenue>,
   states: Map<string, HealthState>,
+  feeRebates: Readonly<Record<string, { rebatePct?: Decimal } | undefined>>,
   exchangeSymbol?: string,
 ): ExecutionVenue {
   const bundle = adapters[venueId];
@@ -203,6 +204,9 @@ function executionVenue(
     market,
     credentials: bundle.credentials,
     healthState: states.get(venueId) ?? 'D',
+    ...(feeRebates[venueId]?.rebatePct !== undefined
+      ? { feeRebatePct: feeRebates[venueId]!.rebatePct! }
+      : {}),
   };
 }
 
@@ -331,6 +335,7 @@ async function main(): Promise<void> {
       instrument,
       adapters,
       states,
+      feeOverrides,
       opportunity.metadata?.buySymbol,
     );
     const sell = executionVenue(
@@ -339,6 +344,7 @@ async function main(): Promise<void> {
       instrument,
       adapters,
       states,
+      feeOverrides,
       opportunity.metadata?.sellSymbol,
     );
     const build = buildS1ExecutionRequest({

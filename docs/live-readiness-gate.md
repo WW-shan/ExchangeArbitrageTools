@@ -15,30 +15,30 @@ npm run live:readiness
 
 ## 2. 检查项
 
-| 检查项                           | 级别       | 含义                                                                                                                  |
-| -------------------------------- | ---------- | --------------------------------------------------------------------------------------------------------------------- |
-| `execution.safety_bounds`        | block      | `max_open_batches=1`、`manual_confirmation=true`、`max_order_notional<=30`、`daily_max_loss<=20`                      |
-| `execution.live_enabled`         | warn       | 实盘开关应保持 false，直到人工开启                                                                                    |
-| `execution.kill_switch`          | pass/warn  | 应保持 true                                                                                                           |
-| `fees.taker_overrides`           | warn/block | 每个启用场所是否有显式 taker 费率；`live_enabled=true` 时缺失会 block                                                 |
-| `sizing.min_profit_vs_notional`  | warn       | `min_profit_usd / max_order_notional` 的隐含 bps 门槛，过高会遮蔽小价差                                               |
-| `sizing.hotcoin_min_notional`    | block      | Hotcoin 启用时，`min_sizing_notional` 与 `max_order_notional` 都必须 ≥15 USDT，且最小额不能大于最大额                 |
-| `execution.ioc_fok_venues`       | warn/block | 每个启用场所是否有已验证的 IOC/FOK；`live_enabled=true` 时缺失会 block                                                |
-| `execution.parallel_fok_venues`  | warn/block | 仅 `leg_mode='parallel_fok'` 时检查；每个启用场所都必须已验证 FOK，实盘开启时缺失会 block                             |
-| `network.proxy`                  | warn       | 是否配置代理                                                                                                          |
-| `database.integrity`             | block      | SQLite `integrity_check` 必须为 ok                                                                                    |
-| `database.open_executions`       | block      | 不能有未对账的 open execution / unresolved order                                                                      |
-| `database.persisted_kill_switch` | pass/warn  | 持久化 kill switch 状态                                                                                               |
-| `database.persisted_live`        | pass/warn  | 持久化 live 开关状态                                                                                                  |
-| `execution.venue_gates`          | warn/block | 每个启用场所是否已在数据库中打开 `execution_enabled`                                                                  |
-| `secrets.store`                  | block      | 加密凭证库存在且可解密                                                                                                |
-| `secrets.master_key`             | block      | 主密钥存在                                                                                                            |
-| `secrets.trade_coverage`         | block      | 每个启用场所都有 trade 凭证                                                                                           |
-| `secrets.read_only_coverage`     | warn/block | `require_balances_for_s1=true` 时，每个启用场所都需要 read_only 凭证供余额刷新                                        |
-| `secrets.hotcoin_passphrase`     | warn/block | Hotcoin 凭证是否包含 passphrase；`live_enabled=true` 时缺失会 block                                                   |
-| `secrets.ip_whitelist`           | warn       | trade key 是否标记 `ipWhitelistVerified`                                                                              |
-| `network.venues`                 | block      | 每个启用场所 REST 必须成功；`feed_mode=websocket` 时 WS 必须成功；`asset_universe_mode=top_volume` 时 ticker 必须成功 |
-| `bsc.quote_keys`                 | block      | 启用 BSC 时 0x/1inch key 是否存在                                                                                     |
+| 检查项                           | 级别       | 含义                                                                                                                                                   |
+| -------------------------------- | ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `execution.safety_bounds`        | block      | `max_open_batches=1`、`manual_confirmation=true`、`max_order_notional<=30`、`daily_max_loss<=20`                                                       |
+| `execution.live_enabled`         | warn       | 实盘开关应保持 false，直到人工开启                                                                                                                     |
+| `execution.kill_switch`          | pass/warn  | 应保持 true                                                                                                                                            |
+| `fees.taker_overrides`           | warn/block | 每个启用场所是否有显式 taker 费率；`live_enabled=true` 时缺失会 block                                                                                  |
+| `sizing.min_profit_vs_notional`  | warn       | `min_profit_usd / max_order_notional` 的隐含 bps 门槛，过高会遮蔽小价差                                                                                |
+| `sizing.hotcoin_min_notional`    | block      | Hotcoin 启用时，`min_sizing_notional` 必须大于 0 且不大于 `max_order_notional`；单币最小额由执行器按实时 `market.minNotional` 预检，不统一假定 15 USDT |
+| `execution.ioc_fok_venues`       | warn/block | 每个启用场所是否有已验证的 IOC/FOK；`live_enabled=true` 时缺失会 block                                                                                 |
+| `execution.parallel_fok_venues`  | warn/block | 仅 `leg_mode='parallel_fok'` 时检查；每个启用场所都必须已验证 FOK，实盘开启时缺失会 block                                                              |
+| `network.proxy`                  | warn       | 是否配置代理                                                                                                                                           |
+| `database.integrity`             | block      | SQLite `integrity_check` 必须为 ok                                                                                                                     |
+| `database.open_executions`       | block      | 不能有未对账的 open execution / unresolved order                                                                                                       |
+| `database.persisted_kill_switch` | pass/warn  | 持久化 kill switch 状态                                                                                                                                |
+| `database.persisted_live`        | pass/warn  | 持久化 live 开关状态                                                                                                                                   |
+| `execution.venue_gates`          | warn/block | 每个启用场所是否已在数据库中打开 `execution_enabled`                                                                                                   |
+| `secrets.store`                  | block      | 加密凭证库存在且可解密                                                                                                                                 |
+| `secrets.master_key`             | block      | 主密钥存在                                                                                                                                             |
+| `secrets.trade_coverage`         | block      | 每个启用场所都有 trade 凭证                                                                                                                            |
+| `secrets.read_only_coverage`     | warn/block | `require_balances_for_s1=true` 时，每个启用场所都需要 read_only 凭证供余额刷新                                                                         |
+| `secrets.hotcoin_passphrase`     | warn/block | Hotcoin 凭证是否包含 passphrase；`live_enabled=true` 时缺失会 block                                                                                    |
+| `secrets.ip_whitelist`           | warn       | trade key 是否标记 `ipWhitelistVerified`                                                                                                               |
+| `network.venues`                 | block      | 每个启用场所 REST 必须成功；`feed_mode=websocket` 时 WS 必须成功；`asset_universe_mode=top_volume` 时 ticker 必须成功                                  |
+| `bsc.quote_keys`                 | block      | 启用 BSC 时 0x/1inch key 是否存在                                                                                                                      |
 
 ## 3. 当前状态（2026-10-27，无 API key）
 

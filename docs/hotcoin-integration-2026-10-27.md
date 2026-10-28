@@ -12,7 +12,7 @@
 - 查单优先使用官方 `/v1/order/detailByClOrdId`，失败才回退到有界分页委托列表；
   HTTP 429/418 会触发 rate-limit backoff，不再被当成普通错误。
 - Gate.io 与 Hotcoin 统一通过 `createCexAdapter` 创建，避免某个脚本误走 CCXT。
-- `config/live-test.toml` 已切到 Gate.io + Hotcoin，单批上限 20 USDT，Hotcoin 最小 sizing 15 USDT。
+- `config/live-test.toml` 已切到 Gate.io + Hotcoin，单批上限 20 USDT；Hotcoin 最小 sizing 按交易对，TBK/USDT 当前为 0，其他币对可能为 15 USDT。
 - readiness 已覆盖 Hotcoin 最小额、IOC/FOK 覆盖、场所执行门、WebSocket 必需性。
 - 真实公开探测：Gate.io 2,181 个市场、Hotcoin 374 个市场，两个场所 REST/WS 均成功。
 - 五轮零费率 smoke 产生 `gateio->hotcoin` 的 S1 记录，说明公开链路可用；这些记录不是扣费后的真实利润。
@@ -48,7 +48,7 @@
   `vol` 映射为 base volume，`buy/sell` 映射为 bid/ask，`ts` 为毫秒时间戳。
 - 适配器只接受 `state=enable` 的市场。
 - 使用 `pricePrecision` / `amountPrecision` 生成价格与数量步长。
-- `minOrderAmount` 映射为 `minNotional`；目标交易对当前为 15 USDT。
+- `minOrderAmount` 映射为 `minNotional`；0 表示未声明，不能伪造为 15；TBK/USDT 实测为 0。
 - `minOrderCount` 映射为 `minAmount`（若大于 0）。
 
 ### WebSocket
@@ -225,7 +225,7 @@ npm run live:readiness
 - `liveTestReady: false`
 - 唯一 block：`secrets.store`
 - `network.venues`: `2/2 REST ok, 2/2 WS ok, 2/2 tickers ok`（`top_volume` 时 ticker 是必需项）
-- `sizing.hotcoin_min_notional`: pass（15 / 20）
+- `sizing.hotcoin_min_notional`: pass（按币对最小额，TBK=0）
 - `sizing.min_profit_vs_notional`: pass（5.00bps）
 - 输出：`data/live-readiness-hotcoin.json`、`data/live-readiness-discovery.json`
 
@@ -250,7 +250,7 @@ npm run live:readiness
 
 ### 7.3 FOK / IOC
 
-1. 用最小 15 USDT 名义额、远离盘口的限价单验证 FOK：应完全成交或完全拒绝，不能部分成交后留在市场。
+1. 用可立即成交的 FOK 卖单验证：应完全成交或完全拒绝；不要用远离盘口的限价单判断最小额。
 2. 用 IOC 验证：允许部分成交，剩余立即撤销。
 3. 验证 `matchType=8` 与 `matchType=9` 的请求参数。
 4. 验证 `fetchOrder` 的状态码 1/2/3/4/5/8 与本地状态映射。
@@ -266,10 +266,10 @@ npm run live:readiness
 
 ### 7.4 最小额与精度
 
-1. Hotcoin 15 USDT 最小名义额：确认 14.99 被拒绝、15.00 可下单。
-2. 确认价格精度与数量精度向下取整不会导致第二腿低于 15 USDT。
+1. Hotcoin 最小名义额按币对：TBK 已实测 1 TBK FOK 可卖；其他币对按实际 minOrderAmount 验证。
+2. 确认价格精度与数量精度向下取整不会导致第二腿低于该交易对实际最小额。
 3. 确认 Gate.io 与 Hotcoin 的 `amountStep`、`priceStep`、`minAmount`、`minNotional` 与交易所页面一致。
-4. 确认 20 USDT 上限下仍能生成至少 15 USDT 的第二腿。
+4. 确认批次上限下仍能生成满足该交易对最小额的第二腿。
 
 ### 7.5 执行安全
 

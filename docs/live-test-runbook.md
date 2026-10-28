@@ -9,7 +9,7 @@
 - 默认安全状态：`live_enabled=false`、`kill_switch=true`、`leg_mode='serial'`、`ioc_venues=[]`、`fok_venues=['gateio','hotcoin']`、`manual_confirmation=true`。
 - 公开链路已验证：Gate.io 与 Hotcoin 的 REST、WS 均可通过 `socks5://127.0.0.1:10808` 连接；Hotcoin 深度 WS 为 gzip 推送，约 1–3 秒更新一次。
 - 私有链路已部分验证：真实余额、Gate FOK 未成交、Hotcoin FOK/IOC 零成交已实测；成交腿与卖出腿仍未验证。详见 `docs/fok-private-probe-2026-10-28.md`。
-- Hotcoin 目标交易对的最小名义额为 15 USDT，因此扫描器最小 sizing 与执行器最小下单额都必须不低于 15。
+- Hotcoin 最小名义额按交易对返回；TBK/USDT 当前为 0，其他币对可能为 15。扫描器 sizing 与执行器 preflight 都必须按实际 market.minNotional 校验。
 - 当前没有真实 API key 时，`npm run live:readiness` 会因为 `secrets.store` 缺失而 block；这是预期行为，不是代码故障。
 - 只读机会发现使用独立配置 `config/discovery.toml`：成交量前 30、最低 100,000 USD 24h
   quote volume、10 bps/腿占位费率。它不会打开实盘，也不代表真实费率。
@@ -123,7 +123,7 @@ npm run live:readiness
 - `network.venues` 同时满足 REST 与 WS 成功（`feed_mode=websocket` 时 WS 失败会 block）；
 - 若使用 `config/discovery.toml`（`asset_universe_mode=top_volume`），`network.venues`
   还必须显示 `2/2 tickers ok`；
-- `sizing.hotcoin_min_notional` 通过：`min_sizing_notional>=15`、`max_order_notional>=15`，且最小额不大于最大额；
+- `sizing.hotcoin_min_notional` 通过：`min_sizing_notional>0` 且不大于 `max_order_notional`；单币最小额由执行器按实时 market.minNotional 预检。
 - `fees.taker_overrides` 通过；
 - `secrets.trade_coverage` 覆盖 Gate.io 与 Hotcoin；
 - `secrets.read_only_coverage` 覆盖 Gate.io 与 Hotcoin（扫描器需要只读余额）；
@@ -218,7 +218,7 @@ npm run executor -- --opportunity <机会ID> --confirm-batch <批次ID> --execut
 
 - 单批 notional ≤ 20 USDT，并发批次 = 1，日亏上限 5 USDT，必须手动确认。
 - 每日最多 5 批目前是操作纪律，由人工计数；执行器还没有自动按日批次数硬限制。
-- Hotcoin 单笔最小名义额 15 USDT；低于该值的 S1 不应进入执行。
+- Hotcoin 单笔最小名义额按交易对不同；执行器按实时 market.minNotional 拦截，不得用统一 15 USDT 假设。
 - 出现以下任一情况立即停止：未知订单无法对账、余额不一致、交易所回报本地不存在的订单、API 权限变化、检测到提现权限、行情持续过期、时钟漂移、同一场所重复下单失败、BSC 模拟与报价明显不符。
 
 ## 11. 测试期记录

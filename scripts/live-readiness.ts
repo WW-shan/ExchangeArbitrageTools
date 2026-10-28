@@ -171,8 +171,7 @@ async function main(): Promise<void> {
   if (enabled.includes('hotcoin')) {
     const minSizing = config.scanner.minSizingNotional;
     const issues: string[] = [];
-    if (maxNotional.lt(15)) issues.push(`max_order_notional=${maxNotional}`);
-    if (minSizing.lt(15)) issues.push(`min_sizing_notional=${minSizing}`);
+    if (minSizing.lte(0)) issues.push(`min_sizing_notional=${minSizing}`);
     if (minSizing.gt(maxNotional)) {
       issues.push(`min_sizing_notional ${minSizing} > max_order_notional ${maxNotional}`);
     }
@@ -180,8 +179,8 @@ async function main(): Promise<void> {
       'sizing.hotcoin_min_notional',
       issues.length === 0 ? 'pass' : 'block',
       issues.length === 0
-        ? `hotcoin minimum 15 USDT; min_sizing_notional=${minSizing}, max_order_notional=${maxNotional}`
-        : `hotcoin requires >=15 USDT: ${issues.join('; ')}`,
+        ? `Hotcoin minimum is per symbol and enforced at executor preflight; min_sizing_notional=${minSizing}, max_order_notional=${maxNotional}`
+        : `invalid Hotcoin sizing: ${issues.join('; ')}`,
     );
   }
 

@@ -3,7 +3,7 @@
 # live_enabled MUST stay false until the operator explicitly flips it.
 
 [scanner]
-# Hotcoin requires a 15 USDT minimum notional, so the manual batch cap is 20.
+# Hotcoin minimums are per symbol. The executor enforces market.minNotional.
 enabled_venues = ['gateio', 'hotcoin']
 quote_currency = "USDT"
 # Keep the first live batch narrow. Use config/discovery.toml for read-only

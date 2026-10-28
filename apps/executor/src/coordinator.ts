@@ -25,6 +25,7 @@ import {
   type RiskLimits,
 } from '@arb/core';
 import type { ArbitrageRepository } from '@arb/storage';
+import { accountClosedTrade, type ClosedTradeAccounting } from './profit-accounting.js';
 import type {
   ApiCredentials,
   BalanceSnapshot,
@@ -38,6 +39,7 @@ export interface ExecutionVenue {
   market: MarketMetadata;
   credentials: ApiCredentials;
   healthState: HealthState;
+  feeRebatePct?: Decimal;
 }
 
 export interface LiveExecutionRequest {
@@ -343,8 +345,10 @@ export class CexLiveExecutor {
       return safeStop('persisted_balance_mismatch');
     }
     const risk = this.#repository.riskSnapshot(this.#clock());
-    const buyBookResult = await this.fetchFreshBook(request.buy);
-    const sellBookResult = await this.fetchFreshBook(request.sell);
+    const [buyBookResult, sellBookResult] = await Promise.all([
+      this.fetchFreshBook(request.buy),
+      this.fetchFreshBook(request.sell),
+    ]);
     if (!buyBookResult.ok || !sellBookResult.ok) {
       if (!buyBookResult.ok) reasons.push(...buyBookResult.reasons);
       if (!sellBookResult.ok) reasons.push(...sellBookResult.reasons);
@@ -1015,11 +1019,29 @@ export class CexLiveExecutor {
       return safeStop('leg2_partial_fill');
     }
     transition('CLOSED');
+    const soldCanonical = canonicalAmountFromExchange(second.filled, sellMultiplier);
+    const sellCanonicalAverage = second.averagePrice
+      ? canonicalPriceFromExchange(second.averagePrice, sellMultiplier)
+      : canonicalPriceFromExchange(sellExecutionPrice, sellMultiplier);
+    const accounting = await this.reconcileClosedTrade({
+      request,
+      buyBaseline: balanceBaselines.buy,
+      sellBaseline: balanceBaselines.sell,
+      buyBaseFilled: boughtCanonical,
+      sellBaseFilled: soldCanonical,
+      buyPrice: buyCanonicalAverage,
+      sellPrice: sellCanonicalAverage,
+    });
     const sellFeeActual = second.fee ?? ZERO;
     const sellProceeds = (second.averagePrice ?? sellExecutionPrice).mul(second.filled);
-    const realized = sellProceeds.minus(sellFeeActual).minus(buyCost);
-    const grossSpread = sellProceeds.minus((first.averagePrice ?? leg1Price).mul(first.filled));
-    const fees = buyFee.plus(sellFeeActual);
+    const fallbackRealized = sellProceeds.minus(sellFeeActual).minus(buyCost);
+    const fallbackGrossSpread = sellProceeds.minus(
+      (first.averagePrice ?? leg1Price).mul(first.filled),
+    );
+    const realized = accounting?.economicProfit ?? fallbackRealized;
+    const grossSpread = accounting?.grossSpread ?? fallbackGrossSpread;
+    const fees = accounting?.netFeesQuote ?? buyFee.plus(sellFeeActual);
+    const riskProfit = accounting?.cashProfit ?? realized;
     this.#repository.updateExecutionLeg(`${request.batchId}-L2`, {
       status: 'filled',
       filledAmount: second.filled,
@@ -1036,11 +1058,9 @@ export class CexLiveExecutor {
       latencyMs: Math.max(0, closedAt - preflightAt),
       inventoryDelta: {
         baseAsset: request.buy.market.base,
-        baseDelta: boughtCanonical
-          .minus(canonicalAmountFromExchange(second.filled, sellMultiplier))
-          .toFixed(),
+        baseDelta: (accounting?.baseDelta ?? boughtCanonical.minus(soldCanonical)).toFixed(),
         quoteAsset: request.buy.market.quote,
-        quoteDelta: realized.toFixed(),
+        quoteDelta: (accounting?.quoteDelta ?? realized).toFixed(),
       },
       metadata: {
         states: [...states],
@@ -1048,16 +1068,31 @@ export class CexLiveExecutor {
         leg1Filled: first.filled.toFixed(),
         leg2Filled: second.filled.toFixed(),
         leg1CanonicalFilled: boughtCanonical.toFixed(),
-        leg2CanonicalFilled: canonicalAmountFromExchange(second.filled, sellMultiplier).toFixed(),
+        leg2CanonicalFilled: soldCanonical.toFixed(),
         buyExchangeBase: marketExchangeBase(request.buy.market),
         sellExchangeBase: marketExchangeBase(request.sell.market),
         buyBaseMultiplier: buyMultiplier.toFixed(),
         sellBaseMultiplier: sellMultiplier.toFixed(),
         leg1AveragePrice: first.averagePrice?.toFixed() ?? null,
         leg2AveragePrice: second.averagePrice?.toFixed() ?? null,
+        ...(accounting
+          ? {
+              profitAccounting: 'balance_delta_with_accrued_rebate',
+              cashProfitQuote: accounting.cashProfit.toFixed(),
+              rebateReceivableQuote: accounting.rebateReceivableQuote.toFixed(),
+              grossFeesQuote: accounting.grossFeesQuote.toFixed(),
+              netFeesQuote: accounting.netFeesQuote.toFixed(),
+              economicProfitQuote: accounting.economicProfit.toFixed(),
+              buyGrossFeeQuote: accounting.buyGrossFeeQuote.toFixed(),
+              sellGrossFeeQuote: accounting.sellGrossFeeQuote.toFixed(),
+              baseDelta: accounting.baseDelta.toFixed(),
+              quoteDelta: accounting.quoteDelta.toFixed(),
+              markPrice: accounting.markPrice.toFixed(),
+            }
+          : { profitAccounting: 'order_fee_fallback' }),
       },
     });
-    if (realized.lt(0)) this.#repository.addRealizedLoss(realized.abs(), closedAt);
+    if (riskProfit.lt(0)) this.#repository.addRealizedLoss(riskProfit.abs(), closedAt);
     return outcome('CLOSED', realized);
   }
 
@@ -1260,9 +1295,8 @@ export class CexLiveExecutor {
     const sellFee = sellOrderState.fee ?? ZERO;
     const buyCost = buyAverage.mul(buyFilled).plus(buyFee);
     const sellProceeds = sellAverage.mul(sellFilled);
-    const realized = sellProceeds.minus(sellFee).minus(buyCost);
-    const grossSpread = sellProceeds.minus(buyAverage.mul(buyFilled));
-    const fees = buyFee.plus(sellFee);
+    const fallbackRealized = sellProceeds.minus(sellFee).minus(buyCost);
+    const fallbackGrossSpread = sellProceeds.minus(buyAverage.mul(buyFilled));
     this.#repository.updateExecutionLeg(`${request.batchId}-L1`, {
       status: 'filled',
       filledAmount: buyFilled,
@@ -1278,6 +1312,19 @@ export class CexLiveExecutor {
       orderId: sellOrderState.venueOrderId,
     });
     plan.transition('CLOSED');
+    const accounting = await this.reconcileClosedTrade({
+      request,
+      buyBaseline: plan.buyBalanceBaseline,
+      sellBaseline: plan.sellBalanceBaseline,
+      buyBaseFilled: boughtCanonical,
+      sellBaseFilled: soldCanonical,
+      buyPrice: canonicalPriceFromExchange(buyAverage, plan.buyMultiplier),
+      sellPrice: canonicalPriceFromExchange(sellAverage, plan.sellMultiplier),
+    });
+    const realized = accounting?.economicProfit ?? fallbackRealized;
+    const grossSpread = accounting?.grossSpread ?? fallbackGrossSpread;
+    const fees = accounting?.netFeesQuote ?? buyFee.plus(sellFee);
+    const riskProfit = accounting?.cashProfit ?? realized;
     const closedAt = this.#clock();
     this.#repository.updateExecutionStatus(plan.executionId, 'CLOSED', {
       realizedProfit: realized,
@@ -1287,9 +1334,9 @@ export class CexLiveExecutor {
       latencyMs: Math.max(0, closedAt - plan.preflightAt),
       inventoryDelta: {
         baseAsset: request.buy.market.base,
-        baseDelta: '0',
+        baseDelta: (accounting?.baseDelta ?? ZERO).toFixed(),
         quoteAsset: request.buy.market.quote,
-        quoteDelta: realized.toFixed(),
+        quoteDelta: (accounting?.quoteDelta ?? realized).toFixed(),
       },
       metadata: {
         states: [...plan.states()],
@@ -1303,9 +1350,24 @@ export class CexLiveExecutor {
         leg2CanonicalFilled: soldCanonical.toFixed(),
         leg1AveragePrice: buyOrderState.averagePrice?.toFixed() ?? null,
         leg2AveragePrice: sellOrderState.averagePrice?.toFixed() ?? null,
+        ...(accounting
+          ? {
+              profitAccounting: 'balance_delta_with_accrued_rebate',
+              cashProfitQuote: accounting.cashProfit.toFixed(),
+              rebateReceivableQuote: accounting.rebateReceivableQuote.toFixed(),
+              grossFeesQuote: accounting.grossFeesQuote.toFixed(),
+              netFeesQuote: accounting.netFeesQuote.toFixed(),
+              economicProfitQuote: accounting.economicProfit.toFixed(),
+              buyGrossFeeQuote: accounting.buyGrossFeeQuote.toFixed(),
+              sellGrossFeeQuote: accounting.sellGrossFeeQuote.toFixed(),
+              baseDelta: accounting.baseDelta.toFixed(),
+              quoteDelta: accounting.quoteDelta.toFixed(),
+              markPrice: accounting.markPrice.toFixed(),
+            }
+          : { profitAccounting: 'order_fee_fallback' }),
       },
     });
-    if (realized.lt(0)) this.#repository.addRealizedLoss(realized.abs(), closedAt);
+    if (riskProfit.lt(0)) this.#repository.addRealizedLoss(riskProfit.abs(), closedAt);
     return plan.outcome('CLOSED', realized);
   }
 
@@ -1453,6 +1515,113 @@ export class CexLiveExecutor {
         : { ok: false, reasons: validation.reasons };
     } catch (error) {
       return { ok: false, reasons: [`orderbook_fetch_failed: ${String(error)}`] };
+    }
+  }
+
+  private async reconcileClosedTrade(input: {
+    request: LiveExecutionRequest;
+    buyBaseline: VenueBalanceBaseline;
+    sellBaseline: VenueBalanceBaseline;
+    buyBaseFilled: Decimal;
+    sellBaseFilled: Decimal;
+    buyPrice: Decimal;
+    sellPrice: Decimal;
+  }): Promise<ClosedTradeAccounting | undefined> {
+    const { request } = input;
+    if (!request.buy.adapter.fetchBalances || !request.sell.adapter.fetchBalances) {
+      return undefined;
+    }
+    try {
+      const [buyRows, sellRows] = await Promise.all([
+        request.buy.adapter.fetchBalances(request.buy.credentials),
+        request.sell.adapter.fetchBalances(request.sell.credentials),
+      ]);
+      for (const row of [...buyRows, ...sellRows]) {
+        this.#repository.recordBalance(row);
+        this.#repository.recordInventorySnapshot({
+          venueId: row.venueId,
+          accountId: row.accountId,
+          asset: row.currency,
+          free: row.free,
+          used: row.used,
+          total: row.total,
+          capturedAt: row.fetchedAt,
+        });
+      }
+      const buyBase = findBalance(
+        buyRows,
+        request.buy.adapter.venueId,
+        marketExchangeBase(request.buy.market),
+      );
+      const buyQuote = findBalance(buyRows, request.buy.adapter.venueId, request.buy.market.quote);
+      const sellBase = findBalance(
+        sellRows,
+        request.sell.adapter.venueId,
+        marketExchangeBase(request.sell.market),
+      );
+      const sellQuote = findBalance(
+        sellRows,
+        request.sell.adapter.venueId,
+        request.sell.market.quote,
+      );
+      if (!buyBase || !buyQuote || !sellBase || !sellQuote) return undefined;
+      if (
+        !input.buyBaseline.base ||
+        !input.buyBaseline.quote ||
+        !input.sellBaseline.base ||
+        !input.sellBaseline.quote
+      ) {
+        return undefined;
+      }
+      const buyMultiplier = marketBaseMultiplier(request.buy.market);
+      const sellMultiplier = marketBaseMultiplier(request.sell.market);
+      const buyBaseBefore = input.buyBaseline.base.total.mul(buyMultiplier);
+      const buyBaseAfter = buyBase.total.mul(buyMultiplier);
+      const sellBaseBefore = input.sellBaseline.base.total.mul(sellMultiplier);
+      const sellBaseAfter = sellBase.total.mul(sellMultiplier);
+      const buyBaseDelta = buyBaseAfter.minus(buyBaseBefore);
+      const sellBaseDelta = sellBaseAfter.minus(sellBaseBefore);
+      const buyQuoteDelta = buyQuote.total.minus(input.buyBaseline.quote.total);
+      const sellQuoteDelta = sellQuote.total.minus(input.sellBaseline.quote.total);
+      const tolerance = Decimal.max(
+        new Decimal('0.01'),
+        input.buyBaseFilled.mul('0.01'),
+        input.sellBaseFilled.mul('0.01'),
+      );
+      const plausible =
+        buyBaseDelta.gt(0) &&
+        sellBaseDelta.lt(0) &&
+        buyQuoteDelta.lte(0) &&
+        sellQuoteDelta.gte(0) &&
+        buyBaseDelta.minus(input.buyBaseFilled).abs().lte(tolerance) &&
+        sellBaseDelta.plus(input.sellBaseFilled).abs().lte(tolerance);
+      if (!plausible) return undefined;
+      return accountClosedTrade({
+        buyBaseFilled: input.buyBaseFilled,
+        sellBaseFilled: input.sellBaseFilled,
+        buyPrice: input.buyPrice,
+        sellPrice: input.sellPrice,
+        buyBaseline: {
+          base: buyBaseBefore,
+          quote: input.buyBaseline.quote.total,
+        },
+        buyFinal: { base: buyBaseAfter, quote: buyQuote.total },
+        sellBaseline: {
+          base: sellBaseBefore,
+          quote: input.sellBaseline.quote.total,
+        },
+        sellFinal: { base: sellBaseAfter, quote: sellQuote.total },
+        buyRebatePct: request.buy.feeRebatePct ?? ZERO,
+        sellRebatePct: request.sell.feeRebatePct ?? ZERO,
+      });
+    } catch (error) {
+      this.#repository.recordRiskEvent(
+        'warning',
+        'post_trade_balance_reconciliation_failed',
+        'could not reconcile closed trade from balances',
+        { batchId: request.batchId, error: String(error) },
+      );
+      return undefined;
     }
   }
 

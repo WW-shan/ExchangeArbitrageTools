@@ -121,6 +121,32 @@ describe('Hotcoin public market adapter', () => {
     expect(markets[0]?.priceStep?.toFixed()).toBe('0.001');
   });
 
+  it('does not invent a minimum notional when minOrderAmount is zero', async () => {
+    const { client } = clientWith(() => ({
+      code: 200,
+      msg: 'ok',
+      time: now,
+      data: [
+        {
+          baseCurrency: 'tbk',
+          quoteCurrency: 'usdt',
+          symbol: 'tbk_usdt',
+          pricePrecision: 5,
+          amountPrecision: 0,
+          minOrderAmount: '0',
+          minOrderCount: '0',
+          state: 'enable',
+        },
+      ],
+    }));
+    const adapter = new HotcoinReadOnlyAdapter({ httpClient: client, clock: () => now });
+    const markets = await adapter.loadMarkets();
+    expect(markets).toHaveLength(1);
+    expect(markets[0]?.unifiedSymbol).toBe('TBK/USDT');
+    expect(markets[0]?.minNotional).toBeUndefined();
+    expect(markets[0]?.minAmount).toBeUndefined();
+  });
+
   it('fetches and normalizes OHLCV candles', async () => {
     const interval = 15 * 60_000;
     const since = now - 3 * interval;

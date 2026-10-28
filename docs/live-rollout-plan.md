@@ -13,8 +13,8 @@ Total:       270 USDT
 ```
 
 Only allocate live funds after the corresponding venue adapter passes health checks.
-Hotcoin requires a 15 USDT minimum notional per order, so its allocation must support
-at least a few manual batches.
+Hotcoin minimums are per symbol; verify market.minNotional. TBK is currently 0 and
+other symbols may require 15 USDT, so allocation must support the chosen symbol.
 
 ## Stage 0: environment and credentials
 
@@ -106,8 +106,8 @@ manual confirmation: required
 daily max loss: 5 USDT
 ```
 
-The 15 USDT lower bound comes from Hotcoin's minimum order notional. Do not run a
-leg below that size.
+The lower bound comes from each Hotcoin market's minOrderAmount/minNotional. Do not
+run a leg below the selected market's actual minimum.
 
 Exit criteria:
 
