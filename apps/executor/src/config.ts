@@ -30,6 +30,22 @@ export interface TransferConfig {
   allowlist: TransferAllowlistEntry[];
 }
 
+export interface RotationPairConfig {
+  base: string;
+  quote: string;
+  maxNotional: Decimal;
+}
+
+export interface AutoRotationConfig {
+  enabled: boolean;
+  pairs: RotationPairConfig[];
+  pollIntervalMs: number;
+  balanceRefreshMs: number;
+  maxSignalAgeMs: number;
+  cooldownMs: number;
+  maxConsecutiveFailures: number;
+}
+
 export interface ExecutorConfig {
   databasePath: string;
   secretStorePath: string;
@@ -44,6 +60,7 @@ export interface ExecutorConfig {
   feeFile: string;
   feeOverrides: Record<string, VenueFeeOverride>;
   transfers: TransferConfig;
+  autoRotation: AutoRotationConfig;
   riskLimits: RiskLimits;
   settings: CexLiveExecutorOptions['settings'];
 }
@@ -229,6 +246,56 @@ function transferConfig(value: unknown): TransferConfig {
   };
 }
 
+function rotationPairs(value: unknown): RotationPairConfig[] {
+  if (value === undefined) return [];
+  if (!Array.isArray(value)) {
+    throw new Error('config value auto_rotation.pairs must be an array of tables');
+  }
+  const seen = new Set<string>();
+  return value.map((raw, index) => {
+    const row = table(raw, `auto_rotation.pairs[${index}]`);
+    const base = stringValue(row, 'base').trim().toUpperCase();
+    const quote = stringValue(row, 'quote').trim().toUpperCase();
+    const maxNotional = decimalValue(row, 'max_notional', '20');
+    if (maxNotional.lte(0)) {
+      throw new Error('auto_rotation pair max_notional must be positive');
+    }
+    const key = `${base}/${quote}`;
+    if (seen.has(key)) throw new Error(`duplicate auto_rotation pair: ${key}`);
+    seen.add(key);
+    return { base, quote, maxNotional };
+  });
+}
+
+function autoRotationConfig(value: unknown, handoffMaxAgeMs: number): AutoRotationConfig {
+  const rotation = optionalTable(value, 'auto_rotation');
+  const pollIntervalMs = numberValue(rotation, 'poll_interval_ms', 1000);
+  const balanceRefreshMs = numberValue(rotation, 'balance_refresh_ms', 10_000);
+  const maxSignalAgeMs = numberValue(rotation, 'max_signal_age_ms', handoffMaxAgeMs);
+  const cooldownMs = numberValue(rotation, 'cooldown_ms', 5000);
+  const maxConsecutiveFailures = numberValue(rotation, 'max_consecutive_failures', 3);
+  for (const [name, value] of [
+    ['poll_interval_ms', pollIntervalMs],
+    ['balance_refresh_ms', balanceRefreshMs],
+    ['max_signal_age_ms', maxSignalAgeMs],
+    ['cooldown_ms', cooldownMs],
+    ['max_consecutive_failures', maxConsecutiveFailures],
+  ] as const) {
+    if (!Number.isInteger(value) || value < (name === 'cooldown_ms' ? 0 : 1)) {
+      throw new Error(`auto_rotation.${name} must be a positive integer`);
+    }
+  }
+  return {
+    enabled: booleanValue(rotation, 'enabled', false),
+    pairs: rotationPairs(rotation.pairs),
+    pollIntervalMs,
+    balanceRefreshMs,
+    maxSignalAgeMs,
+    cooldownMs,
+    maxConsecutiveFailures,
+  };
+}
+
 function validateSafetyBounds(config: ExecutorConfig): void {
   if (config.maxOpenBatches !== 1) throw new Error('MVP requires max_open_batches = 1');
   if (!config.manualConfirmation) {
@@ -239,6 +306,21 @@ function validateSafetyBounds(config: ExecutorConfig): void {
   }
   if (config.riskLimits.dailyMaxLoss.gt(20)) {
     throw new Error('daily_max_loss_usd cannot exceed the 20 USDT MVP limit');
+  }
+  if (config.autoRotation.enabled) {
+    if (config.autoRotation.pairs.length === 0) {
+      throw new Error('auto_rotation.enabled requires at least one whitelist pair');
+    }
+    if (config.autoRotation.maxSignalAgeMs > 30_000) {
+      throw new Error('auto_rotation.max_signal_age_ms cannot exceed 30000');
+    }
+    for (const pair of config.autoRotation.pairs) {
+      if (pair.maxNotional.gt(config.riskLimits.maxOrderNotional)) {
+        throw new Error(
+          `auto_rotation pair ${pair.base}/${pair.quote} max_notional exceeds max_order_notional`,
+        );
+      }
+    }
   }
   if (!Number.isInteger(config.handoffMaxAgeMs) || config.handoffMaxAgeMs <= 0) {
     throw new Error('execution.handoff_max_age_ms must be a positive integer');
@@ -299,6 +381,7 @@ export function loadExecutorConfig(
   const maxOrderbookAgeMs = numberValue(scanner, 'max_orderbook_age_ms', 3000);
   const maxSlippageBps = decimalValue(scanner, 'max_slippage_bps', '50');
   const maxOrderNotional = decimalValue(scanner, 'max_order_notional', '30');
+  const handoffMaxAgeMs = numberValue(execution, 'handoff_max_age_ms', 15_000);
   const config: ExecutorConfig = {
     databasePath:
       environment.ARB_DATABASE_PATH ?? stringValue(database, 'path', 'data/arbitrage.sqlite'),
@@ -307,13 +390,14 @@ export function loadExecutorConfig(
     killSwitch,
     manualConfirmation,
     maxOpenBatches: 1,
-    handoffMaxAgeMs: numberValue(execution, 'handoff_max_age_ms', 15_000),
+    handoffMaxAgeMs,
     legMode: legModeValue(execution, 'leg_mode', 'serial'),
     iocVenues: stringArray(execution, 'ioc_venues', []),
     fokVenues: stringArray(execution, 'fok_venues', []),
     feeFile: typeof scanner.fee_file === 'string' ? scanner.fee_file : '',
     feeOverrides: feeOverrides(document.fees),
     transfers: transferConfig(document.transfers),
+    autoRotation: autoRotationConfig(document.auto_rotation, handoffMaxAgeMs),
     riskLimits: {
       maxOrderNotional,
       dailyMaxLoss: decimalValue(execution, 'daily_max_loss_usd', '20'),

@@ -1514,6 +1514,37 @@ export class ArbitrageRepository {
     return best?.loaded;
   }
 
+  recentValidS1Opportunities(options: {
+    now: number;
+    maxAgeMs: number;
+    instruments?: readonly string[];
+    maxCandidates?: number;
+  }): LoadedOpportunity[] {
+    const { now, maxAgeMs } = options;
+    if (!Number.isFinite(now) || now <= 0 || !Number.isFinite(maxAgeMs) || maxAgeMs < 0) {
+      return [];
+    }
+    const limit = Math.max(1, Math.min(1000, options.maxCandidates ?? 200));
+    const instruments = (options.instruments ?? [])
+      .map((instrument) => instrument.trim().toUpperCase())
+      .filter((instrument) => instrument.length > 0);
+    const params: Array<string | number> = [now - maxAgeMs, now];
+    let filter = '';
+    if (instruments.length > 0) {
+      filter = ` AND UPPER(instrument_buy) IN (${instruments.map(() => '?').join(',')})`;
+      params.push(...instruments);
+    }
+    params.push(limit);
+    const rows = this.db
+      .prepare(
+        `SELECT * FROM opportunities
+         WHERE strategy = 'S1' AND valid = 1 AND sampled_at >= ? AND sampled_at <= ?${filter}
+         ORDER BY sampled_at DESC, id DESC LIMIT ?`,
+      )
+      .all(...params) as Record<string, unknown>[];
+    return rows.map((row) => ({ id: Number(row.id), opportunity: opportunityFromRow(row) }));
+  }
+
   medianEpisodeDurationMs(
     strategy: string,
     opportunityKey: string,

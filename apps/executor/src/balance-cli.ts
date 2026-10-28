@@ -14,9 +14,9 @@ function usage(): string {
   return [
     'Usage: npm run executor:balances -- [--loop] [--interval-ms <ms>]',
     '',
-    'Loads read-only credentials from the encrypted secret store, fetches balances from',
+    'Loads read-only or trade credentials from the encrypted secret store, fetches balances from',
     'every supported venue, and persists them for inventory-mode cross-venue discovery.',
-    'Requires ARB_SECRET_STORE_KEY and at least one read_only credential.',
+    'Requires ARB_SECRET_STORE_KEY and at least one read_only or trade credential.',
   ].join('\n');
 }
 
@@ -62,7 +62,7 @@ async function main(): Promise<void> {
   try {
     const venues: BalanceVenue[] = [];
     for (const credential of credentials.values()) {
-      if (credential.role !== 'read_only') continue;
+      if (credential.role !== 'read_only' && credential.role !== 'trade') continue;
       if (!CEX_TIERS[credential.venueId]) continue;
       const definition = VENUE_CATALOG[credential.venueId];
       repository.upsertVenue({
@@ -84,7 +84,7 @@ async function main(): Promise<void> {
     }
     if (venues.length === 0) {
       throw new Error(
-        'no read-only credentials found; add read_only records with npm run executor:secrets',
+        'no balance credentials found; add read_only or trade records with npm run executor:secrets',
       );
     }
     do {

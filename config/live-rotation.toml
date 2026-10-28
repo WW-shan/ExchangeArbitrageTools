@@ -1,6 +1,5 @@
-# Two-sided S1 rotation profile: KAT/LIGHT only, small manual batches.
-# live_enabled and kill_switch must stay closed until dust preflight and the
-# rotation supervisor are verified.
+# Two-sided S1 rotation profile: LIGHT primary, small automatic batches.
+# The manual CLI remains available; --auto uses the persisted automatic gate.
 
 [scanner]
 # Hotcoin minimums are per symbol. The executor enforces market.minNotional.
@@ -9,9 +8,9 @@ quote_currency = "USDT"
 # Keep the first live batch narrow. Use config/discovery.toml for read-only
 # volume-ranked opportunity discovery.
 asset_universe_mode = "explicit"
-base_assets = ["KAT", "LIGHT"]
+base_assets = ["LIGHT"]
 quote_currencies = ["USDT"]
-max_base_assets = 2
+max_base_assets = 1
 fetch_concurrency = 4
 scan_interval_hot_ms = 30000
 scan_interval_top100_ms = 120000
@@ -61,8 +60,8 @@ min_top_depth_qty = "0"
 liquidity_top_levels = 5
 
 [execution]
-live_enabled = false
-kill_switch = true
+live_enabled = true
+kill_switch = false
 manual_confirmation = true
 # serial = buy leg, reconcile, then sell leg.
 # parallel_fok = submit both FOK legs concurrently. It is still NOT atomic
@@ -73,6 +72,21 @@ daily_max_loss_usd = "5"
 handoff_max_age_ms = 15000
 ioc_venues = []
 fok_venues = ['gateio', 'hotcoin']
+
+[auto_rotation]
+# Manual handoff remains available. This supervisor is the separate, explicit
+# automatic path and still requires live_enabled=true and a released kill switch.
+enabled = true
+poll_interval_ms = 1000
+balance_refresh_ms = 5000
+max_signal_age_ms = 5000
+cooldown_ms = 3000
+max_consecutive_failures = 3
+
+[[auto_rotation.pairs]]
+base = 'LIGHT'
+quote = 'USDT'
+max_notional = '20'
 
 [transfers]
 enabled = false

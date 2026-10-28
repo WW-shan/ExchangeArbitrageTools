@@ -1,16 +1,9 @@
-import { ExecutionGate, type Decimal, type HealthState, type MarketMetadata } from '@arb/core';
+import { ExecutionGate } from '@arb/core';
 import { ArbitrageRepository, openDatabase } from '@arb/storage';
-import {
-  CEX_TIERS,
-  applyFeeOverride,
-  createCexAdapter,
-  createPublicRuntime,
-  isCcxtShutdownError,
-  mergeAccountFeeFile,
-} from '@arb/venues-cex';
+import { applyFeeOverride, isCcxtShutdownError, mergeAccountFeeFile } from '@arb/venues-cex';
 import { loadExecutorConfig } from './config.js';
-import { CexLiveExecutor, type ExecutionVenue } from './coordinator.js';
-import { recoverExecutorStartup, type RecoveryVenue } from './bootstrap.js';
+import { CexLiveExecutor } from './coordinator.js';
+import { recoverExecutorStartup } from './bootstrap.js';
 import {
   buildS1ExecutionRequest,
   runS1Handoff,
@@ -18,9 +11,12 @@ import {
   type S1HandoffSelection,
 } from './handoff.js';
 import { loadEncryptedSecretStore, type StoredCredential } from './secret-store.js';
+import { adapterMap, executionVenue, healthStates, splitInstrument } from './runtime.js';
+import { runAutoRotationSupervisor } from './auto-supervisor.js';
 
 interface CliOptions {
   execute: boolean;
+  auto: boolean;
   confirmBatchId?: string;
   opportunityId?: number;
   help: boolean;
@@ -34,18 +30,20 @@ function usage(): string {
     'credentials/recovery state, and prints the exact batch confirmation string.',
     '',
     'Options:',
+    '  --auto                    Run the whitelisted automatic two-sided rotation supervisor',
     '  --opportunity <id>       Select a specific valid S1 opportunity row',
     '  --confirm-batch <id>     Exact manual confirmation for the prepared batch',
     '  --execute                Request submission when all live gates are open',
     '  --help                   Show this message',
     '',
-    'Live submission also requires live_enabled=true in config, a released persisted',
-    'kill switch, clean startup recovery, and a matching --confirm-batch value.',
+    'Manual live submission requires live_enabled=true, a released persisted kill',
+    'switch, clean startup recovery, and a matching --confirm-batch value. The',
+    '--auto path uses its own persisted automatic-execution gate instead.',
   ].join('\n');
 }
 
 function parseArgs(argv: string[]): CliOptions {
-  const options: CliOptions = { execute: false, help: false };
+  const options: CliOptions = { execute: false, auto: false, help: false };
   for (let index = 0; index < argv.length; index += 1) {
     const value = argv[index];
     if (value === '--help' || value === '-h') {
@@ -54,6 +52,10 @@ function parseArgs(argv: string[]): CliOptions {
     }
     if (value === '--execute') {
       options.execute = true;
+      continue;
+    }
+    if (value === '--auto') {
+      options.auto = true;
       continue;
     }
     if (value === '--opportunity' || value === '--confirm-batch') {
@@ -73,141 +75,10 @@ function parseArgs(argv: string[]): CliOptions {
     }
     throw new Error(`unknown argument: ${value}`);
   }
+  if (options.auto && (options.execute || options.confirmBatchId || options.opportunityId)) {
+    throw new Error('--auto cannot be combined with manual handoff options');
+  }
   return options;
-}
-
-function splitInstrument(key: string): { base: string; quote: string } | undefined {
-  const parts = key.split('/');
-  if (parts.length !== 2) return undefined;
-  const base = parts[0]?.trim().toUpperCase() ?? '';
-  const quote = parts[1]?.trim().toUpperCase() ?? '';
-  return base && quote ? { base, quote } : undefined;
-}
-
-function healthStates(repository: ArbitrageRepository): Map<string, HealthState> {
-  const states = new Map<string, HealthState>();
-  for (const row of repository.latestHealth()) {
-    const state = row.health_state;
-    if (state === 'A' || state === 'B' || state === 'C' || state === 'D') {
-      states.set(String(row.venue_id), state);
-    }
-  }
-  return states;
-}
-
-function findMarket(
-  markets: MarketMetadata[],
-  venueId: string,
-  base: string,
-  quote: string,
-  exchangeSymbol?: string,
-): MarketMetadata | undefined {
-  const matches = markets.filter(
-    (market) =>
-      market.active &&
-      market.venueId === venueId &&
-      market.base.trim().toUpperCase() === base &&
-      market.quote.trim().toUpperCase() === quote,
-  );
-  if (exchangeSymbol) {
-    const exact = matches.filter((market) => market.exchangeSymbol === exchangeSymbol);
-    return exact.length === 1 ? exact[0] : undefined;
-  }
-  return matches.length === 1 ? matches[0] : undefined;
-}
-
-function runtimeFor(
-  repository: ArbitrageRepository,
-  venueId: string,
-): ReturnType<typeof createPublicRuntime> {
-  const ensureVenue = (): void => {
-    repository.upsertVenue({
-      id: venueId,
-      type: 'cex',
-      name: venueId,
-      tier: CEX_TIERS[venueId] ?? 'B',
-    });
-  };
-  return createPublicRuntime(1, undefined, {
-    onBackoff: (state) => {
-      ensureVenue();
-      repository.upsertVenueBackoff({
-        venueId,
-        backoffUntil: state.backoffUntil,
-        reason: state.reason,
-        consecutiveFailures: state.consecutiveFailures,
-        updatedAt: Date.now(),
-      });
-      repository.recordRiskEvent('warning', 'venue_backoff', state.reason, {
-        venueId,
-        backoffUntil: state.backoffUntil,
-        retryAfterMs: state.retryAfterMs,
-        consecutiveFailures: state.consecutiveFailures,
-      });
-    },
-    onRecover: () => repository.clearVenueBackoff(venueId),
-  });
-}
-
-function adapterMap(
-  repository: ArbitrageRepository,
-  config: ReturnType<typeof loadExecutorConfig>,
-  credentials: ReadonlyMap<string, StoredCredential>,
-): Record<string, RecoveryVenue> {
-  const venues: Record<string, RecoveryVenue> = {};
-  for (const credential of credentials.values()) {
-    if (credential.role !== 'trade') continue;
-    const venueId = credential.venueId;
-    if (!CEX_TIERS[venueId]) {
-      repository.recordRiskEvent(
-        'warning',
-        'executor_venue_unsupported',
-        'credential exists for a venue without a supported CCXT execution adapter',
-        { venueId },
-      );
-      continue;
-    }
-    const runtime = runtimeFor(repository, venueId);
-    const adapter = createCexAdapter(venueId, runtime, {
-      credentials: credential,
-      readOnly: false,
-      supportsIoc: config.iocVenues.includes(venueId),
-      supportsFok: config.fokVenues.includes(venueId),
-    });
-    venues[venueId] = {
-      adapter,
-      credentials: credential,
-      applyBackoff: (retryAfterMs) => runtime.rateLimiter.respectRetryAfter(retryAfterMs),
-    };
-  }
-  return venues;
-}
-
-function executionVenue(
-  venueId: string,
-  markets: MarketMetadata[],
-  instrument: { base: string; quote: string },
-  adapters: Record<string, RecoveryVenue>,
-  states: Map<string, HealthState>,
-  feeRebates: Readonly<Record<string, { rebatePct?: Decimal } | undefined>>,
-  exchangeSymbol?: string,
-): ExecutionVenue {
-  const bundle = adapters[venueId];
-  if (!bundle) throw new Error(`no trade credential/adapter for ${venueId}`);
-  const market = findMarket(markets, venueId, instrument.base, instrument.quote, exchangeSymbol);
-  if (!market)
-    throw new Error(
-      `no single active market for ${venueId} ${instrument.base}/${instrument.quote}`,
-    );
-  return {
-    adapter: bundle.adapter,
-    market,
-    credentials: bundle.credentials,
-    healthState: states.get(venueId) ?? 'D',
-    ...(feeRebates[venueId]?.rebatePct !== undefined
-      ? { feeRebatePct: feeRebates[venueId]!.rebatePct! }
-      : {}),
-  };
 }
 
 function printSelection(selection: S1HandoffSelection): void {
@@ -262,27 +133,6 @@ async function main(): Promise<void> {
       executeRequested: options.execute,
     });
 
-    const selection = selectS1Handoff(repository, {
-      maxAgeMs: config.handoffMaxAgeMs,
-      ...(options.opportunityId !== undefined ? { opportunityId: options.opportunityId } : {}),
-    });
-    if (!selection.ok) {
-      repository.recordRiskEvent(
-        'warning',
-        `execution_handoff_${selection.reason}`,
-        selection.reason,
-        {
-          ...(selection.batchId ? { batchId: selection.batchId } : {}),
-          ...(selection.ageMs !== undefined ? { ageMs: selection.ageMs } : {}),
-          ...(selection.priorExecution ? { priorExecution: selection.priorExecution } : {}),
-        },
-      );
-      console.error(JSON.stringify(selection, null, 2));
-      process.exitCode = 2;
-      return;
-    }
-    printSelection(selection.selection);
-
     const masterKey = process.env.ARB_SECRET_STORE_KEY;
     if (!masterKey) {
       repository.recordRiskEvent(
@@ -312,6 +162,60 @@ async function main(): Promise<void> {
       process.exitCode = 2;
       return;
     }
+
+    const gate = new ExecutionGate(config.riskLimits);
+    const persistedKillSwitchNow = repository.getSetting('kill_switch') !== 'false';
+    gate.setKillSwitch(persistedKillSwitchNow, 'persisted_kill_switch_on');
+    const engine = new CexLiveExecutor({
+      repository,
+      gate,
+      limits: config.riskLimits,
+      liveEnabled: config.liveEnabled,
+      autoExecutionEnabled: config.autoRotation.enabled,
+      legMode: config.legMode,
+      settings: config.settings,
+    });
+
+    if (options.auto) {
+      if (!config.autoRotation.enabled) {
+        throw new Error('--auto requires auto_rotation.enabled=true in the config');
+      }
+      let stopping = false;
+      const stop = (): void => {
+        stopping = true;
+      };
+      process.once('SIGINT', stop);
+      process.once('SIGTERM', stop);
+      await runAutoRotationSupervisor({
+        repository,
+        config,
+        adapters,
+        engine,
+        shouldStop: () => stopping,
+      });
+      return;
+    }
+
+    const selection = selectS1Handoff(repository, {
+      maxAgeMs: config.handoffMaxAgeMs,
+      ...(options.opportunityId !== undefined ? { opportunityId: options.opportunityId } : {}),
+    });
+    if (!selection.ok) {
+      repository.recordRiskEvent(
+        'warning',
+        `execution_handoff_${selection.reason}`,
+        selection.reason,
+        {
+          ...(selection.batchId ? { batchId: selection.batchId } : {}),
+          ...(selection.ageMs !== undefined ? { ageMs: selection.ageMs } : {}),
+          ...(selection.priorExecution ? { priorExecution: selection.priorExecution } : {}),
+        },
+      );
+      console.error(JSON.stringify(selection, null, 2));
+      process.exitCode = 2;
+      return;
+    }
+    printSelection(selection.selection);
 
     const opportunity = selection.selection.loaded.opportunity;
     const instrument = splitInstrument(opportunity.instrumentKey);
@@ -362,17 +266,6 @@ async function main(): Promise<void> {
       return;
     }
 
-    const gate = new ExecutionGate(config.riskLimits);
-    const persistedKillSwitchNow = repository.getSetting('kill_switch') !== 'false';
-    gate.setKillSwitch(persistedKillSwitchNow, 'persisted_kill_switch_on');
-    const engine = new CexLiveExecutor({
-      repository,
-      gate,
-      limits: config.riskLimits,
-      liveEnabled: config.liveEnabled,
-      legMode: config.legMode,
-      settings: config.settings,
-    });
     const result = await runS1Handoff({
       repository,
       request: build.request,

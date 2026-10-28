@@ -100,6 +100,59 @@ describe('executor configuration', () => {
     expect(loadExecutorConfig(path, {}).legMode).toBe('parallel_fok');
   });
 
+  it('parses a whitelisted automatic rotation profile without disabling manual confirmation', () => {
+    const config = loadExecutorConfig(
+      configWithAppendix(`
+[auto_rotation]
+enabled = true
+poll_interval_ms = 1000
+balance_refresh_ms = 5000
+max_signal_age_ms = 5000
+cooldown_ms = 3000
+max_consecutive_failures = 3
+
+[[auto_rotation.pairs]]
+base = 'KAT'
+quote = 'USDT'
+max_notional = '20'
+`),
+      {},
+    );
+    expect(config.autoRotation.enabled).toBe(true);
+    expect(config.autoRotation.pairs).toHaveLength(1);
+    expect(config.autoRotation.pairs[0]!.base).toBe('KAT');
+    expect(config.autoRotation.pairs[0]!.maxNotional.toFixed()).toBe('20');
+    expect(config.manualConfirmation).toBe(true);
+  });
+
+  it('rejects an automatic profile without a whitelist or with a stale signal window', () => {
+    expect(() =>
+      loadExecutorConfig(
+        configWithAppendix(`
+[auto_rotation]
+enabled = true
+max_signal_age_ms = 5000
+`),
+        {},
+      ),
+    ).toThrow('whitelist');
+    expect(() =>
+      loadExecutorConfig(
+        configWithAppendix(`
+[auto_rotation]
+enabled = true
+max_signal_age_ms = 31000
+
+[[auto_rotation.pairs]]
+base = 'KAT'
+quote = 'USDT'
+max_notional = '20'
+`),
+        {},
+      ),
+    ).toThrow('30000');
+  });
+
   it('parses gross venue fees with a rebate percentage', () => {
     const path = configWithAppendix(`
 [fees.hotcoin]

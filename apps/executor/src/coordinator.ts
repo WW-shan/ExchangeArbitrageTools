@@ -49,7 +49,10 @@ export interface LiveExecutionRequest {
   buy: ExecutionVenue;
   sell: ExecutionVenue;
   confirmedBatchId: string;
+  confirmationMode?: ExecutionConfirmationMode;
 }
+
+export type ExecutionConfirmationMode = 'manual' | 'automatic';
 
 export type LiveExecutionOutcome =
   'BLOCKED' | 'PREFLIGHT_FAILED' | 'LEG1_REJECTED' | 'PARALLEL_REJECTED' | 'CLOSED' | 'SAFE_STOP';
@@ -168,6 +171,7 @@ export interface CexLiveExecutorOptions {
   gate: ExecutionGate;
   limits: RiskLimits;
   liveEnabled: boolean;
+  autoExecutionEnabled?: boolean;
   legMode?: LegExecutionMode;
   settings: {
     maxOrderbookAgeMs: number;
@@ -240,6 +244,7 @@ export class CexLiveExecutor {
   readonly #repository: ArbitrageRepository;
   readonly #gate: ExecutionGate;
   readonly #liveEnabled: boolean;
+  readonly #autoExecutionEnabled: boolean;
   readonly #legMode: LegExecutionMode;
   readonly #settings: CexLiveExecutorOptions['settings'];
   readonly #sleep: (ms: number) => Promise<void>;
@@ -249,6 +254,7 @@ export class CexLiveExecutor {
     this.#repository = options.repository;
     this.#gate = options.gate;
     this.#liveEnabled = options.liveEnabled;
+    this.#autoExecutionEnabled = options.autoExecutionEnabled === true;
     this.#legMode = options.legMode ?? 'serial';
     this.#settings = options.settings;
     this.#sleep = options.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
@@ -306,13 +312,27 @@ export class CexLiveExecutor {
       reasons.push('manual_confirmation_mismatch');
       return outcome('BLOCKED');
     }
+    const confirmationMode = request.confirmationMode ?? 'manual';
+    if (confirmationMode === 'automatic') {
+      if (!this.#autoExecutionEnabled) {
+        reasons.push('automatic_execution_disabled');
+        return outcome('BLOCKED');
+      }
+      if (this.#repository.getSetting('auto_execution_enabled') !== 'true') {
+        reasons.push('persisted_automatic_execution_disabled');
+        return outcome('BLOCKED');
+      }
+    }
     this.#repository.recordAudit(
-      'operator',
-      'manual_batch_confirmation',
+      confirmationMode === 'automatic' ? 'executor' : 'operator',
+      confirmationMode === 'automatic'
+        ? 'automatic_batch_confirmation'
+        : 'manual_batch_confirmation',
       {
         batchId: request.batchId,
         confirmedBatchId: request.confirmedBatchId,
         opportunityId: request.opportunityId ?? null,
+        confirmationMode,
         confirmedAt: this.#clock(),
       },
       this.#clock(),

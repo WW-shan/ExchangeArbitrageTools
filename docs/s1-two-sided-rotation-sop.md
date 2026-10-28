@@ -1,6 +1,7 @@
 # S1 Two-Sided Inventory Rotation SOP
 
-Status: design baseline, 2026-10-29. Live order submission remains disabled.
+Status: automatic supervisor implemented and started, 2026-10-29. Manual live
+entry remains separately gated.
 
 ## 1. What this is
 
@@ -29,15 +30,16 @@ buy on one venue and wait for a transfer.
 
 ## 2. Pair selection
 
-Primary: `KAT/USDT`.
+Primary: `LIGHT/USDT`.
 
-Secondary: `LIGHT/USDT`, only after KAT has a clean soak.
+Reserve: `KAT/USDT`.
 
-Watch-only: `ULTIMA/USDT`, because its current 20 USDT fee dust is larger than
-the expected edge. See `docs/s1-rotation-backtest-2026-10-29.md`.
+Watch-only: `TBK/USDT`, because its raw episode count is the highest but its
+history is outlier-heavy and its live book is unstable. See
+`docs/s1-full-universe-backtest-2026-10-29.md`.
 
 Never enable a pair only because its historical median is high. The live book
-must show a fresh executable edge after fees, slippage, and dust.
+must show a fresh executable edge after fees, slippage, and live depth.
 
 ## 3. Seed inventory
 
@@ -48,10 +50,10 @@ At 10 USDT per leg, choose one of:
 ```text
 Option A: start ready for Gate -> Hotcoin
   Gate:    keep about 10.5 USDT
-  Hotcoin: buy about 10 USDT of KAT
+  Hotcoin: buy about 10 USDT of LIGHT
 
 Option B: start ready for Hotcoin -> Gate
-  Gate:    buy about 10 USDT of KAT
+  Gate:    buy about 10 USDT of LIGHT
   Hotcoin: keep about 10 USDT
 ```
 
@@ -64,10 +66,12 @@ Seed rules:
   produces an arbitrary fractional base amount.
 - Align the base quantity to the venue step.
 - Record the gross fee, net base, and residual dust in the seed audit.
-- Start with 10 USDT. Increase to 20 only after 20 clean round trips and a
-  verified dust balance.
-- Do not seed KAT by market order while the book is wide. Use a post-only or
-  bounded limit order, or wait for a calm book.
+- Start with 10 USDT. Increase to 20 only after clean round trips.
+- Do not seed by unbounded market order while the book is wide. Use a bounded
+  FOK limit order, or wait for a calm book.
+
+The first 2026-10-29 seed used 37.5 LIGHT on Hotcoin at 0.26596, leaving the
+account ready for Gate -> Hotcoin.
 
 ## 4. Signal and entry gate
 
@@ -79,7 +83,6 @@ net = executable sell proceeds
       - gross fees
       + accrued rebate
       - slippage and safety buffer
-      - dust reserve
 ```
 
 Entry requires all of:
@@ -89,14 +92,13 @@ Entry requires all of:
 - buy and sell depth each cover the planned base amount;
 - expected net profit above the live threshold;
 - buy venue quote and sell venue base confirmed by a fresh private balance read;
-- post-fill residual is zero or a legal future lot;
-- residual dust value at or below `max_dust_usd`;
+- post-fill quantity remains aligned to the venue steps for future sells;
 - no open batch, unknown order, balance mismatch, or kill switch;
 - per-venue execution flag enabled;
 - daily loss and consecutive-loss limits not reached.
 
-For LIGHT, raise the threshold above KAT because its historical stress pass
-rate is lower.
+Residual step fragments are recorded in the audit but are not a pair-selection
+filter; every low-priced symbol can produce them after a base-charged fee.
 
 ## 5. Order execution
 
@@ -165,8 +167,9 @@ stop trading and review. Do not force a reverse trade at a negative edge.
 
 ### Phase 3: unattended
 
-Only after 24 hours of stable read-only capture and 50 clean automated
-batches. This phase is not enabled by this design.
+The current account runs the supervisor unattended after the one-time seed.
+Any SAFE_STOP sets the persisted kill switch and requires reconciliation before
+the operator clears it.
 
 ## 8. Stop conditions
 
@@ -176,7 +179,6 @@ Enter SAFE_STOP and set the persisted kill switch on when any of these occurs:
 - partial leg 1 with unconfirmed cancel;
 - leg 2 rejection or partial fill;
 - balance mismatch after reconciliation;
-- dust above the pair limit;
 - book stale, crossed, or pair skew too high at submission;
 - API permission, withdrawal, or account-status change;
 - daily loss or consecutive-loss limit;
@@ -187,7 +189,8 @@ trades, and balances first.
 
 ## 9. No automatic transfer
 
-The rotation is designed to avoid transfers. KAT has restricted Hotcoin
+The rotation is designed to avoid transfers. LIGHT and KAT are both available
+on Gate and Hotcoin, but transfers are unnecessary for the rotation. KAT has restricted Hotcoin
 deposit/withdrawal routes; LIGHT transfers are expensive relative to a
 10-20 USDT batch. Therefore:
 
@@ -198,17 +201,16 @@ deposit/withdrawal routes; LIGHT transfers are expensive relative to a
 - if a transfer is needed, stop the rotation and treat it as an inventory
   rebalance, not as an arbitrage leg.
 
-## 10. Current gap
+## 10. Current implementation status
 
-The scanner and manual executor already support the two legs, but the
-automated rotation supervisor is not yet enabled. Before it can run live it
-needs:
+Implemented and wired:
 
-1. the pure `packages/core/src/rotation.ts` readiness/seed planner now exists;
-   the persisted supervisor still needs to call it before every batch;
-2. the fee-charge-asset and dust preflight described above;
-3. a supervisor loop with per-pair whitelist and auto-confirm switch;
-4. a 24-hour read-only soak and a fresh 15-minute live capture;
-5. user-funded seed inventory on exactly one side.
+1. `assessRotationReadiness` derives the funded direction from fresh balances.
+2. `planRotationSeed` sizes the one-time seed by base quantity.
+3. `apps/executor/src/auto-supervisor.ts` implements the whitelist, one-batch,
+   cooldown, automatic-confirmation gate, balance refresh, and SAFE_STOP flow.
+4. `scripts/seed-rotation.ts` performs the bounded one-time seed.
+5. `scripts/start-rotation.ps1` starts the scanner and supervisor together.
 
-Until those are complete, automatic order submission must remain off.
+The remaining limitation is market-driven: the live LIGHT book must actually
+show a fresh executable edge. The supervisor waits when it does not.

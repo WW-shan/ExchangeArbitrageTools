@@ -1,5 +1,9 @@
 # S1 Two-Sided Rotation Backtest (2026-10-29)
 
+> Superseded for pair selection by
+> [s1-full-universe-backtest-2026-10-29.md](s1-full-universe-backtest-2026-10-29.md).
+> This document remains as the earlier focused-sample record.
+
 Scope: Gate.io and Hotcoin spot, USDT-quoted low-volume pairs. This is
 read-only research. No order, withdrawal, or transfer was submitted.
 

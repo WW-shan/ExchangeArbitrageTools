@@ -89,4 +89,24 @@ describe('S1 opportunity ranking', () => {
     expect(best).toBeUndefined();
     repo.close();
   });
+
+  it('returns only recent valid opportunities for the requested rotation instruments', () => {
+    const repo = new ArbitrageRepository(openDatabase(':memory:'));
+    repo.recordOpportunity(opportunity(now - 500, '2.560'));
+    const rows = repo.recentValidS1Opportunities({
+      now,
+      maxAgeMs: 5000,
+      instruments: ['cake/usdt'],
+    });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.opportunity.instrumentKey).toBe('CAKE/USDT');
+    expect(
+      repo.recentValidS1Opportunities({
+        now,
+        maxAgeMs: 5000,
+        instruments: ['KAT/USDT'],
+      }),
+    ).toEqual([]);
+    repo.close();
+  });
 });

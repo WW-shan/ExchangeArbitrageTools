@@ -68,7 +68,10 @@ async function main(): Promise<void> {
   const db = openDatabase(config.database.path);
   const repository = new ArbitrageRepository(db);
   const bscRegistry = new BscTokenRegistry();
-  repository.setSetting('kill_switch', String(config.execution.killSwitch));
+  const persistedKillSwitch = repository.getSetting('kill_switch');
+  if (config.execution.killSwitch || persistedKillSwitch === undefined) {
+    repository.setSetting('kill_switch', String(config.execution.killSwitch));
+  }
   repository.setSetting('live_enabled', String(config.execution.liveEnabled));
   repository.recordAudit('scanner', 'startup', { killSwitch: config.execution.killSwitch });
   let nextMaintenanceAt = 0;
