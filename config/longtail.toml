@@ -95,12 +95,14 @@ inventory_mode = true
 estimated_transfer_arrival_ms = 900000
 max_transfer_arrival_ms = 1800000
 
-# Screening placeholders only. Replace with the real account tier before
-# treating a net edge as executable.
+# Verified gross account fees on 2026-10-28. The rebate is applied as a separate
+# step, so per-symbol account fees from data/fees.json remain gross as well.
 [fees.gateio]
-taker_bps = 10
-maker_bps = 2
+taker_bps = 9.9
+maker_bps = 9.9
+rebate_pct = 70
 
 [fees.hotcoin]
-taker_bps = 10
-maker_bps = 2
+taker_bps = 20
+maker_bps = 20
+rebate_pct = 80
