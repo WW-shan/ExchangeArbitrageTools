@@ -65,6 +65,9 @@ function validateCredential(record: StoredCredential): void {
   if (!record.apiKey.trim() || !record.secret.trim()) {
     throw new Error(`credential for ${record.venueId} is incomplete`);
   }
+  if (record.password !== undefined && record.password.trim() === '') {
+    throw new Error(`credential for ${record.venueId} has an empty password`);
+  }
   if (record.role !== 'read_only' && record.role !== 'trade' && record.role !== 'withdrawal') {
     throw new Error(`credential for ${record.venueId} has an invalid role`);
   }
@@ -190,6 +193,10 @@ export function credentialFingerprints(records: StoredCredential[]): Record<stri
   return Object.fromEntries(
     records.map((record) => [credentialKey(record), credentialFingerprint(record)]),
   );
+}
+
+export function filterFilledCredentials(records: StoredCredential[]): StoredCredential[] {
+  return records.filter((record) => record.apiKey.trim() !== '' && record.secret.trim() !== '');
 }
 
 export function mergeCredentialRecords(

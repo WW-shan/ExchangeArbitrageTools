@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import {
   createEncryptedSecretStore,
   credentialFingerprint,
+  filterFilledCredentials,
   loadEncryptedSecretStore,
   mergeCredentialRecords,
   type StoredCredential,
@@ -140,6 +141,29 @@ describe('encrypted local secret store', () => {
     expect(() => mergeCredentialRecords([], [records[0]!, records[0]!])).toThrow(
       'duplicate trade credential for gateio',
     );
+  });
+
+  it('filters blank template records before import', () => {
+    const blank: StoredCredential = {
+      venueId: 'gateio',
+      role: 'read_only',
+      withdrawalPermission: false,
+      apiKey: '',
+      secret: '',
+    };
+    expect(filterFilledCredentials([blank, records[0]!])).toEqual([records[0]]);
+  });
+
+  it('rejects an explicitly empty passphrase', async () => {
+    const path = tempPath();
+    await expect(
+      createEncryptedSecretStore(
+        path,
+        'correct horse battery staple',
+        [{ ...records[0]!, password: '' }],
+        { scryptN: 2 ** 14 },
+      ),
+    ).rejects.toThrow('empty password');
   });
 
   it('fails closed on a wrong master key or tampered ciphertext', async () => {

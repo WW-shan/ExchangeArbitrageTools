@@ -14,12 +14,34 @@
     "secret": ""
   },
   {
-    "venueId": "gateio",
-    "role": "withdrawal",
-    "withdrawalPermission": true,
-    "ipWhitelistVerified": true,
+    "venueId": "mexc",
+    "role": "read_only",
+    "withdrawalPermission": false,
     "apiKey": "",
     "secret": ""
+  },
+  {
+    "venueId": "mexc",
+    "role": "trade",
+    "withdrawalPermission": false,
+    "apiKey": "",
+    "secret": ""
+  },
+  {
+    "venueId": "weex",
+    "role": "read_only",
+    "withdrawalPermission": false,
+    "apiKey": "",
+    "secret": "",
+    "password": ""
+  },
+  {
+    "venueId": "weex",
+    "role": "trade",
+    "withdrawalPermission": false,
+    "apiKey": "",
+    "secret": "",
+    "password": ""
   },
   {
     "venueId": "hotcoin",
@@ -38,10 +60,446 @@
     "password": ""
   },
   {
+    "venueId": "binance",
+    "role": "read_only",
+    "withdrawalPermission": false,
+    "apiKey": "",
+    "secret": ""
+  },
+  {
+    "venueId": "binance",
+    "role": "trade",
+    "withdrawalPermission": false,
+    "apiKey": "",
+    "secret": ""
+  },
+  {
+    "venueId": "okx",
+    "role": "read_only",
+    "withdrawalPermission": false,
+    "apiKey": "",
+    "secret": "",
+    "password": ""
+  },
+  {
+    "venueId": "okx",
+    "role": "trade",
+    "withdrawalPermission": false,
+    "apiKey": "",
+    "secret": "",
+    "password": ""
+  },
+  {
+    "venueId": "bybit",
+    "role": "read_only",
+    "withdrawalPermission": false,
+    "apiKey": "",
+    "secret": ""
+  },
+  {
+    "venueId": "bybit",
+    "role": "trade",
+    "withdrawalPermission": false,
+    "apiKey": "",
+    "secret": ""
+  },
+  {
+    "venueId": "bitget",
+    "role": "read_only",
+    "withdrawalPermission": false,
+    "apiKey": "",
+    "secret": "",
+    "password": ""
+  },
+  {
+    "venueId": "bitget",
+    "role": "trade",
+    "withdrawalPermission": false,
+    "apiKey": "",
+    "secret": "",
+    "password": ""
+  },
+  {
+    "venueId": "kucoin",
+    "role": "read_only",
+    "withdrawalPermission": false,
+    "apiKey": "",
+    "secret": "",
+    "password": ""
+  },
+  {
+    "venueId": "kucoin",
+    "role": "trade",
+    "withdrawalPermission": false,
+    "apiKey": "",
+    "secret": "",
+    "password": ""
+  },
+  {
+    "venueId": "htx",
+    "role": "read_only",
+    "withdrawalPermission": false,
+    "apiKey": "",
+    "secret": ""
+  },
+  {
+    "venueId": "htx",
+    "role": "trade",
+    "withdrawalPermission": false,
+    "apiKey": "",
+    "secret": ""
+  },
+  {
+    "venueId": "bitrue",
+    "role": "read_only",
+    "withdrawalPermission": false,
+    "apiKey": "",
+    "secret": ""
+  },
+  {
+    "venueId": "bitrue",
+    "role": "trade",
+    "withdrawalPermission": false,
+    "apiKey": "",
+    "secret": ""
+  },
+  {
+    "venueId": "lbank",
+    "role": "read_only",
+    "withdrawalPermission": false,
+    "apiKey": "",
+    "secret": ""
+  },
+  {
+    "venueId": "lbank",
+    "role": "trade",
+    "withdrawalPermission": false,
+    "apiKey": "",
+    "secret": ""
+  },
+  {
+    "venueId": "xt",
+    "role": "read_only",
+    "withdrawalPermission": false,
+    "apiKey": "",
+    "secret": ""
+  },
+  {
+    "venueId": "xt",
+    "role": "trade",
+    "withdrawalPermission": false,
+    "apiKey": "",
+    "secret": ""
+  },
+  {
+    "venueId": "coinbase",
+    "role": "read_only",
+    "withdrawalPermission": false,
+    "apiKey": "",
+    "secret": ""
+  },
+  {
+    "venueId": "coinbase",
+    "role": "trade",
+    "withdrawalPermission": false,
+    "apiKey": "",
+    "secret": ""
+  },
+  {
+    "venueId": "kraken",
+    "role": "read_only",
+    "withdrawalPermission": false,
+    "apiKey": "",
+    "secret": ""
+  },
+  {
+    "venueId": "kraken",
+    "role": "trade",
+    "withdrawalPermission": false,
+    "apiKey": "",
+    "secret": ""
+  },
+  {
+    "venueId": "cryptocom",
+    "role": "read_only",
+    "withdrawalPermission": false,
+    "apiKey": "",
+    "secret": ""
+  },
+  {
+    "venueId": "cryptocom",
+    "role": "trade",
+    "withdrawalPermission": false,
+    "apiKey": "",
+    "secret": ""
+  },
+  {
+    "venueId": "woo",
+    "role": "read_only",
+    "withdrawalPermission": false,
+    "apiKey": "",
+    "secret": ""
+  },
+  {
+    "venueId": "woo",
+    "role": "trade",
+    "withdrawalPermission": false,
+    "apiKey": "",
+    "secret": ""
+  },
+  {
+    "venueId": "backpack",
+    "role": "read_only",
+    "withdrawalPermission": false,
+    "apiKey": "",
+    "secret": ""
+  },
+  {
+    "venueId": "backpack",
+    "role": "trade",
+    "withdrawalPermission": false,
+    "apiKey": "",
+    "secret": ""
+  },
+  {
+    "venueId": "poloniex",
+    "role": "read_only",
+    "withdrawalPermission": false,
+    "apiKey": "",
+    "secret": ""
+  },
+  {
+    "venueId": "poloniex",
+    "role": "trade",
+    "withdrawalPermission": false,
+    "apiKey": "",
+    "secret": ""
+  },
+  {
+    "venueId": "bingx",
+    "role": "read_only",
+    "withdrawalPermission": false,
+    "apiKey": "",
+    "secret": ""
+  },
+  {
+    "venueId": "bingx",
+    "role": "trade",
+    "withdrawalPermission": false,
+    "apiKey": "",
+    "secret": ""
+  },
+  {
+    "venueId": "phemex",
+    "role": "read_only",
+    "withdrawalPermission": false,
+    "apiKey": "",
+    "secret": ""
+  },
+  {
+    "venueId": "phemex",
+    "role": "trade",
+    "withdrawalPermission": false,
+    "apiKey": "",
+    "secret": ""
+  },
+  {
+    "venueId": "whitebit",
+    "role": "read_only",
+    "withdrawalPermission": false,
+    "apiKey": "",
+    "secret": ""
+  },
+  {
+    "venueId": "whitebit",
+    "role": "trade",
+    "withdrawalPermission": false,
+    "apiKey": "",
+    "secret": ""
+  },
+  {
+    "venueId": "upbit",
+    "role": "read_only",
+    "withdrawalPermission": false,
+    "apiKey": "",
+    "secret": ""
+  },
+  {
+    "venueId": "upbit",
+    "role": "trade",
+    "withdrawalPermission": false,
+    "apiKey": "",
+    "secret": ""
+  },
+  {
+    "venueId": "bitstamp",
+    "role": "read_only",
+    "withdrawalPermission": false,
+    "apiKey": "",
+    "secret": ""
+  },
+  {
+    "venueId": "bitstamp",
+    "role": "trade",
+    "withdrawalPermission": false,
+    "apiKey": "",
+    "secret": ""
+  },
+  {
+    "venueId": "gemini",
+    "role": "read_only",
+    "withdrawalPermission": false,
+    "apiKey": "",
+    "secret": ""
+  },
+  {
+    "venueId": "gemini",
+    "role": "trade",
+    "withdrawalPermission": false,
+    "apiKey": "",
+    "secret": ""
+  },
+  {
+    "venueId": "bitfinex",
+    "role": "read_only",
+    "withdrawalPermission": false,
+    "apiKey": "",
+    "secret": ""
+  },
+  {
+    "venueId": "bitfinex",
+    "role": "trade",
+    "withdrawalPermission": false,
+    "apiKey": "",
+    "secret": ""
+  },
+  {
+    "venueId": "bigone",
+    "role": "read_only",
+    "withdrawalPermission": false,
+    "apiKey": "",
+    "secret": ""
+  },
+  {
+    "venueId": "bigone",
+    "role": "trade",
+    "withdrawalPermission": false,
+    "apiKey": "",
+    "secret": ""
+  },
+  {
+    "venueId": "hitbtc",
+    "role": "read_only",
+    "withdrawalPermission": false,
+    "apiKey": "",
+    "secret": ""
+  },
+  {
+    "venueId": "hitbtc",
+    "role": "trade",
+    "withdrawalPermission": false,
+    "apiKey": "",
+    "secret": ""
+  },
+  {
+    "venueId": "btse",
+    "role": "read_only",
+    "withdrawalPermission": false,
+    "apiKey": "",
+    "secret": ""
+  },
+  {
+    "venueId": "btse",
+    "role": "trade",
+    "withdrawalPermission": false,
+    "apiKey": "",
+    "secret": ""
+  },
+  {
+    "venueId": "cex",
+    "role": "read_only",
+    "withdrawalPermission": false,
+    "apiKey": "",
+    "secret": ""
+  },
+  {
+    "venueId": "cex",
+    "role": "trade",
+    "withdrawalPermission": false,
+    "apiKey": "",
+    "secret": ""
+  },
+  {
+    "venueId": "digifinex",
+    "role": "read_only",
+    "withdrawalPermission": false,
+    "apiKey": "",
+    "secret": ""
+  },
+  {
+    "venueId": "digifinex",
+    "role": "trade",
+    "withdrawalPermission": false,
+    "apiKey": "",
+    "secret": ""
+  },
+  {
+    "venueId": "p2b",
+    "role": "read_only",
+    "withdrawalPermission": false,
+    "apiKey": "",
+    "secret": ""
+  },
+  {
+    "venueId": "p2b",
+    "role": "trade",
+    "withdrawalPermission": false,
+    "apiKey": "",
+    "secret": ""
+  },
+  {
+    "venueId": "deepcoin",
+    "role": "read_only",
+    "withdrawalPermission": false,
+    "apiKey": "",
+    "secret": "",
+    "password": ""
+  },
+  {
+    "venueId": "deepcoin",
+    "role": "trade",
+    "withdrawalPermission": false,
+    "apiKey": "",
+    "secret": "",
+    "password": ""
+  },
+  {
+    "venueId": "hashkey",
+    "role": "read_only",
+    "withdrawalPermission": false,
+    "apiKey": "",
+    "secret": ""
+  },
+  {
+    "venueId": "hashkey",
+    "role": "trade",
+    "withdrawalPermission": false,
+    "apiKey": "",
+    "secret": ""
+  },
+  {
+    "venueId": "gateio",
+    "role": "withdrawal",
+    "withdrawalPermission": true,
+    "ipWhitelistVerified": false,
+    "apiKey": "",
+    "secret": ""
+  },
+  {
     "venueId": "hotcoin",
     "role": "withdrawal",
     "withdrawalPermission": true,
-    "ipWhitelistVerified": true,
+    "ipWhitelistVerified": false,
     "apiKey": "",
     "secret": "",
     "password": ""

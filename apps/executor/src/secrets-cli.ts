@@ -1,6 +1,7 @@
 import { existsSync, readFileSync } from 'node:fs';
 import {
   createEncryptedSecretStore,
+  filterFilledCredentials,
   loadEncryptedSecretStore,
   mergeCredentialRecords,
   type StoredCredential,
@@ -8,7 +9,7 @@ import {
 
 function usage(): string {
   return [
-    'Usage: npm run executor:secrets -- [--path <file>] [--merge]',
+    'Usage: npm run executor:secrets -- [--path <file>] [--merge] [--skip-empty]',
     '',
     'Reads a JSON array of credentials from stdin. Example record:',
     'Withdrawal records use role=withdrawal, withdrawalPermission=true,',
@@ -17,6 +18,7 @@ function usage(): string {
     'Hotcoin records additionally require the API passphrase in "password":',
     '{"venueId":"hotcoin","role":"trade","withdrawalPermission":false,"apiKey":"...","secret":"...","password":"..."}',
     'Use --merge to load the existing store and upsert records by venueId:role.',
+    'Use --skip-empty to ignore template records with blank apiKey or secret.',
     '',
     'Set the master key in ARB_SECRET_STORE_KEY (at least 16 characters). The',
     'command prints fingerprints only; it never prints API keys or secrets.',
@@ -26,11 +28,13 @@ function usage(): string {
 interface CliOptions {
   path: string;
   merge: boolean;
+  skipEmpty: boolean;
 }
 
 function parseOptions(argv: string[]): CliOptions {
   let path = process.env.ARB_SECRET_STORE_PATH ?? 'data/secrets.enc.json';
   let merge = false;
+  let skipEmpty = false;
   for (let index = 0; index < argv.length; index += 1) {
     if (argv[index] === '--help' || argv[index] === '-h') {
       console.log(usage());
@@ -38,6 +42,10 @@ function parseOptions(argv: string[]): CliOptions {
     }
     if (argv[index] === '--merge') {
       merge = true;
+      continue;
+    }
+    if (argv[index] === '--skip-empty') {
+      skipEmpty = true;
       continue;
     }
     if (argv[index] === '--path') {
@@ -49,7 +57,7 @@ function parseOptions(argv: string[]): CliOptions {
     }
     throw new Error(`unknown argument: ${argv[index]}`);
   }
-  return { path, merge };
+  return { path, merge, skipEmpty };
 }
 
 async function main(): Promise<void> {
@@ -59,7 +67,14 @@ async function main(): Promise<void> {
   const input = readFileSync(0, 'utf8');
   const parsed = JSON.parse(input) as unknown;
   if (!Array.isArray(parsed)) throw new Error('stdin must contain a JSON array of credentials');
-  const incoming = parsed as StoredCredential[];
+  let incoming = parsed as StoredCredential[];
+  if (options.skipEmpty) {
+    const before = incoming.length;
+    incoming = filterFilledCredentials(incoming);
+    const skipped = before - incoming.length;
+    if (skipped > 0) console.error(`skipped ${skipped} empty credential record(s)`);
+    if (incoming.length === 0) throw new Error('no filled credentials found');
+  }
   let records = incoming;
   if (options.merge && existsSync(options.path)) {
     const existing = await loadEncryptedSecretStore(options.path, masterKey);
