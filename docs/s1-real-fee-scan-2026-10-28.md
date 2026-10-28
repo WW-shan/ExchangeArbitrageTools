@@ -61,6 +61,25 @@ At 20 USDT, the observed net edge is roughly `0.015` to `0.085 USDT` per batch
 before any inventory-rebalancing cost. The opportunity is real on market data,
 but the absolute profit is small and highly sensitive to fills and stale books.
 
+## Transfer Cost Check
+
+Public/account read-only checks on 2026-10-28:
+
+| Venue   | Network          | Minimum withdrawal | Withdrawal fee | Notes                      |
+| ------- | ---------------- | -----------------: | -------------: | -------------------------- |
+| Gate.io | ERC20            |     0.12251899 INC |      13.13 INC | `fetchDepositWithdrawFees` |
+| Hotcoin | Ethereum (ERC20) |             19 INC |         19 INC | 65 confirmations, ~10 min  |
+
+At INC ≈ 0.082 USDT, the Gate.io withdrawal fee alone is about `1.08 USDT`.
+The Hotcoin fee is about `1.56 USDT`. Both are far larger than a 20 USDT batch's
+`0.015-0.085 USDT` net profit. Moving inventory after each batch therefore
+destroys the edge; at this size the INC spread is not a self-funding live loop.
+
+The spread is one-way. A trader who already has INC on Hotcoin can sell it into
+this bid and end up with USDT there, but rebuilding Hotcoin INC inventory via a
+withdrawal costs 13.13-19 INC, or via the reverse S1 costs the roughly 100 bps
+negative reverse spread plus fees. Neither is covered by one 20 USDT batch.
+
 ## Execution Constraint
 
 The account currently holds only USDT on both venues. To execute
@@ -78,9 +97,10 @@ Possible ways to prepare inventory:
 3. Hold inventory on both sides and only trade when the spread is favorable;
    this reduces transfer frequency but doubles the capital tied up.
 
-Do not automate the transfer until the INC network, minimum withdrawal,
-withdrawal fee, deposit confirmation, and arrival time are verified. At 20 USDT,
-a single withdrawal fee can erase the observed edge.
+The network, minimum withdrawal, withdrawal fee, deposit confirmation, and
+arrival time are now checked. The conclusion is that automatic transfer at
+20 USDT is uneconomic; pre-positioning only helps for the batches supported by
+existing inventory, not for a repeatable loop.
 
 ## Next Gate
 
@@ -88,8 +108,10 @@ a single withdrawal fee can erase the observed edge.
    both venues.
 2. Record a fresh balance snapshot containing the exact INC inventory that will
    be used for the sell leg.
-3. Re-run the INC tracker with the live UTC clock immediately before the manual
+3. Treat INC as an inventory-rotation signal, not a standalone 20 USDT live
+   candidate, until notional size or transfer economics change materially.
+4. Re-run the tracker with the live UTC clock immediately before any manual
    batch; require fresh books on both legs and no stale-book flags.
-4. Execute one manually confirmed 15-20 USDT batch only after FOK/IOC and order
-   status behavior are verified.
-5. Reconcile actual `fee`, fill price, inventory delta, and the rebate ledger.
+5. Execute one manually confirmed batch only after FOK/IOC, order status, and
+   inventory-rebalancing behavior are verified.
+6. Reconcile actual `fee`, fill price, inventory delta, and the rebate ledger.
