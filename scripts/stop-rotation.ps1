@@ -3,10 +3,12 @@ param()
 
 $ErrorActionPreference = 'Stop'
 $root = (Resolve-Path (Split-Path -Parent $PSScriptRoot)).Path
-$processes = Get-CimInstance Win32_Process -Filter "Name='node.exe'" | Where-Object {
+$processes = Get-CimInstance Win32_Process | Where-Object {
   $commandLine = [string]$_.CommandLine
-  $commandLine.Contains($root) -and
-  ($commandLine -match 'apps[\\/]scanner[\\/]src[\\/]main\\.ts|apps[\\/]executor[\\/]src[\\/]main\\.ts.*--auto')
+  $_.Name -eq 'node.exe' -and
+  $commandLine -and
+  $commandLine -like "*$root*" -and
+  ($commandLine -like '*apps/scanner/src/main.ts*' -or $commandLine -like '*apps/executor/src/main.ts*--auto*')
 }
 if (-not $processes) {
   Write-Host 'No rotation scanner or supervisor process found.'

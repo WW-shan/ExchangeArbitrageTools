@@ -53,12 +53,12 @@ export function rotationDirection(
 }
 
 /**
- * Cheap, conservative pre-check used before the executor refreshes the books
- * and balances. The executor still performs the authoritative sizing.
+ * Cheap funded-direction pre-check used before the executor refreshes the
+ * books and balances. The executor still performs the authoritative sizing.
  */
 export function rotationRequirementFromOpportunity(
   loaded: LoadedOpportunity,
-  bufferBps = 20,
+  bufferBps = 0,
 ): RotationRequirement | undefined {
   const opportunity = loaded.opportunity;
   const worstBuyPrice = new Decimal(opportunity.metadata?.buyDepthWorstPrice ?? '0');
@@ -66,7 +66,10 @@ export function rotationRequirementFromOpportunity(
   const buffer = new Decimal(1).plus(new Decimal(Math.max(0, bufferBps)).div(10_000));
   return {
     buyQuote: opportunity.requestedNotional.mul(buffer),
-    sellBase: opportunity.requestedNotional.div(worstBuyPrice).mul(buffer),
+    // The scanner already caps notional by the sell venue's free base. Do not
+    // inflate the base requirement here or a fully funded rotation will wait
+    // forever by a few basis points. The executor re-sizes from fresh books.
+    sellBase: opportunity.requestedNotional.div(worstBuyPrice),
   };
 }
 

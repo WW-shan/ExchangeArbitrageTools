@@ -109,6 +109,6 @@ describe('automatic two-sided rotation decision', () => {
     expect(rotationDirection(loaded('hotcoin->gateio'))).toBe('hotcoin->gate');
     const requirement = rotationRequirementFromOpportunity(loaded('gateio->hotcoin'), 20);
     expect(requirement?.buyQuote.toFixed()).toBe('20.04');
-    expect(requirement?.sellBase.toFixed()).toBe('5010');
+    expect(requirement?.sellBase.toFixed()).toBe('5000');
   });
 });
