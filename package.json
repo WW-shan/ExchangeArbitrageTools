@@ -47,6 +47,7 @@
     "seed:rotation": "tsx scripts/seed-rotation.ts",
     "rotation:rank": "tsx scripts/rank-rotation-history.ts",
     "executor:secrets": "tsx apps/executor/src/secrets-cli.ts",
+    "executor:secrets:import": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/import-credentials.ps1",
     "executor:venue": "tsx apps/executor/src/venue-cli.ts",
     "executor:balances": "tsx apps/executor/src/balance-cli.ts",
     "account:state": "tsx apps/executor/src/account-state-cli.ts",

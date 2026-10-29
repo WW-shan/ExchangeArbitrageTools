@@ -10,7 +10,7 @@ import {
 
 function usage(): string {
   return [
-    'Usage: npm run executor:secrets -- [--path <file>] [--merge] [--skip-empty] [--skip-withdrawal]',
+    'Usage: npm run executor:secrets -- [--path <file>] [--merge | --replace] [--skip-empty] [--skip-withdrawal]',
     '',
     'Reads a JSON array of credentials from stdin. Example record:',
     'Withdrawal records use role=withdrawal, withdrawalPermission=true,',
@@ -19,6 +19,7 @@ function usage(): string {
     'Hotcoin records additionally require the API passphrase in "password":',
     '{"venueId":"hotcoin","role":"trade","withdrawalPermission":false,"apiKey":"...","secret":"...","password":"..."}',
     'Use --merge to load the existing store and upsert records by venueId:role.',
+    'Use --replace to intentionally overwrite an existing store.',
     'Use --skip-empty to ignore template records with blank apiKey or secret.',
     'Use --skip-withdrawal to import read-only/trade records only.',
     '',
@@ -30,6 +31,7 @@ function usage(): string {
 interface CliOptions {
   path: string;
   merge: boolean;
+  replace: boolean;
   skipEmpty: boolean;
   skipWithdrawal: boolean;
 }
@@ -37,6 +39,7 @@ interface CliOptions {
 function parseOptions(argv: string[]): CliOptions {
   let path = process.env.ARB_SECRET_STORE_PATH ?? 'data/secrets.enc.json';
   let merge = false;
+  let replace = false;
   let skipEmpty = false;
   let skipWithdrawal = false;
   for (let index = 0; index < argv.length; index += 1) {
@@ -46,6 +49,10 @@ function parseOptions(argv: string[]): CliOptions {
     }
     if (argv[index] === '--merge') {
       merge = true;
+      continue;
+    }
+    if (argv[index] === '--replace') {
+      replace = true;
       continue;
     }
     if (argv[index] === '--skip-empty') {
@@ -65,7 +72,8 @@ function parseOptions(argv: string[]): CliOptions {
     }
     throw new Error(`unknown argument: ${argv[index]}`);
   }
-  return { path, merge, skipEmpty, skipWithdrawal };
+  if (merge && replace) throw new Error('--merge and --replace are mutually exclusive');
+  return { path, merge, replace, skipEmpty, skipWithdrawal };
 }
 
 async function main(): Promise<void> {
@@ -95,7 +103,12 @@ async function main(): Promise<void> {
     const existing = await loadEncryptedSecretStore(options.path, masterKey);
     records = mergeCredentialRecords(existing.values(), incoming);
   } else if (!options.merge && existsSync(options.path)) {
-    console.error('replacing existing secret store; use --merge to keep existing records');
+    if (!options.replace) {
+      throw new Error(
+        'secret store already exists; use --merge to update it or --replace to overwrite it',
+      );
+    }
+    console.error('replacing existing secret store because --replace was provided');
   }
   const summary = await createEncryptedSecretStore(options.path, masterKey, records);
   console.log(JSON.stringify(summary, null, 2));
