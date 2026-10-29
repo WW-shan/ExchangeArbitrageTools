@@ -1,12 +1,12 @@
 {
-  "generatedAt": "2026-10-29T05:41:29.891Z",
-  "source": "data/prep-backtest-2026-10-29.json",
+  "generatedAt": "2026-10-29T06:13:58.711Z",
+  "source": "data/prep-backtest-multiband-2026-10-29.json",
   "referenceNotional": "20",
   "parameters": {
     "timeframe": "1m",
     "days": 6,
     "prepHorizonsMs": [900000, 1800000, 3600000],
-    "prepBandBps": "5",
+    "prepBandsBps": ["5", "12"],
     "prepTargetBps": "5",
     "prepStopBps": "50",
     "prepMinSamples": 20
@@ -15,6 +15,7 @@
     {
       "pair": "TBK/USDT",
       "direction": "gate->hotcoin",
+      "prep_band_bps": "5",
       "horizon_ms": 3600000,
       "candidate_samples": 30,
       "reverse_probability": "0.5666666666666666666666666666666666666667",
@@ -28,6 +29,7 @@
     {
       "pair": "TBK/USDT",
       "direction": "hotcoin->gate",
+      "prep_band_bps": "5",
       "horizon_ms": 3600000,
       "candidate_samples": 29,
       "reverse_probability": "0.517241379310344827586206896551724137931",
@@ -39,8 +41,37 @@
       "expected_value_usd": "-0.0070476062407452152602264000860949668938"
     },
     {
+      "pair": "TBK/USDT",
+      "direction": "gate->hotcoin",
+      "prep_band_bps": "12",
+      "horizon_ms": 3600000,
+      "candidate_samples": 42,
+      "reverse_probability": "0.619047619047619047619047619047619047619",
+      "median_time_to_reverse_ms": 240000,
+      "median_reverse_net_bps": "26.02303205255823213219191718096754927",
+      "median_prep_cost_bps": "4.89159410872861165258826077539527832",
+      "mean_no_reverse_loss_bps": "36.44818663361400492098958754793367586994",
+      "expected_value_bps": "-2.66712155566456506446548825305676719856",
+      "expected_value_usd": "-0.00533424311132913012893097650611353439712"
+    },
+    {
+      "pair": "TBK/USDT",
+      "direction": "hotcoin->gate",
+      "prep_band_bps": "12",
+      "horizon_ms": 1800000,
+      "candidate_samples": 67,
+      "reverse_probability": "0.5522388059701492537313432835820895522388",
+      "median_time_to_reverse_ms": 180000,
+      "median_reverse_net_bps": "51.50254848402075935536738596012018574",
+      "median_prep_cost_bps": "6.21388104919078370405804034122618193",
+      "mean_no_reverse_loss_bps": "43.33333333333333333333333333333333333333",
+      "expected_value_bps": "2.82483975541769534293588921884018929956",
+      "expected_value_usd": "0.00564967951083539068587177843768037859912"
+    },
+    {
       "pair": "LIGHT/USDT",
       "direction": "gate->hotcoin",
+      "prep_band_bps": "5",
       "horizon_ms": 3600000,
       "candidate_samples": 100,
       "reverse_probability": "0.38",
@@ -54,15 +85,44 @@
     {
       "pair": "LIGHT/USDT",
       "direction": "hotcoin->gate",
+      "prep_band_bps": "5",
       "horizon_ms": 900000,
-      "candidate_samples": 167,
-      "reverse_probability": "0.3892215568862275449101796407185628742515",
+      "candidate_samples": 168,
+      "reverse_probability": "0.3869047619047619047619047619047619047619",
       "median_time_to_reverse_ms": 360000,
       "median_reverse_net_bps": "15.31716559431087030138841855739925499",
       "median_prep_cost_bps": "2.35090248925177932728783554319158929",
-      "mean_no_reverse_loss_bps": "32.01896597594740996410709294518032426885",
-      "expected_value_bps": "-15.9456256384519544575194299993439336078",
-      "expected_value_usd": "-0.0318912512769039089150388599986878672156"
+      "mean_no_reverse_loss_bps": "32.19353912181199821688275223697469005265",
+      "expected_value_bps": "-16.16232371494481055793471812758112203448",
+      "expected_value_usd": "-0.03232464742988962111586943625516224406896"
+    },
+    {
+      "pair": "LIGHT/USDT",
+      "direction": "gate->hotcoin",
+      "prep_band_bps": "12",
+      "horizon_ms": 900000,
+      "candidate_samples": 326,
+      "reverse_probability": "0.2453987730061349693251533742331288343558",
+      "median_time_to_reverse_ms": 300000,
+      "median_reverse_net_bps": "13.9361309317630758572913058538275026",
+      "median_prep_cost_bps": "6.29572877059569074778200253485424588",
+      "mean_no_reverse_loss_bps": "36.42807241383261176526868835142228423729",
+      "expected_value_bps": "-30.36448747998764297377216470093915911428",
+      "expected_value_usd": "-0.06072897495997528594754432940187831822856"
+    },
+    {
+      "pair": "LIGHT/USDT",
+      "direction": "hotcoin->gate",
+      "prep_band_bps": "12",
+      "horizon_ms": 900000,
+      "candidate_samples": 280,
+      "reverse_probability": "0.3535714285714285714285714285714285714286",
+      "median_time_to_reverse_ms": 360000,
+      "median_reverse_net_bps": "11.78856691071351210847810076679807651",
+      "median_prep_cost_bps": "6.70421308632576238210041026942435393",
+      "mean_no_reverse_loss_bps": "29.25324388437680617891586499369766289002",
+      "expected_value_bps": "-21.44624529672420602368769451208959467502",
+      "expected_value_usd": "-0.04289249059344841204737538902417918935004"
     }
   ]
 }

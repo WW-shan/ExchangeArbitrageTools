@@ -316,7 +316,6 @@ function preparationCandidate(input: {
       if (!loaded) continue;
       const reasons = loaded.opportunity.rejectionReasons;
       if (reasons.length === 0 || !reasons.every((reason) => profitOnly.has(reason))) continue;
-      const calibration = preparation.calibration[`${pair.base}/${pair.quote}|${direction}`];
       const depthNetBps = loaded.opportunity.requestedNotional.gt(0)
         ? loaded.opportunity.depthNetProfit.div(loaded.opportunity.requestedNotional).mul(10_000)
         : new Decimal(Number.NEGATIVE_INFINITY);
@@ -328,17 +327,29 @@ function preparationCandidate(input: {
       if (requestedNotional.lt(config.minSizingNotional)) continue;
       const costBps = depthNetBps.lt(0) ? depthNetBps.abs() : new Decimal(0);
       const costUsd = costBps.div(10_000).mul(requestedNotional);
+      const matchingCalibrations = Object.values(preparation.calibration)
+        .filter(
+          (entry) =>
+            entry.pair === `${pair.base}/${pair.quote}` &&
+            entry.direction === direction &&
+            entry.prepBandBps.gte(costBps),
+        )
+        .sort((left, right) => left.prepBandBps.comparedTo(right.prepBandBps));
+      const calibration = matchingCalibrations[0];
+      if (!calibration) {
+        lastReason = Object.values(preparation.calibration).some(
+          (entry) => entry.pair === `${pair.base}/${pair.quote}` && entry.direction === direction,
+        )
+          ? 'preparation_cost_above_calibrated_band'
+          : 'preparation_calibration_missing';
+        continue;
+      }
       const gate = evaluatePreparationGate({
-        ...(calibration ? { calibration } : {}),
-        depthNetBps,
+        calibration,
         requestedNotional,
         costBps,
-        costUsd,
         minReverseProbability: preparation.minReverseProbability,
         maxHoldMs: preparation.maxHoldMs,
-        reversionBandBps: preparation.reversionBandBps,
-        maxCostBps: preparation.maxCostBps,
-        maxCostUsd: preparation.maxCostUsd,
         minExpectedValueBps: preparation.minExpectedValueBps,
         minExpectedValueUsd: preparation.minExpectedValueUsd,
       });
@@ -346,6 +357,8 @@ function preparationCandidate(input: {
         lastReason = gate.reasons[0] ?? lastReason;
         continue;
       }
+      const maxCostBps = gate.breakEvenCostBps!.minus(preparation.minExpectedValueBps);
+      const maxCostUsd = requestedNotional.mul(maxCostBps).div(10_000);
       const adjustedExpectedValueBps = gate.adjustedExpectedValueBps!;
       const adjustedExpectedValueUsd = gate.adjustedExpectedValueUsd!;
       const opportunity: OpportunityResult = {
@@ -358,8 +371,9 @@ function preparationCandidate(input: {
           intent: 'inventory_preparation',
           preparationCostBps: costBps.toFixed(),
           preparationCostUsd: costUsd.toFixed(),
-          preparationMaxCostBps: preparation.maxCostBps.toFixed(),
-          preparationMaxCostUsd: preparation.maxCostUsd.toFixed(),
+          preparationBreakEvenCostBps: gate.breakEvenCostBps!.toFixed(),
+          preparationMaxCostBps: maxCostBps.toFixed(),
+          preparationMaxCostUsd: maxCostUsd.toFixed(),
           reversionProbability: calibration!.reverseProbability.toFixed(),
           reversionHorizonMs: String(calibration!.horizonMs),
           calibrationExpectedValueBps: calibration!.expectedValueBps.toFixed(),
@@ -411,8 +425,8 @@ function preparationCandidate(input: {
           opportunity,
           batchId: `PREP-${pair.base}-${now}-${direction.replace('->', '-')}`,
           preparation: {
-            maxCostBps: preparation.maxCostBps,
-            maxCostUsd: preparation.maxCostUsd,
+            maxCostBps,
+            maxCostUsd,
           },
         },
       };

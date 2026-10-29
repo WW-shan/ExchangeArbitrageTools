@@ -114,14 +114,11 @@ max_consecutive_failures = 3
 [auto_rotation.preparation]
 enabled = true
 max_notional = '10'
-max_cost_bps = 5
-max_cost_usd = '0.01'
 min_stable_ms = 30000
 calibration_file = 'apps/executor/tests/fixtures/prep-calibration.json'
 min_reverse_probability = '0.5'
 min_expected_value_bps = '0'
 max_hold_ms = 3600000
-reversion_band_bps = 5
 
 [[auto_rotation.pairs]]
 base = 'KAT'
@@ -135,10 +132,9 @@ max_notional = '20'
     expect(config.autoRotation.pairs[0]!.base).toBe('KAT');
     expect(config.autoRotation.pairs[0]!.maxNotional.toFixed()).toBe('20');
     expect(config.autoRotation.preparation.enabled).toBe(true);
-    expect(config.autoRotation.preparation.maxCostBps.toFixed()).toBe('5');
     expect(
       config.autoRotation.preparation.calibration[
-        'KAT/USDT|gate->hotcoin'
+        'KAT/USDT|gate->hotcoin|5'
       ]?.reverseProbability.toFixed(),
     ).toBe('0.6');
     expect(config.manualConfirmation).toBe(true);

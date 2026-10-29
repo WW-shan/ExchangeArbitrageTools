@@ -32,26 +32,43 @@ A preparation candidate must satisfy all of the following:
 3. The scanner opportunity is fresh and its only rejection reasons are profit
    thresholds. Depth, freshness, precision, fees, health, and balance failures
    are never overridden.
-4. The current executable net edge is at or below zero but within
-   `reversion_band_bps` (default 5 bps). A small positive edge below the normal
-   entry threshold is also accepted; a wide negative spread is not.
-5. A calibration row exists for `PAIR|direction`.
+4. A calibration row exists for `PAIR|direction` whose `prep_band_bps` covers
+   the current preparation cost. The smallest covering band is used first.
+5. The current executable net edge is at or below zero. A small positive edge
+   below the normal entry threshold is also accepted.
 6. `reverse_probability >= min_reverse_probability` (default 0.55).
 7. `median_time_to_reverse_ms <= max_hold_ms` (default 1 hour).
 8. The cost-adjusted expected value is positive after replacing the historical
    median preparation cost with the current preparation cost.
-9. `max_notional`, `max_cost_bps`, and `max_cost_usd` pass for this trade.
+9. `max_notional` passes for this trade.
 
 There is no daily preparation count cap, no daily preparation cost cap, and no
-preparation cooldown. Every repeat must pass the same fresh calibration,
-expected-value, cost, balance, and market checks. `min_stable_ms` is a signal
-stability check, not a cooldown.
+preparation cooldown. There is also no fixed cost cap. The per-trade cost limit
+is derived from the calibration:
+
+```text
+break_even_cost_bps = EV_bps + median_prep_cost_bps
+max_cost_bps        = break_even_cost_bps - min_expected_value_bps
+max_cost_usd        = notional * max_cost_bps / 10_000
+```
+
+If the current preparation cost is above that line, the trade is rejected
+because it no longer has the required expected value. Every repeat must pass
+the same fresh calibration, expected-value, balance, and market checks.
+`min_stable_ms` is a signal stability check, not a cooldown.
+
+`max_cost_bps` is not a separate policy limit. It is the break-even cost minus
+the required expected value, and `max_cost_usd` is that basis-point number
+scaled by the selected notional. The `prep_band_bps` is the measured range used
+to choose the calibration row; costs above the largest measured band have no
+probability estimate and therefore fail closed.
 
 The candidate must remain stable for `min_stable_ms` before submission.
 
-The live rotation profile also sets `prefilter_floor_bps = -5`; otherwise the
-scanner would discard the near-breakeven negative rows before the preparation
-gate can evaluate them. The normal S1 threshold remains unchanged.
+The live rotation profile also sets `prefilter_floor_bps = -12`; otherwise the
+scanner could discard the near-breakeven negative rows from the 5 and 12 bps
+bands before the preparation gate can evaluate them. The normal S1 threshold
+remains unchanged.
 
 ## 3. Calibration math
 
@@ -83,8 +100,10 @@ the intrabar order.
 ## 4. 2026-10-29 backtest result
 
 Data: Gate.io and Hotcoin, `1m`, 6 days, 20 USDT reference notional, 2 bps
-safety buffer, 10 bps extra slippage, 5 bps preparation band, 5 bps reverse
-target, 50 bps adverse stop.
+safety buffer, 10 bps extra slippage, 5 and 12 bps preparation bands, 5 bps
+reverse target, 50 bps adverse stop.
+
+### Band 5 bps
 
 | Pair       | Preparation direction | Horizon | Samples | P(reverse) | Median time | Reverse bps | No-reverse loss bps | Prep cost bps | EV bps |  EV USD |
 | ---------- | --------------------- | ------: | ------: | ---------: | ----------: | ----------: | ------------------: | ------------: | -----: | ------: |
@@ -93,10 +112,29 @@ target, 50 bps adverse stop.
 | LIGHT/USDT | Gate -> Hotcoin       |     60m |     100 |     0.3800 |        7.0m |       11.03 |               45.45 |          2.32 | -26.31 | -0.0526 |
 | LIGHT/USDT | Hotcoin -> Gate       |     15m |     167 |     0.3892 |        6.0m |       15.32 |               32.02 |          2.35 | -15.95 | -0.0319 |
 
+### Band 12 bps
+
+| Pair       | Preparation direction | Horizon | Samples | P(reverse) | Median time | Reverse bps | No-reverse loss bps | Prep cost bps | EV bps |  EV USD |
+| ---------- | --------------------- | ------: | ------: | ---------: | ----------: | ----------: | ------------------: | ------------: | -----: | ------: |
+| TBK/USDT   | Gate -> Hotcoin       |     60m |      42 |     0.6190 |        4.0m |       26.02 |               36.45 |          4.89 |  -2.67 | -0.0053 |
+| TBK/USDT   | Hotcoin -> Gate       |     30m |      67 |     0.5522 |        3.0m |       51.50 |               43.33 |          6.21 |  +2.82 | +0.0056 |
+| LIGHT/USDT | Gate -> Hotcoin       |     15m |     326 |     0.2454 |        5.0m |       13.94 |               36.43 |          6.30 | -30.36 | -0.0607 |
+| LIGHT/USDT | Hotcoin -> Gate       |     15m |     280 |     0.3536 |        6.0m |       11.79 |               29.00 |          6.70 | -21.28 | -0.0426 |
+
 Runtime result with `min_reverse_probability = 0.55`:
 
-- `TBK/USDT|gate->hotcoin` is allowed.
-- The other three directions are rejected by the probability gate.
+- `TBK/USDT|gate->hotcoin` is allowed in the 5 bps band.
+- `TBK/USDT|hotcoin->gate` is allowed in the 12 bps band.
+- LIGHT and the other band combinations are rejected.
+
+The runtime uses the smallest calibration band that covers the current cost.
+For the 5 bps TBK row the maximum cost is 5 bps because that is the band the
+probability was measured on. For the 12 bps TBK reverse row, break-even cost is
+`2.82 + 6.21 = 9.03 bps`; at a 10 USDT batch the dynamic maximum is about
+0.0090 USDT. There is no separate fixed cost cap. The band boundary is a
+data-coverage boundary, not a second risk rule: above 12 bps there is no
+calibrated probability, so the executor cannot claim a positive expected value
+and does not trade.
 
 This is intentionally narrow. LIGHT's raw spread frequency is high, but its
 conditional probability of a reverse opportunity is not high enough to pay for
@@ -141,7 +179,7 @@ npx tsx scripts/backtest-history.ts `
   --max-sane-spread-bps 3000 `
   --prep `
   --prep-horizons-ms 900000,1800000,3600000 `
-  --prep-band-bps 5 `
+  --prep-band-bps 5,12 `
   --prep-target-bps 5 `
   --prep-stop-bps 50 `
   --prep-min-samples 20 `
@@ -151,6 +189,12 @@ npx tsx scripts/backtest-history.ts `
 
 Do not hand-edit probabilities. Regenerate after changing fees, pair list,
 notional, venue behavior, or the historical window.
+
+The calibration is band-specific. A row generated with `prep_band_bps = 5` is
+only valid for costs up to 5 bps; a row generated with `prep_band_bps = 12` is
+valid up to 12 bps. At runtime the executor picks the smallest band that covers
+the current cost. This avoids extrapolating a 5 bps probability estimate to a
+10 bps trade.
 
 ## 7. Limitations
 

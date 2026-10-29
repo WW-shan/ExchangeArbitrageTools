@@ -33,15 +33,10 @@ export interface AutoRotationDecision {
 
 export interface PreparationGateInput {
   calibration?: PreparationCalibrationEntry;
-  depthNetBps: Decimal;
   requestedNotional: Decimal;
   costBps: Decimal;
-  costUsd: Decimal;
   minReverseProbability: Decimal;
   maxHoldMs: number;
-  reversionBandBps: Decimal;
-  maxCostBps: Decimal;
-  maxCostUsd: Decimal;
   minExpectedValueBps: Decimal;
   minExpectedValueUsd: Decimal;
 }
@@ -49,6 +44,7 @@ export interface PreparationGateInput {
 export interface PreparationGateDecision {
   allowed: boolean;
   reasons: string[];
+  breakEvenCostBps?: Decimal;
   adjustedExpectedValueBps?: Decimal;
   adjustedExpectedValueUsd?: Decimal;
 }
@@ -62,10 +58,10 @@ export interface PreparationGateDecision {
 export function evaluatePreparationGate(input: PreparationGateInput): PreparationGateDecision {
   const reasons: string[] = [];
   if (!input.calibration) reasons.push('preparation_calibration_missing');
-  if (input.depthNetBps.gt(input.reversionBandBps)) {
-    reasons.push('preparation_not_at_reversion');
-  }
   if (input.calibration) {
+    if (input.costBps.gt(input.calibration.prepBandBps)) {
+      reasons.push('preparation_cost_above_calibrated_band');
+    }
     if (input.calibration.reverseProbability.lt(input.minReverseProbability)) {
       reasons.push('preparation_reverse_probability_too_low');
     }
@@ -73,15 +69,13 @@ export function evaluatePreparationGate(input: PreparationGateInput): Preparatio
       reasons.push('preparation_reverse_time_too_long');
     }
   }
-  if (input.costBps.gt(input.maxCostBps) || input.costUsd.gt(input.maxCostUsd)) {
-    reasons.push('preparation_cost_above_limit');
-  }
   if (reasons.length > 0 || !input.calibration) {
     return { allowed: false, reasons };
   }
-  const adjustedExpectedValueBps = input.calibration.expectedValueBps
-    .plus(input.calibration.medianPrepCostBps)
-    .minus(input.costBps);
+  const breakEvenCostBps = input.calibration.expectedValueBps.plus(
+    input.calibration.medianPrepCostBps,
+  );
+  const adjustedExpectedValueBps = breakEvenCostBps.minus(input.costBps);
   const adjustedExpectedValueUsd = input.requestedNotional
     .mul(adjustedExpectedValueBps)
     .div(10_000);
@@ -92,6 +86,7 @@ export function evaluatePreparationGate(input: PreparationGateInput): Preparatio
     return {
       allowed: false,
       reasons: ['preparation_expected_value_too_low'],
+      breakEvenCostBps,
       adjustedExpectedValueBps,
       adjustedExpectedValueUsd,
     };
@@ -99,6 +94,7 @@ export function evaluatePreparationGate(input: PreparationGateInput): Preparatio
   return {
     allowed: true,
     reasons: [],
+    breakEvenCostBps,
     adjustedExpectedValueBps,
     adjustedExpectedValueUsd,
   };

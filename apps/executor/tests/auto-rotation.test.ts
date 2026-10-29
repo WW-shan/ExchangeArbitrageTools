@@ -121,6 +121,7 @@ describe('reversion preparation gate', () => {
   const calibration = {
     pair: 'KAT/USDT',
     direction: 'gate->hotcoin' as const,
+    prepBandBps: d('5'),
     horizonMs: 1_800_000,
     candidateSamples: 40,
     reverseProbability: d('0.62'),
@@ -135,15 +136,10 @@ describe('reversion preparation gate', () => {
   function gateInput(overrides: Partial<Parameters<typeof evaluatePreparationGate>[0]> = {}) {
     return {
       calibration,
-      depthNetBps: d('-2'),
       requestedNotional: d('10'),
       costBps: d('2'),
-      costUsd: d('0.002'),
       minReverseProbability: d('0.55'),
       maxHoldMs: 3_600_000,
-      reversionBandBps: d('5'),
-      maxCostBps: d('5'),
-      maxCostUsd: d('0.01'),
       minExpectedValueBps: d('0'),
       minExpectedValueUsd: d('0'),
       ...overrides,
@@ -153,6 +149,7 @@ describe('reversion preparation gate', () => {
   it('allows only a calibrated, near-reversion shift with positive expected value', () => {
     const decision = evaluatePreparationGate(gateInput());
     expect(decision.allowed).toBe(true);
+    expect(decision.breakEvenCostBps?.toFixed()).toBe('5');
     expect(decision.adjustedExpectedValueBps?.toFixed()).toBe('3');
     expect(decision.adjustedExpectedValueUsd?.toFixed()).toBe('0.003');
   });
@@ -169,18 +166,15 @@ describe('reversion preparation gate', () => {
     ).toContain('preparation_reverse_probability_too_low');
   });
 
-  it('rejects a wide spread, slow reversal, oversized cost, or negative expected value', () => {
-    expect(evaluatePreparationGate(gateInput({ depthNetBps: d('8') })).reasons).toContain(
-      'preparation_not_at_reversion',
+  it('rejects a cost outside the calibrated band, slow reversal, or negative expected value', () => {
+    expect(evaluatePreparationGate(gateInput({ costBps: d('6') })).reasons).toContain(
+      'preparation_cost_above_calibrated_band',
     );
     expect(
       evaluatePreparationGate(
         gateInput({ calibration: { ...calibration, medianTimeToReverseMs: 7_200_000 } }),
       ).reasons,
     ).toContain('preparation_reverse_time_too_long');
-    expect(
-      evaluatePreparationGate(gateInput({ costBps: d('6'), costUsd: d('0.006') })).reasons,
-    ).toContain('preparation_cost_above_limit');
     expect(
       evaluatePreparationGate(
         gateInput({ calibration: { ...calibration, expectedValueBps: d('-10') } }),

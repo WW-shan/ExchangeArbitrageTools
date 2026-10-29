@@ -39,21 +39,19 @@ export interface RotationPairConfig {
 export interface AutoRotationPreparationConfig {
   enabled: boolean;
   maxNotional: Decimal;
-  maxCostBps: Decimal;
-  maxCostUsd: Decimal;
   minStableMs: number;
   calibrationFile: string;
   minReverseProbability: Decimal;
   minExpectedValueBps: Decimal;
   minExpectedValueUsd: Decimal;
   maxHoldMs: number;
-  reversionBandBps: Decimal;
   calibration: Readonly<Record<string, PreparationCalibrationEntry>>;
 }
 
 export interface PreparationCalibrationEntry {
   pair: string;
   direction: 'gate->hotcoin' | 'hotcoin->gate';
+  prepBandBps: Decimal;
   horizonMs: number;
   candidateSamples: number;
   reverseProbability: Decimal;
@@ -332,6 +330,7 @@ function preparationCalibration(path: string): Record<string, PreparationCalibra
     const row = table(raw, 'preparation calibration entry');
     const pair = stringValue(row, 'pair').trim().toUpperCase();
     const direction = preparationDirection(row.direction);
+    const prepBandBps = decimalValue(row, 'prep_band_bps');
     const horizonMs = numberValue(row, 'horizon_ms');
     const candidateSamples = numberValue(row, 'candidate_samples');
     const reverseProbability = decimalValue(row, 'reverse_probability');
@@ -347,6 +346,8 @@ function preparationCalibration(path: string): Record<string, PreparationCalibra
     if (
       !Number.isInteger(horizonMs) ||
       horizonMs <= 0 ||
+      !prepBandBps.isFinite() ||
+      prepBandBps.lte(0) ||
       !Number.isInteger(candidateSamples) ||
       candidateSamples <= 0 ||
       !reverseProbability.isFinite() ||
@@ -363,11 +364,12 @@ function preparationCalibration(path: string): Record<string, PreparationCalibra
     ) {
       throw new Error(`invalid preparation calibration entry for ${pair} ${direction}`);
     }
-    const key = `${pair}|${direction}`;
+    const key = `${pair}|${direction}|${prepBandBps.toFixed()}`;
     if (result[key]) throw new Error(`duplicate preparation calibration entry: ${key}`);
     result[key] = {
       pair,
       direction,
+      prepBandBps,
       horizonMs,
       candidateSamples,
       reverseProbability,
@@ -411,15 +413,12 @@ function autoRotationConfig(value: unknown, handoffMaxAgeMs: number): AutoRotati
     preparation: {
       enabled: preparationEnabled,
       maxNotional: decimalValue(preparation, 'max_notional', '10'),
-      maxCostBps: decimalValue(preparation, 'max_cost_bps', '5'),
-      maxCostUsd: decimalValue(preparation, 'max_cost_usd', '0.01'),
       minStableMs: numberValue(preparation, 'min_stable_ms', 30_000),
       calibrationFile,
       minReverseProbability: decimalValue(preparation, 'min_reverse_probability', '0.55'),
       minExpectedValueBps: decimalValue(preparation, 'min_expected_value_bps', '0'),
       minExpectedValueUsd: decimalValue(preparation, 'min_expected_value_usd', '0'),
       maxHoldMs: numberValue(preparation, 'max_hold_ms', 3_600_000),
-      reversionBandBps: decimalValue(preparation, 'reversion_band_bps', '5'),
       calibration,
     },
     pollIntervalMs,
@@ -466,16 +465,6 @@ function validateSafetyBounds(config: ExecutorConfig): void {
     ) {
       throw new Error('auto_rotation.preparation.max_notional is outside the order limit');
     }
-    if (
-      !preparation.maxCostBps.isFinite() ||
-      preparation.maxCostBps.lt(0) ||
-      preparation.maxCostBps.gt(20) ||
-      !preparation.maxCostUsd.isFinite() ||
-      preparation.maxCostUsd.lt(0) ||
-      preparation.maxCostUsd.gt(new Decimal('0.05'))
-    ) {
-      throw new Error('auto_rotation.preparation cost budget is outside the safety bound');
-    }
     if (preparation.calibrationFile === '' || Object.keys(preparation.calibration).length === 0) {
       throw new Error('auto_rotation.preparation requires a non-empty calibration_file');
     }
@@ -488,10 +477,7 @@ function validateSafetyBounds(config: ExecutorConfig): void {
       !preparation.minExpectedValueUsd.isFinite() ||
       preparation.minExpectedValueUsd.lt(0) ||
       !Number.isInteger(preparation.maxHoldMs) ||
-      preparation.maxHoldMs <= 0 ||
-      !preparation.reversionBandBps.isFinite() ||
-      preparation.reversionBandBps.lt(0) ||
-      preparation.reversionBandBps.gt(20)
+      preparation.maxHoldMs <= 0
     ) {
       throw new Error('auto_rotation.preparation reversion gate is outside the safety bound');
     }

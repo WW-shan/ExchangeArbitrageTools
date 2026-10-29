@@ -120,10 +120,17 @@ inventory to the opposite side. This is allowed only for a direction with a
 positive historical calibration. It is not a promise that the reverse spread
 will return.
 
-The current calibration allows only `TBK/USDT|gate->hotcoin`. LIGHT and the
-other TBK direction fail the conditional reverse-probability or expected-value
-gate. Details, formulas, and the exact backtest result are in
+The current calibration allows `TBK/USDT|gate->hotcoin` in the 5 bps band and
+`TBK/USDT|hotcoin->gate` in the 12 bps band. LIGHT fails the conditional
+reverse-probability or expected-value gate in both bands. Details, formulas,
+and the exact backtest result are in
 `docs/s1-reversion-preparation-2026-10-29.md`.
+
+There is no separate fixed cost cap. The allowed cost is the calibration-derived
+break-even cost, converted to USDT in proportion to the selected notional. A
+larger notional therefore gets a proportionally larger USDT allowance; the
+basis-point limit does not change. The calibration band is not a policy cap:
+it records the cost range in which the probability was actually measured.
 
 There is no daily preparation count cap and no preparation cooldown. Every
 repeat must pass a fresh calibration, expected-value, and per-trade cost check.

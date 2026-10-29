@@ -163,13 +163,16 @@ async function main(): Promise<void> {
   const prepHorizonsMs = listArg('--prep-horizons-ms', '900000,1800000,3600000')
     .map((value) => Number(value))
     .filter((value) => Number.isFinite(value) && value > 0);
-  const prepBandBps = new Decimal(arg('--prep-band-bps', '5'));
+  const prepBandsBps = listArg('--prep-band-bps', '5').map((value) => new Decimal(value));
   const prepTargetBps = new Decimal(arg('--prep-target-bps', '5'));
   const prepStopBps = new Decimal(arg('--prep-stop-bps', '50'));
   const prepMinSamples = Math.max(1, Number(arg('--prep-min-samples', '20')));
   const prepOutputPath = resolve(arg('--prep-out', 'config/s1-prep-calibration.json'));
   if (prepEnabled && prepHorizonsMs.length === 0) {
     throw new Error('--prep-horizons-ms must contain at least one positive horizon');
+  }
+  if (prepEnabled && prepBandsBps.some((band) => !band.isFinite() || band.lte(0))) {
+    throw new Error('--prep-band-bps must contain positive bps values');
   }
   const notional = new Decimal(arg('--notional', config.scanner.requestedNotional.toFixed()));
   const concurrency = Math.max(1, Number(arg('--concurrency', '3')));
@@ -312,27 +315,30 @@ async function main(): Promise<void> {
         maxSaneSpreadBps,
         episodeGapMs: timeframeMs * 1.5,
       });
-      const preparation = prepEnabled
-        ? analyzePreparationPair({
-            base: candidate.base,
-            quote,
-            candlesByVenue,
-            feeBpsByVenue,
-            timeframeMs,
-            notional,
-            safetyBufferBps,
-            extraSlippageBps,
-            minCandleQuoteVolumeUsd,
-            maxSaneSpreadBps,
+      const preparations = prepEnabled
+        ? prepBandsBps.map((prepBandBps) => ({
             prepBandBps,
-            reverseTargetBps: prepTargetBps,
-            stopBps: prepStopBps,
-            horizonsMs: prepHorizonsMs,
-          })
-        : undefined;
+            result: analyzePreparationPair({
+              base: candidate.base,
+              quote,
+              candlesByVenue,
+              feeBpsByVenue,
+              timeframeMs,
+              notional,
+              safetyBufferBps,
+              extraSlippageBps,
+              minCandleQuoteVolumeUsd,
+              maxSaneSpreadBps,
+              prepBandBps,
+              reverseTargetBps: prepTargetBps,
+              stopBps: prepStopBps,
+              horizonsMs: prepHorizonsMs,
+            }),
+          }))
+        : [];
       return {
         pair,
-        preparation,
+        preparations,
         error:
           pairErrors.length > 0
             ? `${candidate.base}/${quote}: ${pairErrors.join('; ')}`
@@ -341,37 +347,45 @@ async function main(): Promise<void> {
     });
 
     const ranked = rankHistoricalPairs(pairs.flatMap((entry) => (entry.pair ? [entry.pair] : [])));
-    const preparationByPair = new Map<string, PreparationPairResult>();
+    const preparationByPair = new Map<
+      string,
+      Array<{ prepBandBps: Decimal; result: PreparationPairResult }>
+    >();
     for (const entry of pairs) {
-      if (entry.pair && entry.preparation) {
-        preparationByPair.set(`${entry.pair.base}/${entry.pair.quote}`, entry.preparation);
+      if (entry.pair && entry.preparations.length > 0) {
+        preparationByPair.set(`${entry.pair.base}/${entry.pair.quote}`, entry.preparations);
       }
     }
-    const preparationRanking = ranked
-      .map((pair) => preparationByPair.get(`${pair.base}/${pair.quote}`))
-      .filter((entry): entry is PreparationPairResult => entry !== undefined);
+    const preparationRanking = ranked.flatMap((pair) =>
+      (preparationByPair.get(`${pair.base}/${pair.quote}`) ?? []).map((entry) => ({
+        prepBandBps: entry.prepBandBps,
+        ...entry.result,
+      })),
+    );
     const calibrationEntries = ranked.flatMap((pair) => {
-      const preparation = preparationByPair.get(`${pair.base}/${pair.quote}`);
-      if (!preparation) return [];
-      return preparation.directions.flatMap((direction) => {
-        const best = bestPreparationHorizon(direction, prepMinSamples);
-        if (!best) return [];
-        return [
-          {
-            pair: `${pair.base}/${pair.quote}`,
-            direction: `${executionDirection(direction.buyVenue)}->${executionDirection(direction.sellVenue)}`,
-            horizonMs: best.horizonMs,
-            candidateSamples: best.candidateSamples,
-            reverseProbability: best.reverseHitRate,
-            medianTimeToReverseMs: best.medianTimeToReverseMs ?? null,
-            medianReverseNetBps: best.medianReverseNetBps ?? null,
-            medianPrepCostBps: best.medianPrepCostBps,
-            meanNoReverseLossBps: best.meanNoReverseLossBps,
-            expectedValueBps: best.expectedValueBps,
-            expectedValueUsd: best.expectedValueUsd,
-          },
-        ];
-      });
+      const preparations = preparationByPair.get(`${pair.base}/${pair.quote}`) ?? [];
+      return preparations.flatMap(({ prepBandBps, result }) =>
+        result.directions.flatMap((direction) => {
+          const best = bestPreparationHorizon(direction, prepMinSamples);
+          if (!best) return [];
+          return [
+            {
+              pair: `${pair.base}/${pair.quote}`,
+              direction: `${executionDirection(direction.buyVenue)}->${executionDirection(direction.sellVenue)}`,
+              prepBandBps,
+              horizonMs: best.horizonMs,
+              candidateSamples: best.candidateSamples,
+              reverseProbability: best.reverseHitRate,
+              medianTimeToReverseMs: best.medianTimeToReverseMs ?? null,
+              medianReverseNetBps: best.medianReverseNetBps ?? null,
+              medianPrepCostBps: best.medianPrepCostBps,
+              meanNoReverseLossBps: best.meanNoReverseLossBps,
+              expectedValueBps: best.expectedValueBps,
+              expectedValueUsd: best.expectedValueUsd,
+            },
+          ];
+        }),
+      );
     });
     const report = {
       generatedAt: new Date().toISOString(),
@@ -398,7 +412,7 @@ async function main(): Promise<void> {
         ...(prepEnabled
           ? {
               prepHorizonsMs,
-              prepBandBps: prepBandBps.toFixed(),
+              prepBandsBps: prepBandsBps.map((band) => band.toFixed()),
               prepTargetBps: prepTargetBps.toFixed(),
               prepStopBps: prepStopBps.toFixed(),
               prepMinSamples,
@@ -453,7 +467,7 @@ async function main(): Promise<void> {
           timeframe,
           days,
           prepHorizonsMs,
-          prepBandBps: prepBandBps.toFixed(),
+          prepBandsBps: prepBandsBps.map((band) => band.toFixed()),
           prepTargetBps: prepTargetBps.toFixed(),
           prepStopBps: prepStopBps.toFixed(),
           prepMinSamples,
@@ -461,6 +475,7 @@ async function main(): Promise<void> {
         entries: calibrationEntries.map((entry) => ({
           pair: entry.pair,
           direction: entry.direction,
+          prep_band_bps: entry.prepBandBps,
           horizon_ms: entry.horizonMs,
           candidate_samples: entry.candidateSamples,
           reverse_probability: entry.reverseProbability,
@@ -480,6 +495,7 @@ async function main(): Promise<void> {
           [
             entry.pair,
             entry.direction,
+            `bandBps=${entry.prepBandBps.toFixed()}`,
             `horizonMin=${(entry.horizonMs / 60_000).toFixed(0)}`,
             `samples=${entry.candidateSamples}`,
             `pReverse=${entry.reverseProbability.toFixed(4)}`,

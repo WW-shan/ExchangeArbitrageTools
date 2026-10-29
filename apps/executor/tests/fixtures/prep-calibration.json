@@ -5,7 +5,7 @@
   "entries": [
     {
       "pair": "KAT/USDT",
-      "direction": "gate-\u003ehotcoin",
+      "direction": "gate->hotcoin",
       "horizon_ms": 1800000,
       "candidate_samples": 40,
       "reverse_probability": "0.6",
@@ -14,11 +14,12 @@
       "median_prep_cost_bps": "3",
       "mean_no_reverse_loss_bps": "8",
       "expected_value_bps": "2",
-      "expected_value_usd": "0.002"
+      "expected_value_usd": "0.002",
+      "prep_band_bps": "5"
     },
     {
       "pair": "KAT/USDT",
-      "direction": "hotcoin-\u003egate",
+      "direction": "hotcoin->gate",
       "horizon_ms": 1800000,
       "candidate_samples": 40,
       "reverse_probability": "0.55",
@@ -27,7 +28,8 @@
       "median_prep_cost_bps": "3",
       "mean_no_reverse_loss_bps": "7",
       "expected_value_bps": "1",
-      "expected_value_usd": "0.001"
+      "expected_value_usd": "0.001",
+      "prep_band_bps": "5"
     }
   ]
 }

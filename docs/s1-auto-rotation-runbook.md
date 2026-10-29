@@ -50,20 +50,46 @@ calibration in `config/s1-prep-calibration.json`, the reverse probability is at
 least `min_reverse_probability`, the median reverse time is within
 `max_hold_ms`, and the cost-adjusted expected value is positive.
 
-The 2026-10-29 calibration allows only `TBK/USDT|gate->hotcoin`:
+The 2026-10-29 calibration allows two TBK combinations:
 
 ```text
-reverse probability: 0.5667 within 60 minutes
-median reverse time: 4 minutes
-median reverse edge: 47.82 bps
-mean no-reverse loss: 36.87 bps
-median preparation cost: 2.05 bps
-expected value: +9.07 bps at 20 USDT
+TBK/USDT gate->hotcoin, 5 bps band:
+  reverse probability: 0.5667 within 60 minutes
+  median reverse time: 4 minutes
+  median reverse edge: 47.82 bps
+  mean no-reverse loss: 36.87 bps
+  median preparation cost: 2.05 bps
+  expected value: +9.07 bps at 20 USDT
+
+TBK/USDT hotcoin->gate, 12 bps band:
+  reverse probability: 0.5522 within 30 minutes
+  median reverse time: 3 minutes
+  median reverse edge: 51.50 bps
+  mean no-reverse loss: 43.33 bps
+  median preparation cost: 6.21 bps
+  expected value: +2.82 bps at 20 USDT
 ```
 
-The live profile sets `prefilter_floor_bps = -5` so near-breakeven negative
-edges reach the full evaluator. This does not lower the normal S1 entry
-threshold; it only lets the preparation gate see the reversion band.
+LIGHT is rejected in both bands because its conditional reverse probability
+and expected value are negative.
+
+The live profile sets `prefilter_floor_bps = -12` so both calibrated bands
+reach the full evaluator. This does not lower the normal S1 entry threshold;
+it only lets the preparation gate see the reversion bands.
+
+There is no separate fixed cost cap. The limit is derived from the calibration
+and scales with notional:
+
+```text
+break_even_cost_bps = EV_bps + median_prep_cost_bps
+max_cost_bps        = break_even_cost_bps - min_expected_value_bps
+max_cost_usd        = notional * max_cost_bps / 10_000
+```
+
+The `prep_band_bps` is the range in which the probability was measured. A cost
+inside that band is accepted only if the remaining expected value is still at
+least `min_expected_value`; a cost above the largest measured band has no
+calibration and fails closed rather than extrapolating the estimate.
 
 There is no daily preparation count cap and no preparation cooldown. Every
 repeat must pass the same fresh calibration, expected-value, and per-trade cost
@@ -172,15 +198,12 @@ max_consecutive_failures = 3
 [auto_rotation.preparation]
 enabled = true
 max_notional = '10'
-max_cost_bps = 5
-max_cost_usd = '0.01'
 min_stable_ms = 30000
 calibration_file = 'config/s1-prep-calibration.json'
 min_reverse_probability = '0.55'
 min_expected_value_bps = '0'
 min_expected_value_usd = '0'
 max_hold_ms = 3600000
-reversion_band_bps = 5
 
 [[auto_rotation.pairs]]
 base = 'LIGHT'
