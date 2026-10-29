@@ -99,6 +99,17 @@ export interface AutomaticInventoryResult {
   killSwitch?: boolean;
 }
 
+export interface AutomaticInventoryNoFillReconciliation {
+  status: 'RECONCILED';
+  batchId: string;
+  executionId: number;
+  previousStatus: string;
+  venueId: string;
+  baseFree: string;
+  quoteFree: string;
+  reconciledAt: string;
+}
+
 function findBalance(
   rows: readonly BalanceSnapshot[],
   venueId: string,
@@ -346,7 +357,28 @@ export function planAutomaticInventorySeed(input: {
 }
 
 function isDefinitiveNoFill(error: unknown): boolean {
-  return /FOK_NOT_FILL|cannot be filled completely|ioc[^\n]*not[^\n]*fill/i.test(String(error));
+  return /FOK_NOT_FILL|cannot be filled completely|ioc[^\n]*not[^\n]*fill|clientOrderId or text param must be up to 28 characters/i.test(
+    String(error),
+  );
+}
+
+function isOrderNotFoundOrInvalidId(error: unknown): boolean {
+  return /ordernotfound|client_id_not_found|order not found|clientOrderId or text param must be up to 28 characters|clientOrderId[^\n]*invalid/i.test(
+    String(error),
+  );
+}
+
+function metadataObject(value: string | null): Record<string, unknown> {
+  if (!value) return {};
+  const parsed = JSON.parse(value) as unknown;
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new Error('execution metadata must be a JSON object');
+  }
+  return parsed as Record<string, unknown>;
+}
+
+function seedClientOrderId(now: number): string {
+  return `SD-${now.toString(36)}-${randomUUID().replace(/-/g, '').slice(0, 8)}`;
 }
 
 function recordBalances(
@@ -695,6 +727,217 @@ async function finalizeSeed(input: {
   };
 }
 
+export async function reconcileAutomaticInventoryNoFill(input: {
+  repository: ArbitrageRepository;
+  adapters: Readonly<Record<string, RecoveryVenue>>;
+  batchId: string;
+  now?: number;
+}): Promise<AutomaticInventoryNoFillReconciliation> {
+  const { repository, adapters, batchId } = input;
+  const now = input.now ?? Date.now();
+  const execution = repository.db
+    .prepare(
+      `SELECT id, strategy, status, opened_at, closed_at, metadata_json
+       FROM executions WHERE batch_id = ?`,
+    )
+    .get(batchId) as
+    | {
+        id: number;
+        strategy: string;
+        status: string;
+        opened_at: number;
+        closed_at: number | null;
+        metadata_json: string | null;
+      }
+    | undefined;
+  if (!execution) throw new Error(`execution not found: ${batchId}`);
+  if (execution.strategy !== 'SEED') throw new Error(`execution ${batchId} is not SEED`);
+  if (execution.status !== 'SEED_UNKNOWN') {
+    throw new Error(`execution ${batchId} is ${execution.status}, not SEED_UNKNOWN`);
+  }
+  if (execution.closed_at !== null) throw new Error(`execution ${batchId} is already closed`);
+  if (repository.countOpenExecutions() !== 1) {
+    throw new Error('reconciliation requires exactly one open execution');
+  }
+
+  const metadata = metadataObject(execution.metadata_json);
+  const venueId = typeof metadata.venueId === 'string' ? metadata.venueId : '';
+  const base = typeof metadata.base === 'string' ? metadata.base.toUpperCase() : '';
+  const quote = typeof metadata.quote === 'string' ? metadata.quote.toUpperCase() : '';
+  const baseBalanceBefore =
+    typeof metadata.baseBalanceBefore === 'string' ? metadata.baseBalanceBefore : '';
+  const quoteBalanceBefore =
+    typeof metadata.quoteBalanceBefore === 'string' ? metadata.quoteBalanceBefore : '';
+  if (!venueId || !base || !quote || !baseBalanceBefore || !quoteBalanceBefore) {
+    throw new Error('seed metadata is incomplete');
+  }
+  const bundle = adapters[venueId];
+  if (!bundle) throw new Error(`no adapter for ${venueId}`);
+
+  const orderRow = repository.db
+    .prepare(
+      `SELECT client_order_id, venue_order_id, symbol, side, type, price, amount,
+              filled_amount, average_price, fee, status
+       FROM orders WHERE execution_id = ? ORDER BY id LIMIT 1`,
+    )
+    .get(execution.id) as
+    | {
+        client_order_id: string;
+        venue_order_id: string | null;
+        symbol: string;
+        side: string;
+        type: string;
+        price: string;
+        amount: string;
+        filled_amount: string;
+        average_price: string | null;
+        fee: string | null;
+        status: string;
+      }
+    | undefined;
+  if (!orderRow) throw new Error('seed order row is missing');
+  if (orderRow.status !== 'unknown') {
+    throw new Error(`seed order is ${orderRow.status}, not unknown`);
+  }
+
+  const openOrders = await fetchOpenOrdersForSymbols(bundle.adapter, bundle.credentials, [
+    orderRow.symbol,
+  ]);
+  if (openOrders.errors.length > 0) {
+    throw new Error(`open-order query failed: ${openOrders.errors.join('; ')}`);
+  }
+  if (openOrders.orders.length > 0) {
+    throw new Error('open orders exist; seed cannot be closed as no-fill');
+  }
+
+  let exchangeOrder: OrderState | undefined;
+  if (typeof bundle.adapter.fetchOrder !== 'function') {
+    throw new Error('order lookup is unavailable');
+  }
+  try {
+    exchangeOrder = await bundle.adapter.fetchOrder(
+      {
+        clientOrderId: orderRow.client_order_id,
+        symbol: orderRow.symbol,
+        ...(orderRow.venue_order_id ? { venueOrderId: orderRow.venue_order_id } : {}),
+      },
+      bundle.credentials,
+    );
+  } catch (error) {
+    if (!isOrderNotFoundOrInvalidId(error)) {
+      throw new Error(`order lookup failed: ${String(error)}`);
+    }
+  }
+  if (exchangeOrder) {
+    repository.recordOrder({
+      venueId,
+      venueOrderId: exchangeOrder.venueOrderId,
+      clientOrderId: orderRow.client_order_id,
+      executionId: execution.id,
+      symbol: exchangeOrder.symbol,
+      side: exchangeOrder.side,
+      type: exchangeOrder.type,
+      price: exchangeOrder.price ?? new Decimal(orderRow.price),
+      amount: exchangeOrder.amount,
+      filledAmount: exchangeOrder.filled,
+      ...(exchangeOrder.averagePrice ? { averagePrice: exchangeOrder.averagePrice } : {}),
+      ...(exchangeOrder.fee ? { fee: exchangeOrder.fee } : {}),
+      status: exchangeOrder.status,
+      now,
+    });
+    repository.recordOrderEvent(
+      orderRow.client_order_id,
+      'seed_no_fill_reconcile_query',
+      {
+        at: now,
+        status: exchangeOrder.status,
+        filled: exchangeOrder.filled.toFixed(),
+        remaining: exchangeOrder.remaining.toFixed(),
+      },
+      now,
+    );
+    if (exchangeOrder.filled.gt(0)) {
+      throw new Error('seed order has a fill; use manual inventory reconciliation');
+    }
+    if (exchangeOrder.status !== 'canceled' && exchangeOrder.status !== 'rejected') {
+      throw new Error(`seed order is ${exchangeOrder.status}; cannot close as no-fill`);
+    }
+  }
+
+  const rows = await freshBalances(repository, bundle, now);
+  const baseRow = findBalance(rows, venueId, base);
+  const quoteRow = findBalance(rows, venueId, quote);
+  if (!baseRow || !quoteRow) throw new Error('current seed balances are missing');
+  const tolerance = new Decimal('0.00000001');
+  if (
+    baseRow.free.minus(new Decimal(baseBalanceBefore)).abs().gt(tolerance) ||
+    quoteRow.free.minus(new Decimal(quoteBalanceBefore)).abs().gt(tolerance)
+  ) {
+    throw new Error('seed balances changed; possible fill requires manual review');
+  }
+
+  const resolvedAt = Date.now();
+  repository.recordOrder({
+    venueId,
+    ...(orderRow.venue_order_id ? { venueOrderId: orderRow.venue_order_id } : {}),
+    clientOrderId: orderRow.client_order_id,
+    executionId: execution.id,
+    symbol: orderRow.symbol,
+    side: orderRow.side,
+    type: orderRow.type,
+    price: new Decimal(orderRow.price),
+    amount: new Decimal(orderRow.amount),
+    filledAmount: ZERO,
+    status: 'canceled',
+    now: resolvedAt,
+  });
+  repository.updateExecutionLeg(orderRow.client_order_id, {
+    status: 'canceled',
+    filledAmount: ZERO,
+  });
+  const context = {
+    batchId,
+    executionId: execution.id,
+    previousStatus: execution.status,
+    venueId,
+    base,
+    quote,
+    baseFree: baseRow.free.toFixed(),
+    quoteFree: quoteRow.free.toFixed(),
+    resolution: 'seed_no_fill_reconciled',
+  };
+  repository.updateExecutionStatus(execution.id, 'SEED_REJECTED', {
+    realizedProfit: ZERO,
+    closedAt: resolvedAt,
+    metadata: {
+      ...metadata,
+      resolution: 'seed_no_fill_reconciled',
+      reconciledAt: new Date(resolvedAt).toISOString(),
+      reconciledBy: 'operator',
+      observedBaseFree: baseRow.free.toFixed(),
+      observedQuoteFree: quoteRow.free.toFixed(),
+    },
+  });
+  repository.recordRiskEvent(
+    'warning',
+    'inventory_seed_reconciled_no_fill',
+    'SEED_UNKNOWN closed after zero-fill and unchanged-balance confirmation',
+    context,
+    resolvedAt,
+  );
+  repository.recordAudit('operator', 'inventory_seed_reconciled_no_fill', context, resolvedAt);
+  return {
+    status: 'RECONCILED',
+    batchId,
+    executionId: execution.id,
+    previousStatus: execution.status,
+    venueId,
+    baseFree: baseRow.free.toFixed(),
+    quoteFree: quoteRow.free.toFixed(),
+    reconciledAt: new Date(resolvedAt).toISOString(),
+  };
+}
+
 export async function attemptAutomaticInventorySeed(input: {
   repository: ArbitrageRepository;
   config: ExecutorConfig;
@@ -891,7 +1134,7 @@ export async function attemptAutomaticInventorySeed(input: {
   }
 
   const batchId = `SEED-${plan.base}-${now}-${plan.venueId}-${randomUUID().slice(0, 8)}`;
-  const clientOrderId = `${batchId}-B1`;
+  const clientOrderId = seedClientOrderId(now);
   const executionId = repository.createExecution({
     strategy: 'SEED',
     batchId,

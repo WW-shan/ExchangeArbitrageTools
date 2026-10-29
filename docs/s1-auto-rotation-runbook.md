@@ -92,6 +92,16 @@ USDT of useful base, and uses a 30 bps near-parity band. Unknown or partial seed
 fills open the kill switch and require manual reconciliation. A rejected FOK
 does not open the kill switch; it waits for the retry cooldown.
 
+For a `SEED_UNKNOWN` caused by a pre-submission rejection, verify the exchange
+has no open order and the free balances still match the recorded pre-seed
+snapshot, then run:
+
+```powershell
+npm run seed:reconcile -- --batch <batchId> --confirm <batchId>
+```
+
+The command never submits an order and never clears the kill switch.
+
 Full design: `docs/s1-automatic-inventory-2026-10-30.md`.
 
 ## Reversion preparation

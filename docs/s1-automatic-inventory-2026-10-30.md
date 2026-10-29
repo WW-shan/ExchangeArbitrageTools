@@ -108,7 +108,8 @@ lastSeenAt
 6. 初筛通过后，重新读取两边私有余额，重新计算一次；任何一项变化就放弃。
 7. 检查目标交易所的 open orders，要求为空。
 8. 创建 `SEED` execution 和一条 `buy` leg。
-9. 提交 FOK 限价买单。
+9. 提交 FOK 限价买单。Gate 的 `clientOrderId` 上限是 28 字符，因此订单 ID 使用
+   `SD-<base36-time>-<8hex>`，不再把长 batch id 直接当订单 ID。
 10. 处理终态：
     - 全成交：`CLOSED`，写入 inventory delta、余额快照、审计和 `inventory_seeded` 事件；
     - 明确未成交：`SEED_REJECTED`，不打开 kill switch，等待重试冷却；
@@ -116,6 +117,14 @@ lastSeenAt
     - 结果未知：`SEED_UNKNOWN`，只做有限次数 `fetchOrder` 查询，绝不重新 `createOrder`，打开 kill switch。
 
 `SEED` 的 `realized_profit` 为 0。它不是套利收益，真实成本体现在 inventory delta 和后续卖出 execution 中。
+
+如果结果是 `SEED_UNKNOWN`，先确认交易所没有挂单、余额与建仓前快照一致，再运行：
+
+```powershell
+npm run seed:reconcile -- --batch <batchId> --confirm <batchId>
+```
+
+该命令只关闭确认零成交的 seed，不会重新下单，也不会自动清除 kill switch。
 
 ## 7. 审计字段
 

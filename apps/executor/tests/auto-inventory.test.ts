@@ -11,6 +11,7 @@ import type {
 import {
   attemptAutomaticInventorySeed,
   planAutomaticInventorySeed,
+  reconcileAutomaticInventoryNoFill,
   type InventoryVenueSnapshot,
 } from '../src/auto-inventory.js';
 import type { RecoveryVenue } from '../src/bootstrap.js';
@@ -409,6 +410,7 @@ describe('automatic inventory execution', () => {
     expect(result.killSwitch).toBeUndefined();
     expect(gate.requests).toHaveLength(1);
     expect(gate.requests[0]).toMatchObject({ side: 'buy', timeInForce: 'FOK' });
+    expect(gate.requests[0]!.clientOrderId.length).toBeLessThanOrEqual(28);
     const execution = repository.db
       .prepare('SELECT strategy, status, closed_at FROM executions WHERE batch_id = ?')
       .get(result.batchId!) as { strategy: string; status: string; closed_at: number | null };
@@ -527,6 +529,41 @@ describe('automatic inventory execution', () => {
     expect(execution.status).toBe('CLOSED');
   });
 
+  it('reconciles an unknown seed as no-fill only with unchanged balances', async () => {
+    const {
+      repository,
+      adapters,
+      markets,
+      config: executorConfig,
+      now,
+    } = setup({
+      createError: new Error('network timeout'),
+      fetchOrderError: new Error('order not found'),
+    });
+    const attempted = await attemptAutomaticInventorySeed({
+      repository,
+      config: executorConfig,
+      adapters,
+      markets,
+      pair: executorConfig.autoRotation.pairs[0]!,
+      now,
+    });
+    expect(attempted.status).toBe('UNKNOWN');
+    const reconciled = await reconcileAutomaticInventoryNoFill({
+      repository,
+      adapters,
+      batchId: attempted.batchId!,
+    });
+    expect(reconciled.status).toBe('RECONCILED');
+    expect(repository.countOpenExecutions()).toBe(0);
+    expect(repository.countUnresolvedOrders()).toBe(0);
+    expect(repository.getSetting('kill_switch')).toBe('true');
+    const execution = repository.db
+      .prepare('SELECT status FROM executions WHERE batch_id = ?')
+      .get(attempted.batchId!) as { status: string };
+    expect(execution.status).toBe('SEED_REJECTED');
+  });
+
   it('records a definitive no-fill as rejected without opening the kill switch', async () => {
     const {
       repository,
@@ -551,6 +588,28 @@ describe('automatic inventory execution', () => {
       .prepare('SELECT status FROM executions WHERE batch_id = ?')
       .get(result.batchId!) as { status: string };
     expect(execution.status).toBe('SEED_REJECTED');
+  });
+
+  it('treats an invalid client order id as a definitive rejection', async () => {
+    const {
+      repository,
+      adapters,
+      markets,
+      config: executorConfig,
+      now,
+    } = setup({
+      createError: new Error('BadRequest: clientOrderId or text param must be up to 28 characters'),
+    });
+    const result = await attemptAutomaticInventorySeed({
+      repository,
+      config: executorConfig,
+      adapters,
+      markets,
+      pair: executorConfig.autoRotation.pairs[0]!,
+      now,
+    });
+    expect(result.status).toBe('REJECTED');
+    expect(repository.getSetting('kill_switch')).toBe('false');
   });
 
   it('stops on a partial seed fill', async () => {

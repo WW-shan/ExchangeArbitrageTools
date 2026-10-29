@@ -70,7 +70,8 @@
     "execution:reconcile": "tsx apps/executor/src/reconcile-cli.ts",
     "hedge:residual": "tsx apps/executor/src/hedge-residual-cli.ts",
     "order:reconcile": "tsx scripts/reconcile-order.ts",
-    "executor:secrets:bitget": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/import-bitget-credential.ps1"
+    "executor:secrets:bitget": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/import-bitget-credential.ps1",
+    "seed:reconcile": "tsx apps/executor/src/seed-reconcile-cli.ts"
   },
   "devDependencies": {
     "@types/node": "^24.10.0",
