@@ -3,6 +3,7 @@ import {
   Decimal,
   ZERO,
   alignAmountDown,
+  bookReceivedAt,
   calculateBuyDepthByQuote,
   canonicalAmountFromExchange,
   canonicalPriceFromExchange,
@@ -22,6 +23,7 @@ import { findMarket } from './runtime.js';
 
 const USD_QUOTES = new Set(['USD', 'USDT', 'USDC', 'FDUSD', 'BUSD', 'DAI']);
 const SEED_BOOK_MAX_AGE_MS = 5_000;
+const SEED_EXCHANGE_TIMESTAMP_MAX_AGE_MS = 60_000;
 const SEED_MAX_ATTEMPTS = 3;
 
 export interface InventoryBalanceView {
@@ -753,11 +755,15 @@ export async function attemptAutomaticInventorySeed(input: {
     if (!result || 'error' in result) {
       return { status: 'WAIT', reasons: [`inventory_book_unavailable:${row.market.venueId}`] };
     }
+    const observedAt = Date.now();
+    if (observedAt - bookReceivedAt(result) > SEED_BOOK_MAX_AGE_MS) {
+      return { status: 'WAIT', reasons: [`inventory_book_received_stale:${row.market.venueId}`] };
+    }
     const validation = validateOrderBook(result, {
       expectedVenueId: row.market.venueId,
       expectedSymbol: row.market.exchangeSymbol,
-      maxAgeMs: Math.min(config.settings.maxOrderbookAgeMs, SEED_BOOK_MAX_AGE_MS),
-      now,
+      maxAgeMs: Math.max(config.settings.maxOrderbookAgeMs, SEED_EXCHANGE_TIMESTAMP_MAX_AGE_MS),
+      now: observedAt,
     });
     if (!validation.valid) {
       return {

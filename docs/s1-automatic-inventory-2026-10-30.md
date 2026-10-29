@@ -45,7 +45,8 @@ base_value_usd = free_base x best_bid
 
 低流动性币的 ask/bid 可能瞬间跳动。为了避免在异常盘口或单边拉升中建仓，自动库存要求：
 
-- 两个交易所的盘口都新鲜且通过 `validateOrderBook`；
+- 两个交易所的盘口都通过 `validateOrderBook`；REST 接收时间必须在 5 秒内，
+  低流动性标的的交易所时间戳允许放宽到 60 秒，但下单前仍会再次检查接收时间；
 - 候选边的最优 ask 在 `min_stable_ms` 内变化不超过 `max_price_drift_bps`；
 - 下单前重新读取两边余额；
 - 使用 FOK 限价单，限价等于目标数量的最差可成交 ask；

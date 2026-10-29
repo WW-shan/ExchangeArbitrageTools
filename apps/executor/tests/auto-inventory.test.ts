@@ -43,12 +43,14 @@ function book(
   ask: string,
   bid: string,
   fetchedAt = Date.now(),
+  exchangeTimestamp?: number,
 ): OrderBookSnapshot {
   return {
     venueId,
     exchangeSymbol: 'WARD/USDT',
     fetchedAt,
     receivedAt: fetchedAt,
+    ...(exchangeTimestamp ? { exchangeTimestamp } : {}),
     bids: [{ price: new Decimal(bid), amount: new Decimal('100000') }],
     asks: [{ price: new Decimal(ask), amount: new Decimal('100000') }],
     source: 'rest',
@@ -145,6 +147,7 @@ function fakeVenue(input: {
   createError?: Error;
   fetchOrderError?: Error;
   partial?: boolean;
+  exchangeTimestamp?: number;
 }) {
   const requests: OrderRequest[] = [];
   let currentBalances = input.before;
@@ -182,7 +185,8 @@ function fakeVenue(input: {
       fok: true,
     },
     loadMarkets: async () => [market(input.venueId)],
-    fetchOrderBook: async () => book(input.venueId, input.ask, input.bid),
+    fetchOrderBook: async () =>
+      book(input.venueId, input.ask, input.bid, Date.now(), input.exchangeTimestamp),
     fetchBalances: async () => currentBalances.map((row) => ({ ...row, fetchedAt: Date.now() })),
     fetchOpenOrders: async () => [],
     createOrder: async (request) => {
@@ -219,6 +223,7 @@ function setup(
     createError?: Error;
     fetchOrderError?: Error;
     partial?: boolean;
+    exchangeTimestamp?: number;
     inventory?: Partial<ExecutorConfig['autoRotation']['inventory']>;
   } = {},
 ) {
@@ -251,6 +256,7 @@ function setup(
     ...(options.createError ? { createError: options.createError } : {}),
     ...(options.fetchOrderError ? { fetchOrderError: options.fetchOrderError } : {}),
     ...(options.partial ? { partial: true } : {}),
+    ...(options.exchangeTimestamp ? { exchangeTimestamp: options.exchangeTimestamp } : {}),
   });
   const bitget = fakeVenue({
     venueId: 'bitget',
@@ -412,6 +418,29 @@ describe('automatic inventory execution', () => {
       .prepare(`SELECT action FROM audit_logs WHERE action = 'inventory_seed_filled' LIMIT 1`)
       .get() as { action: string };
     expect(audit.action).toBe('inventory_seed_filled');
+  });
+
+  it('accepts a fresh REST book when the exchange timestamp is old on a thin market', async () => {
+    const {
+      repository,
+      adapters,
+      markets,
+      config: executorConfig,
+      gate,
+      now,
+    } = setup({
+      exchangeTimestamp: Date.now() - 45_000,
+    });
+    const result = await attemptAutomaticInventorySeed({
+      repository,
+      config: executorConfig,
+      adapters,
+      markets,
+      pair: executorConfig.autoRotation.pairs[0]!,
+      now,
+    });
+    expect(result.status).toBe('FILLED');
+    expect(gate.requests).toHaveLength(1);
   });
 
   it('does not submit when both sides already have useful inventory', async () => {
