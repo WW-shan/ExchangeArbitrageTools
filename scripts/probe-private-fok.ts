@@ -140,7 +140,10 @@ async function pollOrder(
 ): Promise<OrderState> {
   let current = order;
   for (let attempt = 0; attempt < attempts; attempt += 1) {
-    if (current.status !== 'open') return current;
+    // Bitget's createOrder response only contains the order id, so CCXT
+    // normalizes the initial status to unknown. Always query that state once
+    // before treating the order as terminal.
+    if (current.status !== 'open' && current.status !== 'unknown') return current;
     await sleep(500);
     const query = byClientOrderId
       ? { clientOrderId: current.clientOrderId ?? '', symbol }
