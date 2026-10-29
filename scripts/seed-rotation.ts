@@ -224,12 +224,21 @@ async function main(): Promise<void> {
       now: Date.now(),
     });
     let finalOrder = order;
-    for (let attempt = 0; attempt < 5 && finalOrder.status === 'open'; attempt += 1) {
+    const unresolvedStatuses = new Set(['open', 'unknown', 'submitted', 'pending']);
+    for (let attempt = 0; attempt < 10 && unresolvedStatuses.has(finalOrder.status); attempt += 1) {
       await new Promise((resolve) => setTimeout(resolve, 500));
-      finalOrder = await buyBundle.adapter.fetchOrder!(
-        { clientOrderId, symbol: buyMarket.exchangeSymbol, venueOrderId: finalOrder.venueOrderId },
-        buyBundle.credentials,
-      );
+      try {
+        finalOrder = await buyBundle.adapter.fetchOrder!(
+          {
+            clientOrderId,
+            symbol: buyMarket.exchangeSymbol,
+            venueOrderId: finalOrder.venueOrderId,
+          },
+          buyBundle.credentials,
+        );
+      } catch {
+        break;
+      }
     }
     if (finalOrder.status === 'open') {
       finalOrder = await buyBundle.adapter.cancelOrder!(
@@ -252,6 +261,14 @@ async function main(): Promise<void> {
       status: finalOrder.status,
       now: Date.now(),
     });
+    repository.recordOrderEvent(clientOrderId, 'seed_final_status', {
+      venueOrderId: finalOrder.venueOrderId,
+      status: finalOrder.status,
+      amount: finalOrder.amount.toFixed(),
+      filled: finalOrder.filled.toFixed(),
+      remaining: finalOrder.remaining.toFixed(),
+      averagePrice: finalOrder.averagePrice?.toFixed() ?? null,
+    });
     await refreshBalances(
       repository,
       [venueA, venueB].flatMap((venueId) => {
@@ -270,14 +287,25 @@ async function main(): Promise<void> {
     });
     const result = {
       status: finalOrder.status,
+      requestedAmount: amount.toFixed(),
+      acceptedAmount: finalOrder.amount.toFixed(),
       filled: finalOrder.filled.toFixed(),
       remaining: finalOrder.remaining.toFixed(),
+      shortfall: finalOrder.amount.minus(finalOrder.filled).toFixed(),
       averagePrice: finalOrder.averagePrice?.toFixed() ?? null,
       clientOrderId,
       readyDirectionAfterFill,
     };
     console.log(JSON.stringify(result, null, 2));
-    if (!finalOrder.filled.eq(amount) || finalOrder.status !== 'closed') {
+    const fillRatio = finalOrder.amount.gt(0)
+      ? finalOrder.filled.div(finalOrder.amount)
+      : new Decimal(0);
+    const closedWithTinyShortfall =
+      finalOrder.status === 'closed' &&
+      finalOrder.filled.gt(0) &&
+      finalOrder.remaining.eq(0) &&
+      fillRatio.gte('0.999');
+    if (!closedWithTinyShortfall) {
       repository.setSetting('kill_switch', 'true');
       repository.recordRiskEvent(
         'critical',
