@@ -35,14 +35,14 @@ function market(venueId: string): MarketMetadata {
   };
 }
 
-function book(venueId: string, bid: string): OrderBookSnapshot {
+function book(venueId: string, bid: string, ask = '0.006'): OrderBookSnapshot {
   return {
     venueId,
     exchangeSymbol: 'WARD/USDT',
     fetchedAt: Date.now(),
     receivedAt: Date.now(),
     bids: [{ price: new Decimal(bid), amount: new Decimal('5000') }],
-    asks: [{ price: new Decimal('0.006'), amount: new Decimal('5000') }],
+    asks: [{ price: new Decimal(ask), amount: new Decimal('5000') }],
     source: 'rest',
   };
 }
@@ -73,6 +73,7 @@ function balances(venueId: string, ward: string, usdt: string, freeWard = ward):
 function fakeVenue(input: {
   venueId: string;
   bid: string;
+  ask?: string;
   before: BalanceSnapshot[];
   after?: BalanceSnapshot[];
   createError?: Error;
@@ -114,7 +115,10 @@ function fakeVenue(input: {
       fok: input.venueId === 'bitget',
     },
     loadMarkets: async () => [market(input.venueId)],
-    fetchOrderBook: async () => ({ ...book(input.venueId, input.bid), fetchedAt: nextTimestamp++ }),
+    fetchOrderBook: async () => ({
+      ...book(input.venueId, input.bid, input.ask),
+      fetchedAt: nextTimestamp++,
+    }),
     fetchBalances: async () => {
       const fetchedAt = nextTimestamp++;
       return currentBalances.map((row) => ({ ...row, fetchedAt }));
@@ -147,6 +151,14 @@ function setup(
     createError?: Error;
     bitgetFreeWard?: string;
     gateWard?: string;
+    direction?: 'long' | 'short';
+    baselineWard?: string;
+    baselineQuote?: string;
+    currentWard?: string;
+    afterWard?: string;
+    afterQuote?: string;
+    ask?: string;
+    bid?: string;
   } = {},
 ) {
   const now = Date.now();
@@ -184,18 +196,18 @@ function setup(
     venueId: 'bitget',
     accountId: 'default',
     currency: 'WARD',
-    free: new Decimal(1000),
+    free: new Decimal(options.baselineWard ?? '1000'),
     used: new Decimal(0),
-    total: new Decimal(1000),
+    total: new Decimal(options.baselineWard ?? '1000'),
     fetchedAt: baselineAt,
   });
   repository.recordBalance({
     venueId: 'bitget',
     accountId: 'default',
     currency: 'USDT',
-    free: new Decimal(1000),
+    free: new Decimal(options.baselineQuote ?? '1000'),
     used: new Decimal(0),
-    total: new Decimal(1000),
+    total: new Decimal(options.baselineQuote ?? '1000'),
     fetchedAt: baselineAt,
   });
   const executionId = repository.createExecution({
@@ -213,7 +225,7 @@ function setup(
     asset: 'WARD',
     amount: new Decimal(1000),
     usdValue: new Decimal(4),
-    direction: 'long',
+    direction: options.direction ?? 'long',
     reason: 'leg2_partial_fill',
     createdAt: now - 1000,
   });
@@ -227,9 +239,15 @@ function setup(
   });
   const bitget = fakeVenue({
     venueId: 'bitget',
-    bid: '0.0055',
-    before: balances('bitget', '2000', options.currentQuote ?? '996', options.bitgetFreeWard),
-    after: balances('bitget', '1000', '1001.4945'),
+    bid: options.bid ?? '0.0055',
+    ...(options.ask ? { ask: options.ask } : {}),
+    before: balances(
+      'bitget',
+      options.currentWard ?? '2000',
+      options.currentQuote ?? '996',
+      options.bitgetFreeWard,
+    ),
+    after: balances('bitget', options.afterWard ?? '1000', options.afterQuote ?? '1001.4945'),
     ...(options.createError ? { createError: options.createError } : {}),
   });
   const adapters: Record<string, RecoveryVenue> = {
@@ -303,6 +321,71 @@ describe('automatic residual hedge', () => {
     expect(repository.getSetting('kill_switch')).toBe('true');
   });
 
+  it('buys back a confirmed short residual and reconciles the original execution', async () => {
+    const { repository, adapters, config, bitget } = setup({
+      direction: 'short',
+      baselineWard: '1000',
+      baselineQuote: '1000',
+      currentWard: '0',
+      currentQuote: '1005',
+      afterWard: '1000.00899',
+      afterQuote: '1000.095051',
+      ask: '0.0049',
+      bid: '0.0048',
+    });
+    const result = await attemptAutomaticResidualHedge({
+      repository,
+      config,
+      adapters,
+      batchId,
+    });
+    expect(result.status).toBe('HEDGED');
+    expect(result.attempted).toBe(true);
+    expect(result.realizedProfit?.toFixed()).toBe('0.09509595');
+    expect(bitget.requests).toHaveLength(1);
+    expect(bitget.requests[0]).toMatchObject({ side: 'buy', timeInForce: 'FOK' });
+    expect(repository.openUnhedgedInventory()).toEqual([]);
+    const original = repository.db
+      .prepare('SELECT status, closed_at FROM executions WHERE batch_id = ?')
+      .get(batchId) as { status: string; closed_at: number | null };
+    expect(original).toMatchObject({ status: 'RECONCILED' });
+    expect(original.closed_at).not.toBeNull();
+    const hedge = repository.db
+      .prepare(
+        "SELECT inventory_delta_json, metadata_json FROM executions WHERE strategy='HEDGE' ORDER BY id DESC LIMIT 1",
+      )
+      .get() as { inventory_delta_json: string; metadata_json: string };
+    expect(JSON.parse(hedge.inventory_delta_json)).toMatchObject({
+      baseDelta: '1000.00899',
+      quoteDelta: '-4.904949',
+    });
+    expect(JSON.parse(hedge.metadata_json)).toMatchObject({ direction: 'short' });
+  });
+
+  it('does not buy back a short when the projected loss exceeds the cap', async () => {
+    const { repository, adapters, config, bitget } = setup({
+      direction: 'short',
+      baselineWard: '1000',
+      baselineQuote: '1000',
+      currentWard: '0',
+      currentQuote: '1005',
+      ask: '0.006',
+    });
+    const result = await attemptAutomaticResidualHedge({
+      repository,
+      config,
+      adapters,
+      batchId,
+    });
+    expect(result).toMatchObject({
+      status: 'BLOCKED',
+      attempted: false,
+      reasons: ['no_fok_hedge_candidate_within_limits'],
+    });
+    expect(bitget.requests).toEqual([]);
+    expect(repository.openUnhedgedInventory()).toHaveLength(1);
+  });
+
   it('never sells unrelated inventory on the other venue', async () => {
     const { repository, adapters, config, bitget, gate } = setup({
       bitgetFreeWard: '0',
@@ -317,7 +400,7 @@ describe('automatic residual hedge', () => {
     expect(result).toMatchObject({
       status: 'BLOCKED',
       attempted: false,
-      reasons: ['residual_venue_not_fok_eligible'],
+      reasons: ['residual_base_not_available'],
     });
     expect(bitget.requests).toEqual([]);
     expect(gate.requests).toEqual([]);

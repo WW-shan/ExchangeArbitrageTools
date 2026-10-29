@@ -269,7 +269,7 @@ The executor still re-evaluates the books after the scanner signal. It requires:
 
 - pair in `[[auto_rotation.pairs]]` and notional at or below its limit;
 - valid S1 signal no older than `max_signal_age_ms`;
-- Gate and Hotcoin health A or B;
+- both configured venue health A or B (current live profile: Gate and Bitget);
 - fresh private balance snapshots on both venues;
 - the direction implied by the signal to be fully funded;
 - exchange timestamps within the configured low-liquidity window, with
@@ -281,9 +281,10 @@ The executor still re-evaluates the books after the scanner signal. It requires:
 If leg 1 fills but leg 2 cannot, the existing executor enters SAFE_STOP and
 records unhedged inventory. It does not retry blindly and does not transfer
 funds automatically. A confirmed long residual may receive one automatic FOK
-flatten on the same venue when `[auto_rotation.residual_hedge]` is enabled.
-Unknown orders, mixed assets, stale baselines, partial-only quantity and losses
-above `max_loss_usd` never reach the automatic path.
+sell, and a confirmed short residual one gross-up FOK buy, on the same venue
+when `[auto_rotation.residual_hedge]` is enabled. Unknown orders, mixed assets,
+stale baselines, partial-only quantity and losses above `max_loss_usd` never
+reach the automatic path.
 
 ## SAFE_STOP reconciliation
 

@@ -16,6 +16,7 @@ interface CliOptions {
   dryRun: boolean;
   minProfitUsd: Decimal;
   reconcileHedgeId?: string;
+  configPath?: string;
   help: boolean;
 }
 
@@ -23,6 +24,8 @@ function usage(): string {
   return [
     'Usage: npm run hedge:residual -- --batch <batchId> --confirm <batchId> [--dry-run]',
     '       [--min-profit-usd 0.01]',
+    '       (a negative --min-profit-usd explicitly accepts a bounded loss)',
+    '       [--config config/live-rotation.toml]',
     '       npm run hedge:residual -- --reconcile-hedge <hedgeBatchId>',
     '',
     'Plans and optionally submits one FOK order to flatten a long residual left by',
@@ -48,16 +51,22 @@ function parseArgs(argv: string[]): CliOptions {
       options.dryRun = true;
       continue;
     }
-    if (value === '--batch' || value === '--confirm' || value === '--min-profit-usd') {
+    if (
+      value === '--batch' ||
+      value === '--confirm' ||
+      value === '--min-profit-usd' ||
+      value === '--config'
+    ) {
       const argument = argv[index + 1];
       if (!argument) throw new Error(`${value} requires a value`);
       index += 1;
       if (value === '--batch') options.batchId = argument;
       else if (value === '--confirm') options.confirm = argument;
+      else if (value === '--config') options.configPath = argument;
       else {
         const parsed = new Decimal(argument);
-        if (!parsed.isFinite() || parsed.lt(0)) {
-          throw new Error('--min-profit-usd must be a non-negative decimal');
+        if (!parsed.isFinite() || parsed.lt(-5)) {
+          throw new Error('--min-profit-usd must be a finite decimal at or above -5');
         }
         options.minProfitUsd = parsed;
       }
@@ -79,6 +88,7 @@ function planSummary(plan: ResidualHedgePlan) {
   return {
     originalBatchId: plan.originalBatchId,
     originalExecutionId: plan.originalExecutionId,
+    direction: plan.direction,
     base: plan.base,
     quote: plan.quote,
     residualCanonical: plan.residualCanonical.toFixed(),
@@ -91,9 +101,10 @@ function planSummary(plan: ResidualHedgePlan) {
     exchangePrice: plan.exchangePrice.toFixed(),
     executableQuote: plan.executableQuote.toFixed(),
     grossFeeQuote: plan.grossFeeQuote.toFixed(),
-    netProceedsQuote: plan.netProceedsQuote.toFixed(),
+    netHedgeQuote: plan.netHedgeQuote.toFixed(),
     projectedProfit: plan.projectedProfit.toFixed(),
     freeBase: plan.freeBase.toFixed(),
+    freeQuote: plan.freeQuote.toFixed(),
     bookFetchedAt: plan.book.fetchedAt,
   };
 }
@@ -108,7 +119,9 @@ async function main(): Promise<void> {
     throw new Error(usage());
   }
   const batchId = options.batchId;
-  const config = loadExecutorConfig();
+  const config = loadExecutorConfig(
+    options.configPath ?? process.env.ARB_CONFIG ?? 'config/live-rotation.toml',
+  );
   const masterKey = process.env.ARB_SECRET_STORE_KEY;
   if (!masterKey) throw new Error('ARB_SECRET_STORE_KEY is required');
   const credentials = await loadEncryptedSecretStore(config.secretStorePath, masterKey);

@@ -181,8 +181,9 @@ reduce-only 计划处理。先卖后买失败时，如果没有足够的 base �
 
 1. 真实 Gate/Hotcoin IOC/FOK 行为未验证，配置仍为空；并行 FOK 只有 mock 测试。
 2. 先卖后买串行模式未实现；并行模式已实现但默认关闭，不能当作原子成交。
-3. 已确认的同所多头残留可以做受控自动 flatten；自动补库存、跨所搬运和
-   空头回补仍未实现，只记录 `unhedged_inventory` 和 `rebalance:plan` 计划。
+3. 已确认的同所多头残留可以受控 FOK 卖出，空头残留可以按 base 手续费
+   gross-up 后 FOK 买回；跨所搬运仍未实现，只记录 `unhedged_inventory`
+   和 `rebalance:plan` 计划。
 4. 没有用真实余额限制容量。
 5. 没有足够长的 spread 历史来估计生存时间/回归概率。
 6. 低流动性 REST 快照偶尔 stale；实盘必须用 WS 或执行前重新抓取。

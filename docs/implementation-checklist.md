@@ -112,11 +112,11 @@ Last verified: 2026-10-28 (Asia/Hong_Kong). The clause-by-clause audit is in
       shared canonical quantity, reconciles both orders, and records submission skew. The
       default remains serial and the parallel path has only mock evidence.
 - [x] One-leg-only and partial outcomes enter SAFE_STOP and persist unhedged inventory;
-      no automatic convergence assumption is used. A confirmed long residual may be
+      no automatic convergence assumption is used. Confirmed long or short residual may be
       flattened automatically only on the residual venue, within a configured loss cap,
       after all unknown-order checks pass; the kill switch remains on.
-- [x] Unhedged inventory records `direction=long|short`; `rebalance:plan` hedges only long
-      inventory and reports short inventory separately.
+- [x] Unhedged inventory records `direction=long|short`; automatic residual hedge supports
+      both directions with base-fee gross-up for short buybacks.
 - [x] Capacity is bounded by stored buy-venue quote and sell-venue base balances when
       available; missing or zero balances produce explicit flags and can fail closed with
       `--require-balances`.

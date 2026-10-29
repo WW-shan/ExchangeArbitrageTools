@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import { Decimal, type MarketMetadata, type OrderBookSnapshot } from '@arb/core';
-import { evaluateResidualHedgeCandidate } from '../src/residual-hedge.js';
+import {
+  evaluateResidualHedgeCandidate,
+  evaluateShortResidualHedgeCandidate,
+} from '../src/residual-hedge.js';
 
 const market: MarketMetadata = {
   venueId: 'bitget',
@@ -92,6 +95,42 @@ describe('residual hedge planning', () => {
         residualCanonical: new Decimal('500'),
         costPerCanonical: new Decimal('0.004'),
         freeBase: new Decimal('400'),
+        grossFeeBps: new Decimal('10'),
+        minProfitUsd: new Decimal('0.01'),
+      }),
+    ).toBeUndefined();
+  });
+
+  it('buys back a short residual using the worst consumed ask and quote cash', () => {
+    const candidate = evaluateShortResidualHedgeCandidate({
+      venueId: 'bitget',
+      market,
+      book: book(),
+      residualCanonical: new Decimal('500'),
+      proceedsPerCanonical: new Decimal('0.006'),
+      freeQuote: new Decimal('1000'),
+      grossFeeBps: new Decimal('10'),
+      minProfitUsd: new Decimal('0.01'),
+    });
+    expect(candidate).toBeDefined();
+    expect(candidate!.direction).toBe('short');
+    expect(candidate!.exchangeAmount.toFixed()).toBe('500.51');
+    expect(candidate!.exchangePrice.toFixed()).toBe('0.0056');
+    expect(candidate!.executableQuote.toFixed()).toBe('2.802856');
+    expect(candidate!.grossFeeQuote.toFixed()).toBe('0.002802856');
+    expect(candidate!.netHedgeQuote.toFixed()).toBe('2.805658856');
+    expect(candidate!.projectedProfit.toFixed()).toBe('0.194398084');
+  });
+
+  it('fails closed when quote cash cannot cover the short buyback', () => {
+    expect(
+      evaluateShortResidualHedgeCandidate({
+        venueId: 'bitget',
+        market,
+        book: book(),
+        residualCanonical: new Decimal('500'),
+        proceedsPerCanonical: new Decimal('0.006'),
+        freeQuote: new Decimal('2'),
         grossFeeBps: new Decimal('10'),
         minProfitUsd: new Decimal('0.01'),
       }),

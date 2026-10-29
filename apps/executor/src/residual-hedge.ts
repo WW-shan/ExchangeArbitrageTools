@@ -2,8 +2,10 @@ import {
   Decimal,
   ZERO,
   alignAmountDown,
+  calculateBuyDepthByBase,
   calculateSellDepthByBase,
   canonicalAmountFromExchange,
+  ceilToStep,
   exchangeAmountFromCanonical,
   exchangePriceFromCanonical,
   isAligned,
@@ -76,7 +78,7 @@ export interface ResidualHedgePlan {
   quote: string;
   exchangeBase: string;
   baseMultiplier: Decimal;
-  direction: 'long';
+  direction: 'long' | 'short';
   residualCanonical: Decimal;
   costPerCanonical: Decimal;
   costQuote: Decimal;
@@ -88,11 +90,12 @@ export interface ResidualHedgePlan {
   canonicalPrice: Decimal;
   executableQuote: Decimal;
   grossFeeQuote: Decimal;
-  netProceedsQuote: Decimal;
+  netHedgeQuote: Decimal;
   projectedProfit: Decimal;
   book: OrderBookSnapshot;
   balanceBaseline: { base: BalanceSnapshot; quote: BalanceSnapshot };
   freeBase: Decimal;
+  freeQuote: Decimal;
 }
 
 export interface ResidualHedgeResult {
@@ -114,10 +117,12 @@ export interface ResidualHedgeCandidate {
   canonicalPrice: Decimal;
   executableQuote: Decimal;
   grossFeeQuote: Decimal;
-  netProceedsQuote: Decimal;
+  netHedgeQuote: Decimal;
   projectedProfit: Decimal;
   book: OrderBookSnapshot;
   freeBase: Decimal;
+  freeQuote: Decimal;
+  direction: 'long' | 'short';
 }
 
 function decimal(value: string | null | undefined): Decimal {
@@ -197,10 +202,78 @@ export function evaluateResidualHedgeCandidate(input: {
     canonicalPrice,
     executableQuote: depth.executableQuoteAmount,
     grossFeeQuote,
-    netProceedsQuote,
+    netHedgeQuote: netProceedsQuote,
     projectedProfit,
     book: normalized,
     freeBase,
+    freeQuote: ZERO,
+    direction: 'long',
+  };
+}
+
+export function evaluateShortResidualHedgeCandidate(input: {
+  venueId: string;
+  market: MarketMetadata;
+  book: OrderBookSnapshot;
+  residualCanonical: Decimal;
+  proceedsPerCanonical: Decimal;
+  freeQuote: Decimal;
+  grossFeeBps: Decimal;
+  minProfitUsd: Decimal;
+}): ResidualHedgeCandidate | undefined {
+  const { venueId, market, book, residualCanonical, proceedsPerCanonical, freeQuote } = input;
+  if (
+    !market.amountStep ||
+    !market.priceStep ||
+    residualCanonical.lte(0) ||
+    freeQuote.lte(0) ||
+    !proceedsPerCanonical.gt(0)
+  ) {
+    return undefined;
+  }
+  const multiplier = marketBaseMultiplier(market);
+  const normalized = normalizeBookForMarket(book, market);
+  const feeRate = input.grossFeeBps.div(10_000);
+  const netFactor = new Decimal(1).minus(feeRate);
+  if (!netFactor.gt(0)) return undefined;
+  const requestedExchange = exchangeAmountFromCanonical(residualCanonical, multiplier).div(
+    netFactor,
+  );
+  const exchangeAmount = ceilToStep(requestedExchange, market.amountStep);
+  const canonicalAmount = canonicalAmountFromExchange(exchangeAmount, multiplier);
+  if (!exchangeAmount.gt(0) || !canonicalAmount.gt(0)) return undefined;
+  if (market.minAmount && exchangeAmount.lt(market.minAmount)) return undefined;
+  const depth = calculateBuyDepthByBase(normalized, canonicalAmount);
+  if (depth.insufficientDepth || !depth.worstPrice.gt(0)) return undefined;
+  if (market.minNotional && depth.executableQuoteAmount.lt(market.minNotional)) return undefined;
+  const grossFeeQuote = depth.executableQuoteAmount.mul(feeRate);
+  const totalCostQuote = depth.executableQuoteAmount.plus(grossFeeQuote);
+  if (totalCostQuote.gt(freeQuote)) return undefined;
+  const netCanonicalAmount = canonicalAmount.mul(netFactor);
+  if (netCanonicalAmount.lt(residualCanonical)) return undefined;
+  const projectedProfit = proceedsPerCanonical.mul(netCanonicalAmount).minus(totalCostQuote);
+  if (projectedProfit.lt(input.minProfitUsd)) return undefined;
+  const canonicalPrice = depth.worstPrice;
+  const exchangePrice = ceilToStep(
+    exchangePriceFromCanonical(canonicalPrice, multiplier),
+    market.priceStep,
+  );
+  if (!isAligned(exchangePrice, market.priceStep)) return undefined;
+  return {
+    venueId,
+    exchangeSymbol: market.exchangeSymbol,
+    exchangeAmount,
+    canonicalAmount,
+    exchangePrice,
+    canonicalPrice,
+    executableQuote: depth.executableQuoteAmount,
+    grossFeeQuote,
+    netHedgeQuote: totalCostQuote,
+    projectedProfit,
+    book: normalized,
+    freeBase: ZERO,
+    freeQuote,
+    direction: 'short',
   };
 }
 
@@ -259,8 +332,12 @@ export async function planResidualHedge(input: {
     )
     .all(batchId) as unknown as UnhedgedRow[];
   if (unhedged.length === 0) return { status: 'NO_RESIDUAL', reasons: [] };
-  if (unhedged.some((row) => row.direction !== 'long')) {
-    return { status: 'BLOCKED', reasons: ['only_long_residual_hedge_is_supported'] };
+  const direction = unhedged[0]!.direction;
+  if (direction !== 'long' && direction !== 'short') {
+    return { status: 'BLOCKED', reasons: ['unknown_residual_direction'] };
+  }
+  if (unhedged.some((row) => row.direction !== direction)) {
+    return { status: 'BLOCKED', reasons: ['mixed_residual_directions_not_supported'] };
   }
   const asset = unhedged[0]!.asset.trim().toUpperCase();
   if (unhedged.some((row) => row.asset.trim().toUpperCase() !== asset)) {
@@ -301,32 +378,64 @@ export async function planResidualHedge(input: {
     return { status: 'BLOCKED', reasons: ['current_residual_balances_missing'] };
   }
   const multiplier = marketBaseMultiplier(residualVenueData.market);
-  const baseDeltaExchange = currentBase.total.minus(decimal(baselineBase.total));
-  if (!baseDeltaExchange.gt(0))
-    return { status: 'NO_RESIDUAL', reasons: ['base_balance_restored'] };
   const recordedResidual = unhedged.reduce((sum, row) => sum.plus(decimal(row.amount)), ZERO);
-  const residualExchange = Decimal.min(baseDeltaExchange, recordedResidual);
+  let residualExchange: Decimal;
+  if (direction === 'long') {
+    const baseDeltaExchange = currentBase.total.minus(decimal(baselineBase.total));
+    if (!baseDeltaExchange.gt(0)) {
+      return { status: 'NO_RESIDUAL', reasons: ['base_balance_restored'] };
+    }
+    residualExchange = Decimal.min(baseDeltaExchange, recordedResidual);
+  } else {
+    const baseShortfallExchange = decimal(baselineBase.total).minus(currentBase.total);
+    if (!baseShortfallExchange.gt(0)) {
+      return { status: 'NO_RESIDUAL', reasons: ['base_balance_restored'] };
+    }
+    residualExchange = Decimal.min(baseShortfallExchange, recordedResidual);
+  }
   const residualCanonical = residualExchange.mul(multiplier);
-  const quoteCost = decimal(baselineQuote.total).minus(currentQuote.total);
   let costPerCanonical: Decimal;
   let costQuote: Decimal;
-  if (quoteCost.gt(0)) {
-    costPerCanonical = quoteCost.div(residualCanonical);
-    costQuote = quoteCost;
+  if (direction === 'long') {
+    const quoteCost = decimal(baselineQuote.total).minus(currentQuote.total);
+    if (quoteCost.gt(0)) {
+      costPerCanonical = quoteCost.div(residualCanonical);
+      costQuote = quoteCost;
+    } else {
+      const buyLeg = repository.db
+        .prepare(
+          `SELECT leg_number, venue_id, side, filled_amount, average_fill_price, fee_paid
+           FROM execution_legs WHERE execution_id = ? AND side = 'buy' ORDER BY leg_number LIMIT 1`,
+        )
+        .get(execution.id) as LegRow | undefined;
+      const average = decimal(buyLeg?.average_fill_price);
+      if (!average.gt(0)) return { status: 'BLOCKED', reasons: ['cost_basis_missing'] };
+      const feeBps = grossFeeBps(config, residualVenue, residualVenueData.market).div(10_000);
+      const denominator = new Decimal(1).minus(feeBps);
+      if (!denominator.gt(0)) return { status: 'BLOCKED', reasons: ['fee_basis_invalid'] };
+      costPerCanonical = average.div(denominator);
+      costQuote = costPerCanonical.mul(residualCanonical);
+    }
   } else {
-    const buyLeg = repository.db
-      .prepare(
-        `SELECT leg_number, venue_id, side, filled_amount, average_fill_price, fee_paid
-         FROM execution_legs WHERE execution_id = ? AND side = 'buy' ORDER BY leg_number LIMIT 1`,
-      )
-      .get(execution.id) as LegRow | undefined;
-    const average = decimal(buyLeg?.average_fill_price);
-    if (!average.gt(0)) return { status: 'BLOCKED', reasons: ['cost_basis_missing'] };
-    const feeBps = grossFeeBps(config, residualVenue, residualVenueData.market).div(10_000);
-    const denominator = new Decimal(1).minus(feeBps);
-    if (!denominator.gt(0)) return { status: 'BLOCKED', reasons: ['fee_basis_invalid'] };
-    costPerCanonical = average.div(denominator);
-    costQuote = costPerCanonical.mul(residualCanonical);
+    const quoteProceeds = currentQuote.total.minus(decimal(baselineQuote.total));
+    if (quoteProceeds.gt(0)) {
+      costPerCanonical = quoteProceeds.div(residualCanonical);
+      costQuote = quoteProceeds;
+    } else {
+      const sellLeg = repository.db
+        .prepare(
+          `SELECT leg_number, venue_id, side, filled_amount, average_fill_price, fee_paid
+           FROM execution_legs WHERE execution_id = ? AND side = 'sell' ORDER BY leg_number LIMIT 1`,
+        )
+        .get(execution.id) as LegRow | undefined;
+      const average = decimal(sellLeg?.average_fill_price);
+      if (!average.gt(0)) return { status: 'BLOCKED', reasons: ['proceeds_basis_missing'] };
+      const feeBps = grossFeeBps(config, residualVenue, residualVenueData.market).div(10_000);
+      const netFactor = new Decimal(1).minus(feeBps);
+      if (!netFactor.gt(0)) return { status: 'BLOCKED', reasons: ['fee_basis_invalid'] };
+      costPerCanonical = average.mul(netFactor);
+      costQuote = costPerCanonical.mul(residualCanonical);
+    }
   }
 
   const freeBase = findBalance(
@@ -334,8 +443,15 @@ export async function planResidualHedge(input: {
     residualVenue,
     marketExchangeBase(residualVenueData.market),
   )?.free;
-  if (!freeBase || freeBase.lte(0) || !residualVenueData.adapter.capabilities.fok) {
+  const freeQuote = findBalance(residualVenueData.balances, residualVenue, pair.quote)?.free;
+  if (!residualVenueData.adapter.capabilities.fok) {
     return { status: 'BLOCKED', reasons: ['residual_venue_not_fok_eligible'] };
+  }
+  if (direction === 'long' && (!freeBase || freeBase.lte(0))) {
+    return { status: 'BLOCKED', reasons: ['residual_base_not_available'] };
+  }
+  if (direction === 'short' && (!freeQuote || freeQuote.lte(0))) {
+    return { status: 'BLOCKED', reasons: ['residual_quote_not_available'] };
   }
   let book: OrderBookSnapshot;
   try {
@@ -353,16 +469,28 @@ export async function planResidualHedge(input: {
     now: Date.now(),
   });
   if (!validation.valid) return { status: 'BLOCKED', reasons: ['residual_book_stale_or_invalid'] };
-  const chosen = evaluateResidualHedgeCandidate({
-    venueId: residualVenue,
-    market: residualVenueData.market,
-    book: validation.book,
-    residualCanonical,
-    costPerCanonical,
-    freeBase,
-    grossFeeBps: grossFeeBps(config, residualVenue, residualVenueData.market),
-    minProfitUsd,
-  });
+  const chosen =
+    direction === 'long'
+      ? evaluateResidualHedgeCandidate({
+          venueId: residualVenue,
+          market: residualVenueData.market,
+          book: validation.book,
+          residualCanonical,
+          costPerCanonical,
+          freeBase: freeBase!,
+          grossFeeBps: grossFeeBps(config, residualVenue, residualVenueData.market),
+          minProfitUsd,
+        })
+      : evaluateShortResidualHedgeCandidate({
+          venueId: residualVenue,
+          market: residualVenueData.market,
+          book: validation.book,
+          residualCanonical,
+          proceedsPerCanonical: costPerCanonical,
+          freeQuote: freeQuote!,
+          grossFeeBps: grossFeeBps(config, residualVenue, residualVenueData.market),
+          minProfitUsd,
+        });
   if (!chosen) {
     return { status: 'BLOCKED', reasons: ['no_fok_hedge_candidate_within_limits'] };
   }
@@ -387,7 +515,7 @@ export async function planResidualHedge(input: {
       quote: pair.quote,
       exchangeBase: marketExchangeBase(chosenVenue.market),
       baseMultiplier: marketBaseMultiplier(chosenVenue.market),
-      direction: 'long',
+      direction,
       residualCanonical,
       costPerCanonical,
       costQuote,
@@ -399,11 +527,12 @@ export async function planResidualHedge(input: {
       canonicalPrice: chosen.canonicalPrice,
       executableQuote: chosen.executableQuote,
       grossFeeQuote: chosen.grossFeeQuote,
-      netProceedsQuote: chosen.netProceedsQuote,
+      netHedgeQuote: chosen.netHedgeQuote,
       projectedProfit: chosen.projectedProfit,
       book: chosen.book,
       balanceBaseline: { base: chosenBase, quote: chosenQuote },
-      freeBase: chosen.freeBase,
+      freeBase: freeBase ?? ZERO,
+      freeQuote: freeQuote ?? ZERO,
     },
   };
 }
@@ -421,12 +550,14 @@ function hedgeMetadata(plan: ResidualHedgePlan, extra: Record<string, unknown> =
     quote: plan.quote,
     exchangeBase: plan.exchangeBase,
     baseMultiplier: plan.baseMultiplier.toFixed(),
+    direction: plan.direction,
     residualCanonical: plan.residualCanonical.toFixed(),
     costPerCanonical: plan.costPerCanonical.toFixed(),
     exchangeAmount: plan.exchangeAmount.toFixed(),
     canonicalAmount: plan.canonicalAmount.toFixed(),
     exchangePrice: plan.exchangePrice.toFixed(),
     executableQuote: plan.executableQuote.toFixed(),
+    netHedgeQuote: plan.netHedgeQuote.toFixed(),
     projectedProfit: plan.projectedProfit.toFixed(),
     ...extra,
   };
@@ -442,6 +573,8 @@ interface HedgeMetadata {
   exchangeBase?: string;
   exchangeSymbol?: string;
   baseMultiplier?: string;
+  direction?: 'long' | 'short';
+  residualCanonical?: string;
   costPerCanonical: string;
   exchangeAmount: string;
 }
@@ -488,14 +621,59 @@ function finalizeHedgeFill(input: {
   if (!baselineBase || !baselineQuote || !afterBase || !afterQuote) {
     return { status: 'BLOCKED', reasons: ['hedge_balance_reconciliation_missing'] };
   }
-  const baseSold = decimal(baselineBase.total).minus(afterBase.total);
-  const baseSoldCanonical = canonicalAmountFromExchange(baseSold, multiplier);
-  const proceeds = afterQuote.total.minus(decimal(baselineQuote.total));
-  if (!baseSoldCanonical.gt(0) || !proceeds.gt(0)) {
+  const direction = metadata.direction ?? 'long';
+  if (
+    (direction === 'long' && order.side !== 'sell') ||
+    (direction === 'short' && order.side !== 'buy')
+  ) {
+    return { status: 'BLOCKED', reasons: ['hedge_order_side_direction_mismatch'] };
+  }
+  const baseDeltaExchange =
+    direction === 'long'
+      ? decimal(baselineBase.total).minus(afterBase.total)
+      : afterBase.total.minus(decimal(baselineBase.total));
+  const baseDeltaCanonical = canonicalAmountFromExchange(baseDeltaExchange, multiplier);
+  const quoteDelta =
+    direction === 'long'
+      ? afterQuote.total.minus(decimal(baselineQuote.total))
+      : decimal(baselineQuote.total).minus(afterQuote.total);
+  if (!baseDeltaCanonical.gt(0) || !quoteDelta.gt(0)) {
     return { status: 'BLOCKED', reasons: ['hedge_balance_delta_not_plausible'] };
   }
+  const plannedResidual = new Decimal(metadata.residualCanonical ?? metadata.exchangeAmount);
+  if (direction === 'short' && baseDeltaCanonical.lt(plannedResidual)) {
+    repository.updateExecutionStatus(hedgeExecution.id, 'HEDGE_PARTIAL', {
+      safeModeReason: 'hedge_net_residual_remains',
+      metadata: {
+        ...metadata,
+        direction,
+        orderStatus: order.status,
+        orderId: order.venueOrderId,
+        plannedResidualCanonical: plannedResidual.toFixed(),
+        netBaseDeltaCanonical: baseDeltaCanonical.toFixed(),
+      },
+    });
+    repository.recordRiskEvent(
+      'critical',
+      'hedge_net_residual_remains',
+      'short hedge filled gross but fees left part of the short open',
+      {
+        batchId: metadata.originalBatchId,
+        hedgeBatchId: hedgeExecution.batch_id,
+        hedgeExecutionId: hedgeExecution.id,
+        venueId: metadata.hedgeVenue,
+        plannedResidualCanonical: plannedResidual.toFixed(),
+        netBaseDeltaCanonical: baseDeltaCanonical.toFixed(),
+      },
+      now,
+    );
+    return { status: 'BLOCKED', reasons: ['hedge_net_residual_remains'], order };
+  }
   const costPerCanonical = new Decimal(metadata.costPerCanonical);
-  const realizedProfit = proceeds.minus(costPerCanonical.mul(baseSoldCanonical));
+  const realizedProfit =
+    direction === 'long'
+      ? quoteDelta.minus(costPerCanonical.mul(baseDeltaCanonical))
+      : costPerCanonical.mul(baseDeltaCanonical).minus(quoteDelta);
   const grossSpread = realizedProfit;
   const closedAt = now;
   const clientOrderId = order.clientOrderId ?? `${hedgeExecution.batch_id}-H1`;
@@ -514,17 +692,21 @@ function finalizeHedgeFill(input: {
     latencyMs: Math.max(0, closedAt - hedgeExecution.opened_at),
     inventoryDelta: {
       baseAsset: metadata.base,
-      baseDelta: baseSoldCanonical.negated().toFixed(),
+      baseDelta: (direction === 'long'
+        ? baseDeltaCanonical.negated()
+        : baseDeltaCanonical
+      ).toFixed(),
       quoteAsset: metadata.quote,
-      quoteDelta: proceeds.toFixed(),
+      quoteDelta: (direction === 'long' ? quoteDelta : quoteDelta.negated()).toFixed(),
     },
     metadata: {
       ...metadata,
+      direction,
       orderStatus: order.status,
       orderId: order.venueOrderId,
-      baseSold: baseSold.toFixed(),
-      baseSoldCanonical: baseSoldCanonical.toFixed(),
-      proceeds: proceeds.toFixed(),
+      baseDeltaExchange: baseDeltaExchange.toFixed(),
+      baseDeltaCanonical: baseDeltaCanonical.toFixed(),
+      settlementQuote: quoteDelta.toFixed(),
       realizedProfit: realizedProfit.toFixed(),
     },
   });
@@ -542,9 +724,10 @@ function finalizeHedgeFill(input: {
       hedgeBatchId: hedgeExecution.batch_id,
       hedgeExecutionId: hedgeExecution.id,
       hedgeOrderId: order.venueOrderId,
-      baseSold: baseSold.toFixed(),
-      baseSoldCanonical: baseSoldCanonical.toFixed(),
-      proceeds: proceeds.toFixed(),
+      direction,
+      baseDeltaExchange: baseDeltaExchange.toFixed(),
+      baseDeltaCanonical: baseDeltaCanonical.toFixed(),
+      settlementQuote: quoteDelta.toFixed(),
       realizedProfit: realizedProfit.toFixed(),
     },
   });
@@ -742,11 +925,12 @@ export async function executeResidualHedge(input: {
   }
   const hedgeBatchId = `HEDGE-${batchId}-${now}`;
   const clientOrderId = `${hedgeBatchId}-H1`;
+  const hedgeSide: 'buy' | 'sell' = plan.direction === 'long' ? 'sell' : 'buy';
   const hedgeExecutionId = repository.createExecution({
     strategy: 'HEDGE',
     batchId: hedgeBatchId,
     status: 'HEDGE_SUBMITTING',
-    plannedNotional: plan.netProceedsQuote,
+    plannedNotional: plan.netHedgeQuote,
     expectedProfit: plan.projectedProfit,
     openedAt: now,
     metadata: hedgeMetadata(plan, { origin }),
@@ -755,7 +939,7 @@ export async function executeResidualHedge(input: {
     executionId: hedgeExecutionId,
     legNumber: 1,
     venueId: plan.venueId,
-    side: 'sell',
+    side: hedgeSide,
     requestedAmount: plan.exchangeAmount,
     requestedPrice: plan.exchangePrice,
     status: 'submitting',
@@ -767,7 +951,7 @@ export async function executeResidualHedge(input: {
     clientOrderId,
     executionId: hedgeExecutionId,
     symbol: plan.exchangeSymbol,
-    side: 'sell',
+    side: hedgeSide,
     type: 'limit',
     price: plan.exchangePrice,
     amount: plan.exchangeAmount,
@@ -781,7 +965,7 @@ export async function executeResidualHedge(input: {
     {
       at: now,
       symbol: plan.exchangeSymbol,
-      side: 'sell',
+      side: hedgeSide,
       type: 'limit',
       amount: plan.exchangeAmount.toFixed(),
       price: plan.exchangePrice.toFixed(),
@@ -796,7 +980,7 @@ export async function executeResidualHedge(input: {
     order = await bundle.adapter.createOrder!(
       {
         symbol: plan.exchangeSymbol,
-        side: 'sell',
+        side: hedgeSide,
         type: 'limit',
         amount: plan.exchangeAmount,
         price: plan.exchangePrice,
@@ -813,7 +997,7 @@ export async function executeResidualHedge(input: {
       clientOrderId,
       executionId: hedgeExecutionId,
       symbol: plan.exchangeSymbol,
-      side: 'sell',
+      side: hedgeSide,
       type: 'limit',
       price: plan.exchangePrice,
       amount: plan.exchangeAmount,
@@ -993,6 +1177,8 @@ export async function executeResidualHedge(input: {
     exchangeBase: plan.exchangeBase,
     exchangeSymbol: plan.exchangeSymbol,
     baseMultiplier: plan.baseMultiplier.toFixed(),
+    direction: plan.direction,
+    residualCanonical: plan.residualCanonical.toFixed(),
     costPerCanonical: plan.costPerCanonical.toFixed(),
     exchangeAmount: plan.exchangeAmount.toFixed(),
   };
