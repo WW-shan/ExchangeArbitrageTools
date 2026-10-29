@@ -142,6 +142,9 @@ async function main(): Promise<void> {
   );
 
   const enabled = config.scanner.enabledVenues;
+  const executionVenues = enabled.filter(
+    (venue) => !config.scanner.monitorOnlyVenues.includes(venue),
+  );
   const effectiveFees = mergeAccountFeeFile(config.fees, config.scanner.feeFile);
   const missingFees = missingFeeOverrideVenues(enabled, effectiveFees);
   if (missingFees.length === 0) {
@@ -186,7 +189,7 @@ async function main(): Promise<void> {
 
   if (executor) {
     const timeInForceVenues = new Set([...executor.iocVenues, ...executor.fokVenues]);
-    const missingTimeInForce = enabled.filter((venue) => !timeInForceVenues.has(venue));
+    const missingTimeInForce = executionVenues.filter((venue) => !timeInForceVenues.has(venue));
     add(
       'execution.ioc_fok_venues',
       missingTimeInForce.length === 0 ? 'pass' : config.execution.liveEnabled ? 'block' : 'warn',
@@ -195,7 +198,7 @@ async function main(): Promise<void> {
         : `no IOC/FOK mode yet for: ${missingTimeInForce.join(',')}`,
     );
     if (executor.legMode === 'parallel_fok') {
-      const missingFok = enabled.filter((venue) => !executor.fokVenues.includes(venue));
+      const missingFok = executionVenues.filter((venue) => !executor.fokVenues.includes(venue));
       add(
         'execution.parallel_fok_venues',
         missingFok.length === 0 ? 'pass' : config.execution.liveEnabled ? 'block' : 'warn',
@@ -245,7 +248,7 @@ async function main(): Promise<void> {
     );
     const health = repository.latestHealth();
     const byVenue = new Map(health.map((row) => [String(row.venue_id), row]));
-    const notExecutionEnabled = enabled.filter((venue) => {
+    const notExecutionEnabled = executionVenues.filter((venue) => {
       const row = byVenue.get(venue);
       return !row || Number(row.execution_enabled) !== 1;
     });
@@ -300,7 +303,7 @@ async function main(): Promise<void> {
           ? 'withdrawal credentials use separate API keys'
           : `withdrawal shares trade API key: ${sharedWithdrawalKeys.slice(0, 10).join(',')}`,
       );
-      const missingTrade = enabled.filter((venue) => !keys.has(`${venue}:trade`));
+      const missingTrade = executionVenues.filter((venue) => !keys.has(`${venue}:trade`));
       add(
         'secrets.trade_coverage',
         missingTrade.length === 0 ? 'pass' : 'block',
@@ -310,7 +313,9 @@ async function main(): Promise<void> {
               missingTrade.length > 10 ? ',...' : ''
             }`,
       );
-      const missingReadOnly = enabled.filter((venue) => !keys.has(`${venue}:read_only`));
+      const missingReadOnly = executionVenues.filter(
+        (venue) => !keys.has(`${venue}:read_only`) && !keys.has(`${venue}:trade`),
+      );
       add(
         'secrets.read_only_coverage',
         missingReadOnly.length === 0
@@ -319,8 +324,8 @@ async function main(): Promise<void> {
             ? 'block'
             : 'warn',
         missingReadOnly.length === 0
-          ? 'all enabled venues have read_only credentials'
-          : `missing read_only credentials for balance-aware S1: ${missingReadOnly
+          ? 'all execution venues have read-only or trade credentials'
+          : `missing read-only or trade credentials for balance-aware S1: ${missingReadOnly
               .slice(0, 10)
               .join(',')}${missingReadOnly.length > 10 ? ',...' : ''}`,
       );
@@ -411,32 +416,49 @@ async function main(): Promise<void> {
       : enabled;
     const probes: VenueProbe[] = [];
     for (const venueId of ids) probes.push(await probeVenue(venueId, timeoutMs));
-    const restOk = probes.filter((probe) => probe.restOk);
-    const wsOk = probes.filter((probe) => probe.wsOk);
-    const failed = probes.filter((probe) => !probe.restOk).map((probe) => probe.venueId);
-    const wsFailed = probes.filter((probe) => !probe.wsOk).map((probe) => probe.venueId);
     const websocketRequired = config.scanner.feedMode === 'websocket';
     const tickersRequired = config.scanner.assetUniverseMode === 'top_volume';
-    const tickersOk = probes.filter((probe) => probe.tickersOk);
-    const tickersFailed = probes.filter((probe) => !probe.tickersOk).map((probe) => probe.venueId);
+    const required = probes.filter((probe) => executionVenues.includes(probe.venueId));
+    const monitorOnly = probes.filter((probe) => !executionVenues.includes(probe.venueId));
+    const requiredRestFailed = required
+      .filter((probe) => !probe.restOk)
+      .map((probe) => probe.venueId);
+    const requiredWsFailed = required.filter((probe) => !probe.wsOk).map((probe) => probe.venueId);
+    const requiredTickersFailed = required
+      .filter((probe) => !probe.tickersOk)
+      .map((probe) => probe.venueId);
+    const monitorOnlyFailures = monitorOnly
+      .filter(
+        (probe) =>
+          !probe.restOk ||
+          (websocketRequired && !probe.wsOk) ||
+          (tickersRequired && !probe.tickersOk),
+      )
+      .map((probe) => probe.venueId);
     const networkOk =
-      restOk.length === ids.length &&
-      (!websocketRequired || wsOk.length === ids.length) &&
-      (!tickersRequired || tickersOk.length === ids.length);
+      requiredRestFailed.length === 0 &&
+      (!websocketRequired || requiredWsFailed.length === 0) &&
+      (!tickersRequired || requiredTickersFailed.length === 0);
     add(
       'network.venues',
       networkOk ? 'pass' : 'block',
-      `${restOk.length}/${ids.length} REST ok, ${wsOk.length}/${ids.length} WS ok, ${
-        tickersOk.length
-      }/${ids.length} tickers ok${failed.length > 0 ? `; REST failed: ${failed.join(',')}` : ''}${
-        websocketRequired && wsFailed.length > 0
-          ? `; WS required and failed: ${wsFailed.join(',')}`
+      `${required.length - requiredRestFailed.length}/${required.length} execution REST ok, ${
+        required.length - requiredWsFailed.length
+      }/${required.length} execution WS ok, ${
+        required.length - requiredTickersFailed.length
+      }/${required.length} execution tickers ok${
+        requiredRestFailed.length > 0
+          ? `; execution REST failed: ${requiredRestFailed.join(',')}`
           : ''
       }${
-        tickersRequired && tickersFailed.length > 0
-          ? `; tickers required and failed: ${tickersFailed.join(',')}`
+        websocketRequired && requiredWsFailed.length > 0
+          ? `; execution WS failed: ${requiredWsFailed.join(',')}`
           : ''
-      }`,
+      }${
+        tickersRequired && requiredTickersFailed.length > 0
+          ? `; execution tickers failed: ${requiredTickersFailed.join(',')}`
+          : ''
+      }${monitorOnlyFailures.length > 0 ? `; monitor-only unavailable: ${monitorOnlyFailures.join(',')}` : ''}`,
     );
     const output = resolve(arg('--out', 'data/live-readiness.json'));
     mkdirSync(dirname(output), { recursive: true });
@@ -466,6 +488,7 @@ async function main(): Promise<void> {
     generatedAt: new Date().toISOString(),
     configPath,
     enabledVenues: enabled.length,
+    executionVenues: executionVenues.length,
     liveTestReady: summary.liveTestReady,
     blocked: summary.blocked,
     warnings: summary.warnings,
