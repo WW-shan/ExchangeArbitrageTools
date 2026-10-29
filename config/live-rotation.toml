@@ -3,8 +3,11 @@
 # uses the persisted automatic gate.
 
 [scanner]
-# Hotcoin minimums are per symbol. The executor enforces market.minNotional.
-enabled_venues = ['gateio', 'hotcoin']
+# Public monitoring runs on four venues. WEEX and Bitget are monitor-only until
+# their private credentials and execution gates are added; live execution stays
+# on Gate/Hotcoin.
+enabled_venues = ['gateio', 'hotcoin', 'weex', 'bitget']
+monitor_only_venues = ['weex', 'bitget']
 quote_currency = "USDT"
 # Keep the first live batch narrow. Use config/discovery.toml for read-only
 # volume-ranked opportunity discovery.
@@ -173,6 +176,16 @@ allow_shared_trade_withdrawal_key = true
 block_on_ip_whitelist_change = true
 block_on_account_id_change = true
 block_on_account_mode_change = true
+
+# Conservative public taker fees for monitor-only venues. Replace these with
+# account-tier fees before enabling execution on WEEX or Bitget.
+[fees.weex]
+taker_bps = 10
+maker_bps = 10
+
+[fees.bitget]
+taker_bps = 10
+maker_bps = 10
 
 [database]
 path = "data/rotation.sqlite"

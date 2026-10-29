@@ -5,6 +5,7 @@ import { parse } from 'smol-toml';
 
 export interface ScannerConfig {
   enabledVenues: string[];
+  monitorOnlyVenues: string[];
   quoteCurrency: string;
   assetUniverseMode: 'top_volume' | 'explicit';
   maxBaseAssets: number;
@@ -265,9 +266,20 @@ export function loadConfig(path = 'config/default.toml'): AppConfig {
   if (entryGateMode !== 'off' && entryGateMode !== 'percentile') {
     throw new Error('config value entry_gate_mode must be off or percentile');
   }
+  const enabledVenues = stringArray(scanner, 'enabled_venues', ['gateio', 'mexc', 'weex']);
+  const monitorOnlyVenues = stringArray(scanner, 'monitor_only_venues', []);
+  const unknownMonitorOnly = monitorOnlyVenues.filter(
+    (venueId) => !enabledVenues.includes(venueId),
+  );
+  if (unknownMonitorOnly.length > 0) {
+    throw new Error(
+      `monitor_only_venues must be a subset of enabled_venues: ${unknownMonitorOnly.join(',')}`,
+    );
+  }
   const config: AppConfig = {
     scanner: {
-      enabledVenues: stringArray(scanner, 'enabled_venues', ['gateio', 'mexc', 'weex']),
+      enabledVenues,
+      monitorOnlyVenues,
       quoteCurrency,
       assetUniverseMode,
       maxBaseAssets: numberValue(scanner, 'max_base_assets', 100),

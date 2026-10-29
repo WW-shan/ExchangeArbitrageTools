@@ -62,7 +62,11 @@ function adapter(venueId: string, ask: string, bid: string): CexAdapter {
   };
 }
 
-function buildScanner(repo: ArbitrageRepository, requireBalancesForS1: boolean): ScannerService {
+function buildScanner(
+  repo: ArbitrageRepository,
+  requireBalancesForS1: boolean,
+  monitorOnlyVenues: string[] = [],
+): ScannerService {
   const venues: ScannerVenue[] = [
     { adapter: adapter('gateio', '2.500', '2.490'), health: new VenueHealthTracker(), markets: [] },
     { adapter: adapter('mexc', '2.560', '2.550'), health: new VenueHealthTracker(), markets: [] },
@@ -87,6 +91,7 @@ function buildScanner(repo: ArbitrageRepository, requireBalancesForS1: boolean):
     persistSnapshots: false,
     paperSimulation: false,
     requireBalancesForS1,
+    monitorOnlyVenues,
     clock: () => now,
   });
 }
@@ -155,6 +160,48 @@ describe('scanner balance-aware S1 sizing', () => {
     expect(
       rows.some((row) => JSON.parse(row.rejection_reasons).includes('insufficient_balance')),
     ).toBe(true);
+    repo.close();
+  });
+
+  it('keeps monitor-only routes visible without private balances', async () => {
+    const db = openDatabase(':memory:');
+    const repo = new ArbitrageRepository(db);
+    const scanner = buildScanner(repo, true, ['mexc']);
+    await scanner.initialize();
+    const summary = await scanner.scanOnce();
+    expect(summary.validOpportunities).toBeGreaterThanOrEqual(1);
+    const rows = db
+      .prepare(`SELECT metadata_json FROM opportunities WHERE strategy = 'S1' AND valid = 1`)
+      .all() as Array<{ metadata_json: string }>;
+    expect(rows.length).toBeGreaterThanOrEqual(1);
+    const metadata = JSON.parse(rows[0]!.metadata_json) as Record<string, string>;
+    expect(metadata.monitorOnly).toBe('true');
+    expect(metadata.balanceIncomplete).toBe('true');
+    repo.close();
+  });
+
+  it('ignores an undersized balance snapshot on monitor-only routes', async () => {
+    const db = openDatabase(':memory:');
+    const repo = new ArbitrageRepository(db);
+    const scanner = buildScanner(repo, true, ['mexc']);
+    await scanner.initialize();
+    recordBalance(repo, 'gateio', 'USDT', '0.5');
+    recordBalance(repo, 'mexc', 'CAKE', '100');
+    const summary = await scanner.scanOnce();
+    expect(summary.validOpportunities).toBeGreaterThanOrEqual(1);
+    const rows = db
+      .prepare(
+        `SELECT rejection_reasons, metadata_json FROM opportunities WHERE strategy = 'S1' AND valid = 1`,
+      )
+      .all() as Array<{ rejection_reasons: string; metadata_json: string }>;
+    expect(rows.length).toBeGreaterThanOrEqual(1);
+    for (const row of rows) {
+      expect(JSON.parse(row.rejection_reasons)).not.toContain('insufficient_balance');
+      const metadata = JSON.parse(row.metadata_json) as Record<string, string>;
+      expect(metadata.monitorOnly).toBe('true');
+      expect(metadata.balanceCapIgnored).toBe('true');
+      expect(metadata.balanceLimited).toBeUndefined();
+    }
     repo.close();
   });
 });

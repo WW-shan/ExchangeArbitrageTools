@@ -109,6 +109,78 @@ rebate_pct = 70
     }
   });
 
+  it('parses four monitored venues with an explicit monitor-only subset', () => {
+    const directory = mkdtempSync(join(tmpdir(), 'arb-config-monitor-only-'));
+    const path = join(directory, 'monitor-only.toml');
+    try {
+      writeFileSync(
+        path,
+        `
+[scanner]
+enabled_venues = ['gateio', 'hotcoin', 'weex', 'bitget']
+monitor_only_venues = ['weex', 'bitget']
+
+[execution]
+live_enabled = false
+kill_switch = true
+
+[database]
+path = ':memory:'
+
+[api]
+host = '127.0.0.1'
+port = 8787
+
+[fees.weex]
+taker_bps = 10
+maker_bps = 10
+
+[fees.bitget]
+taker_bps = 10
+maker_bps = 10
+`,
+      );
+      const config = loadConfig(path);
+      expect(config.scanner.enabledVenues).toEqual(['gateio', 'hotcoin', 'weex', 'bitget']);
+      expect(config.scanner.monitorOnlyVenues).toEqual(['weex', 'bitget']);
+      expect(config.fees.weex?.takerBps?.toFixed()).toBe('10');
+      expect(config.fees.bitget?.takerBps?.toFixed()).toBe('10');
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects monitor-only venues that are not enabled', () => {
+    const directory = mkdtempSync(join(tmpdir(), 'arb-config-monitor-only-invalid-'));
+    const path = join(directory, 'monitor-only.toml');
+    try {
+      writeFileSync(
+        path,
+        `
+[scanner]
+enabled_venues = ['gateio', 'hotcoin']
+monitor_only_venues = ['weex']
+
+[execution]
+live_enabled = false
+kill_switch = true
+
+[database]
+path = ':memory:'
+
+[api]
+host = '127.0.0.1'
+port = 8787
+`,
+      );
+      expect(() => loadConfig(path)).toThrow(
+        'monitor_only_venues must be a subset of enabled_venues: weex',
+      );
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
   it('rejects an out-of-range fee rebate', () => {
     const directory = mkdtempSync(join(tmpdir(), 'arb-config-rebate-'));
     const path = join(directory, 'fees.toml');

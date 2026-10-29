@@ -184,6 +184,7 @@ export interface ScannerServiceOptions {
   maxVenueSwitches?: number;
   balanceMaxAgeMs?: number;
   requireBalancesForS1?: boolean;
+  monitorOnlyVenues?: string[];
   optimalSizing?: boolean;
   minSizingNotional?: Decimal;
   sizingStep?: Decimal;
@@ -250,6 +251,7 @@ export class ScannerService {
   readonly #maxVenueSwitches: number;
   readonly #balanceMaxAgeMs: number;
   readonly #requireBalancesForS1: boolean;
+  readonly #monitorOnlyVenues: ReadonlySet<string>;
   readonly #optimalSizing: boolean;
   readonly #minSizingNotional: Decimal;
   readonly #sizingStep: Decimal;
@@ -368,6 +370,9 @@ export class ScannerService {
     this.#maxVenueSwitches = Math.max(0, options.maxVenueSwitches ?? 1);
     this.#balanceMaxAgeMs = Math.max(0, options.balanceMaxAgeMs ?? 300_000);
     this.#requireBalancesForS1 = options.requireBalancesForS1 ?? false;
+    this.#monitorOnlyVenues = new Set(
+      (options.monitorOnlyVenues ?? []).map((venueId) => venueId.trim().toLowerCase()),
+    );
     this.#optimalSizing = options.optimalSizing ?? false;
     this.#minSizingNotional = options.minSizingNotional ?? new Decimal(1);
     this.#sizingStep = options.sizingStep ?? new Decimal('0.01');
@@ -820,12 +825,18 @@ export class ScannerService {
             input.quote,
             buyPrice,
           );
-          const cappedNotional = cap.maxNotional
-            ? Decimal.min(this.#requestedNotional, cap.maxNotional)
-            : this.#requestedNotional;
+          const monitorOnlyRoute =
+            this.#monitorOnlyVenues.has(input.buyMarket.venueId) ||
+            this.#monitorOnlyVenues.has(input.sellMarket.venueId);
+          const cappedNotional = monitorOnlyRoute
+            ? this.#requestedNotional
+            : cap.maxNotional
+              ? Decimal.min(this.#requestedNotional, cap.maxNotional)
+              : this.#requestedNotional;
           const insufficientBalance =
-            (cap.missing && this.#requireBalancesForS1) ||
-            (cap.maxNotional !== undefined && cappedNotional.lt(this.#minSizingNotional));
+            !monitorOnlyRoute &&
+            ((cap.missing && this.#requireBalancesForS1) ||
+              (cap.maxNotional !== undefined && cappedNotional.lt(this.#minSizingNotional)));
           const effectiveNotional = cappedNotional.gt(0) ? cappedNotional : this.#minSizingNotional;
           const sizedNotional = Decimal.min(
             effectiveNotional,
@@ -858,6 +869,8 @@ export class ScannerService {
           }
           opportunity.metadata = {
             ...(opportunity.metadata ?? {}),
+            ...(monitorOnlyRoute ? { monitorOnly: 'true', balanceCapIgnored: 'true' } : {}),
+            ...(cap.missing ? { balanceIncomplete: 'true' } : {}),
             depthCapNotional: sizedNotional.toFixed(),
             liquidityMultiple: this.#liquidityMultiple.toFixed(),
             ...(opportunity.buyDepth
@@ -882,7 +895,7 @@ export class ScannerService {
             buyBaseMultiplier: marketBaseMultiplier(sourceBuyMarket).toFixed(),
             sellBaseMultiplier: marketBaseMultiplier(sourceSellMarket).toFixed(),
           };
-          if (cap.maxNotional !== undefined) {
+          if (!monitorOnlyRoute && cap.maxNotional !== undefined) {
             opportunity.metadata = {
               ...(opportunity.metadata ?? {}),
               balanceLimited: String(cap.limited),
@@ -959,7 +972,7 @@ export class ScannerService {
             this.promoteHot(first.venue, first.market, evaluatedAt);
             this.promoteHot(second.venue, second.market, evaluatedAt);
           }
-          if (opportunity.valid && this.#paperSimulation && !duplicateRoute) {
+          if (opportunity.valid && this.#paperSimulation && !duplicateRoute && !monitorOnlyRoute) {
             const buyEntry = opportunity.venueBuy === first.venue.adapter.venueId ? first : second;
             const sellEntry =
               opportunity.venueSell === first.venue.adapter.venueId ? first : second;

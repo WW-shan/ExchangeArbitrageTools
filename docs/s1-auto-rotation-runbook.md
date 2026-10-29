@@ -10,12 +10,15 @@ not a cross-exchange atomic arbitrage strategy.
 The automatic path consists of two processes sharing `data/rotation.sqlite`:
 
 1. `apps/scanner/src/main.ts` maintains WebSocket order books, evaluates both
-   directions of the whitelisted pair, records venue health, and persists valid
-   S1 opportunities.
+   directions of the whitelisted pair on Gate.io, Hotcoin, WEEX and Bitget,
+   records venue health, and persists valid S1 opportunities. WEEX and Bitget
+   signals are explicitly marked `monitorOnly`; they have no private execution
+   credentials in this profile.
 2. `apps/executor/src/main.ts --auto` reads only valid S1 rows for the
-   whitelist, refreshes Gate/Hotcoin private balances, derives the funded
-   rotation direction, and submits one serial FOK batch only when the direction
-   is funded and the signal is fresh.
+   whitelist, rejects every route that is not Gate/Hotcoin, refreshes
+   Gate/Hotcoin private balances, derives the funded rotation direction, and
+   submits one serial FOK batch only when the direction is funded and the signal
+   is fresh. See `docs/s1-four-venue-monitoring.md`.
 
 `scripts/watch-rotation.ps1` is the sole lifecycle manager. It starts the
 executor first, waits for a fresh executor heartbeat, then starts the scanner.
@@ -232,6 +235,43 @@ The executor still re-evaluates the books after the scanner signal. It requires:
 If leg 1 fills but leg 2 cannot, the existing executor enters SAFE_STOP and
 records unhedged inventory. It does not retry blindly and does not transfer
 funds automatically.
+
+## SAFE_STOP reconciliation
+
+A SAFE_STOP deliberately leaves the kill switch on and leaves the execution
+open. Do not edit the database by hand. First refresh private balances and open
+orders:
+
+```powershell
+. .\scripts\load-env.ps1
+$env:ARB_CONFIG = 'config/live-rotation.toml'
+npm run account:state
+```
+
+If the filled long inventory is present and you intend to keep it for the next
+rotation, close the batch with the exact batch id:
+
+```powershell
+npm run execution:reconcile -- --batch <batchId> --carry-inventory --confirm <batchId>
+```
+
+The command verifies that there is exactly one open execution, no unresolved
+orders, a filled leg, open long inventory, and a fresh balance large enough to
+cover that inventory. It then marks the execution `RECONCILED`, closes the
+unhedged row, and writes risk/audit records. It never submits an order and never
+clears the kill switch. If the balance check fails, refresh balances and inspect
+the account before retrying.
+
+After reviewing the output, release the kill switch:
+
+```powershell
+npm run rotation:release -- --confirm RELEASE-KILL-SWITCH
+npm run rotation:start
+```
+
+The carried base becomes ordinary inventory. The next funded rotation can sell
+it on the same venue; this is not a guaranteed hedge and does not realize the
+original trade's expected profit.
 
 ## Relevant configuration
 

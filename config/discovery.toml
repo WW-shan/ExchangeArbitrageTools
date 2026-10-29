@@ -3,7 +3,8 @@
 # It never enables live execution.
 
 [scanner]
-enabled_venues = ['gateio', 'hotcoin']
+enabled_venues = ['gateio', 'hotcoin', 'weex', 'bitget']
+monitor_only_venues = ['weex', 'bitget']
 quote_currency = "USDT"
 asset_universe_mode = "top_volume"
 max_base_assets = 30
@@ -100,3 +101,11 @@ rebate_pct = 70
 taker_bps = 20
 maker_bps = 20
 rebate_pct = 80
+
+[fees.weex]
+taker_bps = 10
+maker_bps = 10
+
+[fees.bitget]
+taker_bps = 10
+maker_bps = 10

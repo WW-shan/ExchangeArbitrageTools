@@ -94,6 +94,12 @@ interface UnfundedCandidate {
   balances: PairBalances;
 }
 
+const ROTATION_EXECUTION_VENUES = new Set(['gateio', 'hotcoin']);
+
+export function isRotationExecutionVenue(venueId: string): boolean {
+  return ROTATION_EXECUTION_VENUES.has(venueId.trim().toLowerCase());
+}
+
 function sleepDefault(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -275,6 +281,13 @@ function actionableCandidate(input: {
     const instrument = splitInstrument(opportunity.instrumentKey);
     if (!pair || !instrument) {
       lastWait = ['pair_not_whitelisted'];
+      continue;
+    }
+    if (
+      !isRotationExecutionVenue(opportunity.venueBuy) ||
+      !isRotationExecutionVenue(opportunity.venueSell)
+    ) {
+      lastWait = [`monitor_only_route:${opportunity.venueBuy}->${opportunity.venueSell}`];
       continue;
     }
     const buyHealth = states.get(opportunity.venueBuy) ?? 'D';

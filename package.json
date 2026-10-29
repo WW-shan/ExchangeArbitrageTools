@@ -65,7 +65,8 @@
     "scan:longtail:test": "tsx scripts/scan-longtail.ts --config config/longtail.toml --bases INC,TBK,HTX --max-bases 10 --detail 10 --out data/longtail-smoke.json",
     "watch:s1": "tsx scripts/scan-longtail.ts --config config/longtail.toml --watchlist config/s1-watchlist.json --min-volume 1 --max-volume 5000000 --max-book-candidates 20 --top 20 --detail 6 --probes 5,10,15,20 --min-notional 15 --max-notional 20",
     "track:spread": "tsx scripts/track-spread.ts --config config/longtail.toml --base TBK --duration-ms 180000 --interval-ms 3000",
-    "probe:ioc-fok": "tsx scripts/probe-private-fok.ts"
+    "probe:ioc-fok": "tsx scripts/probe-private-fok.ts",
+    "execution:reconcile": "tsx apps/executor/src/reconcile-cli.ts"
   },
   "devDependencies": {
     "@types/node": "^24.10.0",

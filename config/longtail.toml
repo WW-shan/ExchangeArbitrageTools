@@ -6,7 +6,8 @@
 # enables live execution.
 
 [scanner]
-enabled_venues = ['gateio', 'hotcoin']
+enabled_venues = ['gateio', 'hotcoin', 'weex', 'bitget']
+monitor_only_venues = ['weex', 'bitget']
 quote_currency = 'USDT'
 quote_currencies = ['USDT']
 # Kept for config compatibility. scan-longtail.ts always uses the low-volume
@@ -106,3 +107,11 @@ rebate_pct = 70
 taker_bps = 20
 maker_bps = 20
 rebate_pct = 80
+
+[fees.weex]
+taker_bps = 10
+maker_bps = 10
+
+[fees.bitget]
+taker_bps = 10
+maker_bps = 10

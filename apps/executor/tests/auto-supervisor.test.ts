@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { Decimal, assessRotationReadiness, type MarketMetadata } from '@arb/core';
 import { ArbitrageRepository, openDatabase } from '@arb/storage';
-import { pairBalances } from '../src/auto-supervisor.js';
+import { isRotationExecutionVenue, pairBalances } from '../src/auto-supervisor.js';
 
 const now = 1_700_000_000_000;
 
@@ -29,6 +29,13 @@ function repositoryWithVenues(): ArbitrageRepository {
 }
 
 describe('rotation balance snapshot', () => {
+  it('allows live execution only on Gate and Hotcoin', () => {
+    expect(isRotationExecutionVenue('gateio')).toBe(true);
+    expect(isRotationExecutionVenue('HOTCOIN')).toBe(true);
+    expect(isRotationExecutionVenue('weex')).toBe(false);
+    expect(isRotationExecutionVenue('bitget')).toBe(false);
+  });
+
   it('treats a missing zero-balance asset as zero when the venue snapshot is fresh', () => {
     const repository = repositoryWithVenues();
     repository.recordBalance({
