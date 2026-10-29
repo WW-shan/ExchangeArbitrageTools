@@ -162,8 +162,10 @@ export class BookStore {
         entry.lastError = String(error);
         this.#onError?.(entry.venueId, entry.symbol, error);
         if (this.#maxReconnectAttempts > 0 && entry.attempts >= this.#maxReconnectAttempts) {
-          entry.stopped = true;
-          return;
+          // Keep recovering after a failed burst, but settle into the slowest
+          // retry interval instead of giving up on the subscription forever.
+          entry.attempts = 0;
+          backoff = this.#reconnectMaxMs;
         }
       }
       if (entry.stopped || this.#closed) return;

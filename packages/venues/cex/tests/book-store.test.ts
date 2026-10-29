@@ -106,4 +106,33 @@ describe('BookStore', () => {
     expect(errors.length).toBeGreaterThanOrEqual(1);
     store.close();
   });
+
+  it('keeps retrying and recovers after the reconnect burst limit', async () => {
+    let attempts = 0;
+    let emit: ((book: OrderBookSnapshot) => void) | undefined;
+    const adapter: CexAdapter = {
+      venueId: 'mexc',
+      tier: 'S',
+      capabilities: capabilities(),
+      loadMarkets: async () => [],
+      fetchOrderBook: async () => {
+        throw new Error('rest unused');
+      },
+      watchOrderBook: async (_symbol, _depth, onBook, signal) => {
+        attempts += 1;
+        if (attempts < 4) throw new Error('socket unavailable');
+        emit = onBook;
+        await waitAbort(signal);
+      },
+    };
+    const store = new BookStore({
+      reconnectMinMs: 5,
+      reconnectMaxMs: 10,
+      maxReconnectAttempts: 2,
+    });
+    store.setSubscriptions([{ venueId: 'mexc', adapter, symbol: 'CAKE/USDT' }]);
+    await vi.waitFor(() => expect(emit).toBeDefined(), { timeout: 2000 });
+    expect(attempts).toBeGreaterThanOrEqual(4);
+    store.close();
+  });
 });
