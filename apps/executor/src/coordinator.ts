@@ -27,6 +27,7 @@ import {
 } from '@arb/core';
 import type { ArbitrageRepository } from '@arb/storage';
 import { accountClosedTrade, type ClosedTradeAccounting } from './profit-accounting.js';
+import { checkNoOpenOrders } from './open-orders.js';
 import type {
   ApiCredentials,
   BalanceSnapshot,
@@ -539,6 +540,26 @@ export class CexLiveExecutor {
       return outcome('PREFLIGHT_FAILED');
     }
     const balanceBaselines = { buy: balances.buy, sell: balances.sell };
+    const openOrderCheck = await checkNoOpenOrders([
+      {
+        adapter: request.buy.adapter,
+        credentials: request.buy.credentials,
+        symbol: request.buy.market.exchangeSymbol,
+      },
+      {
+        adapter: request.sell.adapter,
+        credentials: request.sell.credentials,
+        symbol: request.sell.market.exchangeSymbol,
+      },
+    ]);
+    if (openOrderCheck.orders.length > 0) {
+      return safeStop('open_orders_present');
+    }
+    if (!openOrderCheck.ok) {
+      reasons.push(...openOrderCheck.errors);
+      transition('PREFLIGHT_FAILED');
+      return outcome('PREFLIGHT_FAILED');
+    }
     const preflightAt = this.#clock();
     const decision = this.#gate.preflight({
       requestedNotional: refreshed.requestedNotional,

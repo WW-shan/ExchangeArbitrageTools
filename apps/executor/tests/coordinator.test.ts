@@ -132,6 +132,8 @@ interface FakeOptions {
   createDelayMs?: number;
   concurrency?: { active: number; max: number };
   orderFeeRate?: Decimal;
+  openOrders?: OrderState[];
+  openOrdersError?: Error;
 }
 
 function fakeAdapter(venueId: string, options: FakeOptions = {}) {
@@ -258,6 +260,10 @@ function fakeAdapter(venueId: string, options: FakeOptions = {}) {
         request.clientOrderId,
         ratio.eq(1) ? 'closed' : state.canceled || !partialOpen ? 'canceled' : 'open',
       );
+    },
+    fetchOpenOrders: async () => {
+      if (options.openOrdersError) throw options.openOrdersError;
+      return options.openOrders ?? [];
     },
     cancelOrder: async (request) => {
       state.cancelCalls += 1;
@@ -429,6 +435,68 @@ describe('live executor safety gates', () => {
     expect(buy.state.createCalls).toBe(1);
     expect(sell.state.createCalls).toBe(1);
     expect(repo.countOpenExecutions()).toBe(0);
+    repo.close();
+  });
+
+  it('safe-stops before submission when the exchange reports an external open order', async () => {
+    const external: OrderState = {
+      venueOrderId: 'external-1',
+      clientOrderId: 'external-1',
+      symbol: 'CAKE/USDT',
+      side: 'buy',
+      type: 'limit',
+      price: new Decimal('2.4'),
+      amount: new Decimal(1),
+      filled: new Decimal(0),
+      remaining: new Decimal(1),
+      status: 'open',
+      raw: { source: 'manual' },
+    };
+    const { repo, buy, sell } = setup({ openOrders: [external] });
+    const result = await new CexLiveExecutor({
+      repository: repo,
+      gate: new ExecutionGate(limits),
+      limits,
+      liveEnabled: true,
+      settings,
+      sleep: async () => {},
+      clock: () => now,
+    }).execute(
+      request(
+        { adapter: buy.adapter, market: market('gateio'), credentials: keys, healthState: 'A' },
+        { adapter: sell.adapter, market: market('mexc'), credentials: keys, healthState: 'A' },
+      ),
+    );
+    expect(result.outcome).toBe('SAFE_STOP');
+    expect(result.reasons).toContain('open_orders_present');
+    expect(buy.state.createCalls).toBe(0);
+    expect(sell.state.createCalls).toBe(0);
+    expect(repo.getSetting('kill_switch')).toBe('true');
+    repo.close();
+  });
+
+  it('fails preflight when open-order verification fails', async () => {
+    const { repo, buy, sell } = setup({ openOrdersError: new Error('query timeout') });
+    const result = await new CexLiveExecutor({
+      repository: repo,
+      gate: new ExecutionGate(limits),
+      limits,
+      liveEnabled: true,
+      settings,
+      sleep: async () => {},
+      clock: () => now,
+    }).execute(
+      request(
+        { adapter: buy.adapter, market: market('gateio'), credentials: keys, healthState: 'A' },
+        { adapter: sell.adapter, market: market('mexc'), credentials: keys, healthState: 'A' },
+      ),
+    );
+    expect(result.outcome).toBe('PREFLIGHT_FAILED');
+    expect(result.reasons.some((reason) => reason.startsWith('open_orders_fetch_failed'))).toBe(
+      true,
+    );
+    expect(buy.state.createCalls).toBe(0);
+    expect(sell.state.createCalls).toBe(0);
     repo.close();
   });
 

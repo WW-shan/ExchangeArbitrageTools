@@ -42,33 +42,27 @@ The `--auto` path already has these behaviors:
 Therefore the program does not need a manual balance command for normal
 automatic operation. The manual command is only a diagnostic.
 
-## 3. Missing pieces
+## 3. P0 implemented
 
-### P0: exchange-wide open-order reconciliation
+The first account-state layer is implemented:
 
-The current recovery knows about orders that are already in the local
-database. It does not ask each exchange for all open orders on the whitelisted
-symbols. A manually placed order, an order left by an earlier process, or an
-order created outside this repository would therefore be invisible.
+- `CexAdapter.fetchOpenOrders` is available for Gate through CCXT and for
+  Hotcoin through its current-order endpoint.
+- Startup recovery queries open orders for every configured pair symbol and
+  blocks when an order is found or when the query cannot be completed.
+- The executor checks both venues for open orders immediately before every
+  batch. An external open order triggers `SAFE_STOP`; a failed query blocks the
+  preflight.
+- The auto supervisor refuses to run if either venue cannot verify open orders.
+- `npm run account:state` is a read-only diagnostic that prints balances,
+  funded pair amounts, open orders, local execution counts, and query errors.
+- The supervisor writes an `account_state` log entry after its first successful
+  balance refresh.
 
-Add `fetchOpenOrders(symbol, credentials)` to the CEX adapter contract and
-implement it for Gate and Hotcoin. Before every automatic submission, query
-open orders for both legs' exchange symbols. Any open order that is not the
-current batch must produce `SAFE_STOP`.
+The Hotcoin response shape is normalized from `entrutsCur` (current orders) and
+`entrutsHis` (history). Only `entrutsCur` is used for open-order safety checks.
 
-### P0: explicit account-state snapshot
-
-Add an `AccountStateSnapshot` that records, for each venue:
-
-- balances: asset, free, used, total, fetched time;
-- open orders: client/venue order id, symbol, side, amount, filled amount,
-  price, status;
-- credential role and declared withdrawal permission;
-- API health, last error, and backoff time.
-
-The snapshot must be persisted and audited. The supervisor should log a
-redacted state transition whenever the funded direction changes. Never log API
-keys, secrets, passphrases, or full signed requests.
+## 4. Remaining pieces
 
 ### P1: permissions and account status
 
@@ -101,7 +95,7 @@ path. If the funded direction is unavailable, the supervisor waits. A future
 rebalance service may transfer inventory only with an allowlist, explicit
 arrival evidence, transfer-cost accounting, and a separate manual release.
 
-## 4. State machine
+## 5. State machine
 
 ```text
 STARTING
@@ -128,7 +122,7 @@ EXECUTING
 requirement. It still submits one batch at a time and picks the higher
 risk-adjusted net edge. It never submits both directions concurrently.
 
-## 5. Startup sequence
+## 6. Startup sequence
 
 1. Load `ARB_CONFIG`, the encrypted secret store, and the master key.
 2. Validate credential roles and declared withdrawal permissions.
@@ -145,7 +139,7 @@ risk-adjusted net edge. It never submits both directions concurrently.
 8. Persist an audit record with counts and state, but no secrets.
 9. Start the supervisor only if the state is not `SAFE_STOP`.
 
-## 6. Runtime sequence
+## 7. Runtime sequence
 
 Each loop:
 
@@ -165,7 +159,7 @@ Each loop:
 10. After each fill, refresh balances and open orders immediately; derive the
     next state from the account, not from an in-memory flag.
 
-## 7. Failure policy
+## 8. Failure policy
 
 - Balance API failure: do not trade; retry with backoff.
 - Open-order query failure: do not trade; retry with backoff.
@@ -177,7 +171,7 @@ Each loop:
 - Stale book or stale balance: `WAIT`, not an order.
 - Both directions unfunded: `WAIT`; do not force a transfer or a losing trade.
 
-## 8. Configuration
+## 9. Configuration
 
 The state machine uses existing values where possible:
 
@@ -205,7 +199,7 @@ These are freshness checks, not opportunity caps. They do not reduce the
 number of valid signals; they prevent an order from being submitted against an
 unknown account state.
 
-## 9. Observability
+## 10. Observability
 
 Log one JSON event per state transition:
 
@@ -228,18 +222,18 @@ The dashboard should show the same state, the last balance refresh time, the
 last open-order refresh time, and any SAFE_STOP reason. Telegram/Discord alerts
 are a separate P1 item.
 
-## 10. Implementation order
+## 11. Implementation order
 
-1. Add the adapter-level open-order query and tests for Gate and Hotcoin.
-2. Add the account-state snapshot and startup reconciliation.
-3. Add the pre-submission open-order check.
-4. Add state-transition logging and a read-only `account:state` diagnostic.
-5. Add the Windows watchdog/service and heartbeat.
-6. Add permission/account-status checks where the venues expose them.
-7. Keep automatic transfers deferred until the rebalance design is separately
-   approved.
+1. [x] Add the adapter-level open-order query and tests for Gate and Hotcoin.
+2. [x] Add startup reconciliation for exchange open orders.
+3. [x] Add the pre-submission open-order check.
+4. [x] Add account-state logging and a read-only `account:state` diagnostic.
+5. [ ] Add the Windows watchdog/service and heartbeat.
+6. [ ] Add permission/account-status checks where the venues expose them.
+7. [ ] Keep automatic transfers deferred until the rebalance design is
+       separately approved.
 
-## 11. Acceptance criteria
+## 12. Acceptance criteria
 
 - A cold start with valid credentials reaches `READY_*` or `WAIT` without a
   manual balance command.

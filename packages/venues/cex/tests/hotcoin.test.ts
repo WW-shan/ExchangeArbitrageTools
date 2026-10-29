@@ -455,6 +455,38 @@ describe('Hotcoin private adapter', () => {
     expect(order.remaining.toFixed()).toBe('4');
   });
 
+  it('fetches open orders for a symbol and ignores terminal rows', async () => {
+    const { client, requests } = clientWith((request) => {
+      const url = new URL(request.url);
+      expect(url.pathname).toBe('/v1/order/entrust');
+      expect(url.searchParams.get('symbol')).toBe('cake_usdt');
+      return {
+        code: 200,
+        msg: 'success',
+        time: now,
+        data: {
+          entrutsCur: [{ ...detailRow(1), id: 1, clientOrderId: 'open-1' }],
+          entrutsHis: [{ ...detailRow(3), id: 2, clientOrderId: 'closed-1' }],
+        },
+      };
+    });
+    const adapter = new HotcoinAdapter({
+      httpClient: client,
+      credentials: keys,
+      readOnly: false,
+      clock: () => now,
+    });
+    const orders = await adapter.fetchOpenOrders({ symbol: 'cake_usdt' }, keys);
+    expect(orders).toHaveLength(1);
+    expect(orders[0]).toMatchObject({
+      venueOrderId: '1',
+      clientOrderId: 'open-1',
+      symbol: 'cake_usdt',
+      status: 'open',
+    });
+    expect(requests).toHaveLength(1);
+  });
+
   it('paginates clientOrderId lookups before failing closed', async () => {
     const { client, requests } = clientWith((request) => {
       const url = new URL(request.url);

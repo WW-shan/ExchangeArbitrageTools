@@ -154,7 +154,11 @@ async function main(): Promise<void> {
       return;
     }
     const adapters = adapterMap(repository, config, credentials);
-    const recovery = await recoverExecutorStartup({ repository, venues: adapters });
+    const recovery = await recoverExecutorStartup({
+      repository,
+      venues: adapters,
+      pairs: config.autoRotation.pairs,
+    });
     console.log(JSON.stringify({ mode: 'startup_recovery', ...recovery }, null, 2));
     if (recovery.decision.blockExecution) {
       repository.recordAudit('executor', 'execution_blocked_after_recovery', recovery.decision);

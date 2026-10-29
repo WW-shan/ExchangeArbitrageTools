@@ -22,6 +22,7 @@ export interface VenueCapabilities {
   privateBalances: boolean;
   createOrder: boolean;
   fetchOrder: boolean;
+  openOrders?: boolean;
   cancelOrder: boolean;
   depositAddress?: boolean;
   depositHistory?: boolean;
@@ -130,6 +131,10 @@ export interface OrderQuery {
   symbol?: string;
 }
 
+export interface OpenOrdersQuery {
+  symbol?: string;
+}
+
 export interface BalanceSnapshot {
   venueId: string;
   accountId: string;
@@ -175,6 +180,7 @@ export interface CexAdapter {
   ): Promise<WithdrawalSubmission>;
   createOrder?(request: OrderRequest, keys: ApiCredentials): Promise<OrderState>;
   fetchOrder?(request: OrderQuery, keys: ApiCredentials): Promise<OrderState>;
+  fetchOpenOrders?(request: OpenOrdersQuery, keys: ApiCredentials): Promise<OrderState[]>;
   cancelOrder?(request: OrderQuery, keys: ApiCredentials): Promise<OrderState>;
   close?(): Promise<void>;
 }

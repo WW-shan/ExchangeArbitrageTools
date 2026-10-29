@@ -220,6 +220,8 @@ Enter SAFE_STOP and set the persisted kill switch on when any of these occurs:
 - leg 2 rejection or partial fill;
 - balance mismatch after reconciliation;
 - book stale, crossed, or pair skew too high at submission;
+- exchange open-order query fails or returns an order not owned by the current
+  batch;
 - API permission, withdrawal, or account-status change;
 - daily loss or consecutive-loss limit;
 - two venues disagree about symbol or base identity.

@@ -40,6 +40,7 @@
     "executor:secrets": "tsx apps/executor/src/secrets-cli.ts",
     "executor:venue": "tsx apps/executor/src/venue-cli.ts",
     "executor:balances": "tsx apps/executor/src/balance-cli.ts",
+    "account:state": "tsx apps/executor/src/account-state-cli.ts",
     "check": "npm run lint && npm run test && npm run backtest",
     "probe:venues": "tsx scripts/probe-venues.ts",
     "live:readiness": "tsx scripts/live-readiness.ts",

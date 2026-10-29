@@ -82,6 +82,50 @@ describe('CCXT adapter construction', () => {
     expect(verified.capabilities.fok).toBe(false);
   });
 
+  it('fetches and normalizes open orders for a symbol', async () => {
+    const prototype = (ccxt.gate as unknown as { prototype: Record<string, unknown> }).prototype;
+    const original = prototype.fetchOpenOrders;
+    prototype.fetchOpenOrders = async (symbol: string) => [
+      {
+        id: 'order-1',
+        clientOrderId: 'batch-1',
+        symbol,
+        side: 'buy',
+        type: 'limit',
+        price: 2.5,
+        amount: 10,
+        filled: 0,
+        remaining: 10,
+        status: 'open',
+      },
+    ];
+    try {
+      const adapter = createCcxtAdapter('gateio', createPublicRuntime(1), {
+        credentials: { apiKey: 'key', secret: 'secret' },
+        readOnly: false,
+      });
+      expect(adapter.capabilities.openOrders).toBe(true);
+      const orders = await adapter.fetchOpenOrders!(
+        { symbol: 'CAKE/USDT' },
+        {
+          apiKey: 'key',
+          secret: 'secret',
+        },
+      );
+      expect(orders).toHaveLength(1);
+      expect(orders[0]).toMatchObject({
+        venueOrderId: 'order-1',
+        clientOrderId: 'batch-1',
+        symbol: 'CAKE/USDT',
+        side: 'buy',
+        status: 'open',
+      });
+      expect(orders[0]?.amount.toFixed()).toBe('10');
+    } finally {
+      prototype.fetchOpenOrders = original;
+    }
+  });
+
   it('parses Retry-After from seconds, milliseconds, and HTTP dates', () => {
     expect(parseRetryAfterMs({ response: { headers: { 'retry-after': '7' } } })).toBe(7000);
     expect(parseRetryAfterMs({ retryAfter: 2 })).toBe(2000);

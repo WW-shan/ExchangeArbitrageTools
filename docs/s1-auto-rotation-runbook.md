@@ -20,6 +20,26 @@ The automatic path consists of two processes sharing `data/rotation.sqlite`:
 The helper `scripts/start-rotation.ps1` starts both and stops the scanner when
 the supervisor exits.
 
+## Automatic account-state check
+
+The `--auto` path does not require a manual balance command. At startup it
+fetches both venues' private balances, queries open orders for the configured
+pair symbols, reconciles local open executions, and blocks if any of those
+checks fail. During the loop it refreshes balances every `balance_refresh_ms`
+and checks both venues for open orders immediately before every batch.
+
+For a read-only snapshot, run:
+
+```powershell
+. .\scripts\load-env.ps1 -Path .env.live-test
+$env:ARB_CONFIG = 'config/live-rotation.toml'
+npm run account:state
+```
+
+The command prints the funded pair amounts, non-zero pair balances, exchange
+open orders, local open executions/unresolved orders, and any query errors. It
+does not submit or cancel orders.
+
 ## Inventory state
 
 Only one direction can be funded at a time:

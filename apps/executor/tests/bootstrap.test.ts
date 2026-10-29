@@ -25,7 +25,11 @@ function market(venueId: string): MarketMetadata {
   };
 }
 
-function adapter(venueId: string, result: () => Promise<OrderState>): CexAdapter {
+function adapter(
+  venueId: string,
+  result: () => Promise<OrderState>,
+  openOrders: OrderState[] | (() => Promise<OrderState[]>) = [],
+): CexAdapter {
   return {
     venueId,
     tier: 'S',
@@ -56,6 +60,23 @@ function adapter(venueId: string, result: () => Promise<OrderState>): CexAdapter
       },
     ],
     fetchOrder: result,
+    fetchOpenOrders: typeof openOrders === 'function' ? openOrders : async () => openOrders,
+  };
+}
+
+function openOrder(venueId: string): OrderState {
+  return {
+    venueOrderId: 'external-1',
+    clientOrderId: 'external-1',
+    symbol: 'CAKE/USDT',
+    side: 'buy',
+    type: 'limit',
+    price: new Decimal('2.4'),
+    amount: new Decimal(1),
+    filled: new Decimal(0),
+    remaining: new Decimal(1),
+    status: 'open',
+    raw: { venueId },
   };
 }
 
@@ -263,6 +284,67 @@ describe('executor startup recovery', () => {
     expect(result.decision.blockExecution).toBe(false);
     expect(result.decision.killSwitch).toBe(false);
     expect((db.prepare('SELECT COUNT(*) AS n FROM balances').get() as { n: number }).n).toBe(1);
+    repository.close();
+  });
+
+  it('blocks startup when an exchange-wide open order exists', async () => {
+    const db = openDatabase(':memory:');
+    const repository = new ArbitrageRepository(db);
+    repository.upsertVenue({ id: 'gateio', type: 'cex', name: 'Gate.io', tier: 'S', now });
+    repository.setSetting('kill_switch', 'false', now);
+    const result = await recoverExecutorStartup({
+      repository,
+      venues: {
+        gateio: {
+          adapter: adapter(
+            'gateio',
+            async () => {
+              throw new Error('not used');
+            },
+            [openOrder('gateio')],
+          ),
+          credentials: keys,
+        },
+      },
+      pairs: [{ base: 'CAKE', quote: 'USDT' }],
+      now: () => now,
+    });
+    expect(result.openOrdersQueried).toBe(1);
+    expect(result.openOrdersFound).toBe(1);
+    expect(result.decision.reasons).toContain('open_orders_require_reconciliation');
+    expect(result.decision.blockExecution).toBe(true);
+    expect(result.decision.killSwitch).toBe(true);
+    repository.close();
+  });
+
+  it('blocks startup when the open-order query fails', async () => {
+    const db = openDatabase(':memory:');
+    const repository = new ArbitrageRepository(db);
+    repository.upsertVenue({ id: 'gateio', type: 'cex', name: 'Gate.io', tier: 'S', now });
+    repository.setSetting('kill_switch', 'false', now);
+    const result = await recoverExecutorStartup({
+      repository,
+      venues: {
+        gateio: {
+          adapter: adapter(
+            'gateio',
+            async () => {
+              throw new Error('not used');
+            },
+            async () => {
+              throw new Error('query timeout');
+            },
+          ),
+          credentials: keys,
+        },
+      },
+      pairs: [{ base: 'CAKE', quote: 'USDT' }],
+      now: () => now,
+    });
+    expect(result.openOrderQueryFailures).toBeGreaterThan(0);
+    expect(result.decision.reasons).toContain('open_orders_query_failed');
+    expect(result.decision.blockExecution).toBe(true);
+    expect(result.decision.killSwitch).toBe(true);
     repository.close();
   });
 });

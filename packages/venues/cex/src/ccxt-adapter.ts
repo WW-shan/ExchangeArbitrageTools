@@ -19,6 +19,7 @@ import type {
   BalanceSnapshot,
   CexAdapter,
   DepositAddress,
+  OpenOrdersQuery,
   OrderQuery,
   OrderRequest,
   OrderState,
@@ -424,6 +425,8 @@ export class CcxtCexAdapter implements CexAdapter {
       privateBalances: Boolean(options.credentials),
       createOrder: !readOnly && Boolean(options.credentials),
       fetchOrder: !readOnly && Boolean(options.credentials),
+      openOrders:
+        Boolean(options.credentials) && typeof this.#exchange.fetchOpenOrders === 'function',
       cancelOrder: !readOnly && Boolean(options.credentials),
       depositAddress:
         Boolean(options.credentials) && typeof this.#exchange.fetchDepositAddress === 'function',
@@ -920,6 +923,16 @@ export class CcxtCexAdapter implements CexAdapter {
       'execution',
     );
     return normalizeOrder(order, this.venueId);
+  }
+
+  async fetchOpenOrders(request: OpenOrdersQuery, keys: ApiCredentials): Promise<OrderState[]> {
+    this.setCredentials(keys);
+    const orders = await this.call(
+      true,
+      () => this.#exchange.fetchOpenOrders(request.symbol, undefined, undefined),
+      'execution',
+    );
+    return orders.map((order) => normalizeOrder(order, this.venueId));
   }
 
   async cancelOrder(request: OrderQuery, keys: ApiCredentials): Promise<OrderState> {

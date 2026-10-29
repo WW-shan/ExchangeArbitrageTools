@@ -145,6 +145,33 @@ function logEvent(payload: Record<string, unknown>): void {
   console.log(JSON.stringify({ at: new Date().toISOString(), mode: 'auto_rotation', ...payload }));
 }
 
+function logAccountState(
+  repository: ArbitrageRepository,
+  config: ExecutorConfig,
+  markets: Record<string, MarketMetadata[]>,
+  now: number,
+): void {
+  const maxAgeMs = Math.max(config.autoRotation.balanceRefreshMs * 2, 30_000);
+  const pairs = config.autoRotation.pairs.map((pair) => {
+    const balances = pairBalances(repository, pair, markets, now, maxAgeMs);
+    return {
+      pair: `${pair.base}/${pair.quote}`,
+      gateBase: balances.readinessBalances.gateBase.toFixed(),
+      gateQuote: balances.readinessBalances.gateQuote.toFixed(),
+      hotcoinBase: balances.readinessBalances.hotcoinBase.toFixed(),
+      hotcoinQuote: balances.readinessBalances.hotcoinQuote.toFixed(),
+      fresh: balances.fresh,
+      reasons: balances.reasons,
+    };
+  });
+  logEvent({
+    status: 'account_state',
+    openExecutions: repository.countOpenExecutions(),
+    unresolvedOrders: repository.countUnresolvedOrders(),
+    pairs,
+  });
+}
+
 async function loadMarkets(
   adapters: Readonly<Record<string, RecoveryVenue>>,
   config: ExecutorConfig,
@@ -459,6 +486,7 @@ export async function runAutoRotationSupervisor(
   let preparationFirstSeenAt = 0;
   let consecutiveFailures = 0;
   let lastWaitLogAt = 0;
+  let accountStateLogged = false;
   repository.setSetting('auto_execution_enabled', 'true');
   repository.recordAudit('executor', 'auto_rotation_started', {
     pairs: instruments,
@@ -488,6 +516,10 @@ export async function runAutoRotationSupervisor(
         logEvent({ status: 'balance_refresh_failed', errors: refreshed.errors });
         await sleep(config.autoRotation.pollIntervalMs);
         continue;
+      }
+      if (!accountStateLogged) {
+        logAccountState(repository, config, markets, now);
+        accountStateLogged = true;
       }
     }
     const candidates = repository.recentValidS1Opportunities({
@@ -589,6 +621,22 @@ export async function runAutoRotationSupervisor(
 
     const { loaded, buy, sell, batchId, opportunity, direction, intent, preparation } =
       executionSelection;
+    if (
+      typeof buy.adapter.fetchOpenOrders !== 'function' ||
+      typeof sell.adapter.fetchOpenOrders !== 'function'
+    ) {
+      const reason = 'open_orders_query_unsupported';
+      repository.recordRiskEvent(
+        'critical',
+        'auto_open_orders_unsupported',
+        reason,
+        { direction, buyVenue: buy.adapter.venueId, sellVenue: sell.adapter.venueId },
+        now,
+      );
+      repository.setSetting('kill_switch', 'true', now);
+      logEvent({ status: 'stopped', reason, direction });
+      break;
+    }
     lastAttemptAt = now;
     if (intent === 'inventory_preparation') lastPreparationAt = now;
     repository.recordAudit(

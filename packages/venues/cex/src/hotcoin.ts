@@ -20,6 +20,7 @@ import type {
   BalanceSnapshot,
   CexAdapter,
   DepositAddress,
+  OpenOrdersQuery,
   OrderQuery,
   OrderRequest,
   OrderState,
@@ -505,6 +506,8 @@ function asRecords(value: unknown): Record<string, unknown>[] {
     'assets',
     'balances',
     'entrusts',
+    'entrutsCur',
+    'entrutsHis',
     'entrustsCur',
     'entrustsHis',
   ]) {
@@ -514,6 +517,23 @@ function asRecords(value: unknown): Record<string, unknown>[] {
     if (nested.length > 0) return nested;
   }
   return [record];
+}
+
+function hotcoinOrderRows(value: unknown): Record<string, unknown>[] {
+  if (Array.isArray(value)) return asRecords(value);
+  const record = recordOrUndefined(value);
+  if (!record) return [];
+  return [
+    ...asRecords(record.entrutsCur ?? record.entrustsCur ?? []),
+    ...asRecords(record.entrutsHis ?? record.entrustsHis ?? []),
+  ];
+}
+
+function hotcoinCurrentOrderRows(value: unknown): Record<string, unknown>[] {
+  if (Array.isArray(value)) return asRecords(value);
+  const record = recordOrUndefined(value);
+  if (!record) return [];
+  return asRecords(record.entrutsCur ?? record.entrustsCur ?? []);
 }
 
 function decodeSocketMessage(data: RawData): string {
@@ -570,6 +590,7 @@ export class HotcoinAdapter implements CexAdapter {
       privateBalances: Boolean(options.credentials),
       createOrder: Boolean(options.credentials) && !this.#readOnly,
       fetchOrder: Boolean(options.credentials) && !this.#readOnly,
+      openOrders: Boolean(options.credentials),
       cancelOrder: Boolean(options.credentials) && !this.#readOnly,
       depositAddress: Boolean(options.credentials),
       depositHistory: Boolean(options.credentials),
@@ -1260,7 +1281,7 @@ export class HotcoinAdapter implements CexAdapter {
         { symbol: request.symbol, type: 0, page, count: pageSize },
         keys,
       );
-      const rows = asRecords(result.data);
+      const rows = hotcoinOrderRows(result.data);
       const row = rows.find(
         (candidate) =>
           firstString(candidate, ['clientOrderId', 'client_order_id']) === request.clientOrderId,
@@ -1271,6 +1292,32 @@ export class HotcoinAdapter implements CexAdapter {
     throw new Error(
       `Hotcoin order not found for clientOrderId after ${pagesScanned} pages (fail closed)`,
     );
+  }
+
+  async fetchOpenOrders(request: OpenOrdersQuery, keys: ApiCredentials): Promise<OrderState[]> {
+    if (!this.capabilities.openOrders) {
+      throw new Error('Hotcoin adapter is missing credentials for open-order queries');
+    }
+    if (!request.symbol) {
+      throw new Error('Hotcoin open-order query requires a symbol');
+    }
+    const pageSize = 100;
+    const maxPages = 20;
+    const orders: OrderState[] = [];
+    for (let page = 1; page <= maxPages; page += 1) {
+      const result = await this.request<unknown>(
+        '/v1/order/entrust',
+        { symbol: request.symbol, type: 0, page, count: pageSize },
+        keys,
+      );
+      const rows = hotcoinCurrentOrderRows(result.data);
+      for (const row of rows) {
+        const order = normalizeOrder(row, request.symbol);
+        if (order.status === 'open' || order.status === 'unknown') orders.push(order);
+      }
+      if (rows.length < pageSize) break;
+    }
+    return orders;
   }
 
   async cancelOrder(request: OrderQuery, keys: ApiCredentials): Promise<OrderState> {

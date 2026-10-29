@@ -1,6 +1,12 @@
-import { Decimal, assessStartupRecovery, type StartupRecoveryDecision } from '@arb/core';
+import {
+  Decimal,
+  assessStartupRecovery,
+  type MarketMetadata,
+  type StartupRecoveryDecision,
+} from '@arb/core';
 import type { ArbitrageRepository, RecoveredOrder } from '@arb/storage';
 import type { ApiCredentials, CexAdapter, OrderQuery, OrderState } from '@arb/venues-cex';
+import { fetchOpenOrdersForSymbols } from './open-orders.js';
 
 export interface RecoveryVenue {
   adapter: CexAdapter;
@@ -12,6 +18,7 @@ export interface StartupRecoveryOptions {
   repository: ArbitrageRepository;
   venues: Readonly<Record<string, RecoveryVenue>>;
   confirmBalances?: boolean;
+  pairs?: readonly { base: string; quote: string }[];
   now?: () => number;
 }
 
@@ -22,6 +29,9 @@ export interface StartupRecoveryResult {
   failedQueries: number;
   openExecutions: number;
   unresolvedOrders: number;
+  openOrdersQueried: number;
+  openOrdersFound: number;
+  openOrderQueryFailures: number;
   backoffs: number;
   balancesConfirmed: boolean;
 }
@@ -51,6 +61,27 @@ function legStatus(order: OrderState): string {
   if (order.status === 'rejected') return 'rejected';
   if (order.status === 'open') return order.filled.gt(0) ? 'partial' : 'submitted';
   return 'unknown';
+}
+
+function openOrderSymbols(
+  markets: readonly MarketMetadata[],
+  venueId: string,
+  pairs: readonly { base: string; quote: string }[],
+): { symbols: string[]; missing: string[] } {
+  const symbols = new Set<string>();
+  const missing: string[] = [];
+  for (const pair of pairs) {
+    const matches = markets.filter(
+      (market) =>
+        market.active &&
+        market.venueId === venueId &&
+        market.base.trim().toUpperCase() === pair.base.trim().toUpperCase() &&
+        market.quote.trim().toUpperCase() === pair.quote.trim().toUpperCase(),
+    );
+    if (matches.length === 1) symbols.add(matches[0]!.exchangeSymbol);
+    else missing.push(`${pair.base.toUpperCase()}/${pair.quote.toUpperCase()}`);
+  }
+  return { symbols: [...symbols], missing };
 }
 
 function decimal(value: string | undefined, fallback = '0'): Decimal {
@@ -109,6 +140,9 @@ export async function recoverExecutorStartup(
   let queriedOrders = 0;
   let resolvedOrders = 0;
   let failedQueries = 0;
+  let openOrdersQueried = 0;
+  let openOrdersFound = 0;
+  let openOrderQueryFailures = 0;
 
   for (const candidate of pending.values()) {
     const venue = options.venues[candidate.venueId];
@@ -248,6 +282,72 @@ export async function recoverExecutorStartup(
     }
   }
 
+  if (options.pairs && options.pairs.length > 0) {
+    for (const [venueId, venue] of Object.entries(options.venues)) {
+      let markets: MarketMetadata[];
+      try {
+        markets = await venue.adapter.loadMarkets();
+      } catch (error) {
+        openOrderQueryFailures += 1;
+        repository.recordRiskEvent(
+          'critical',
+          'startup_open_orders_market_load_failed',
+          String(error),
+          { venueId },
+          now(),
+        );
+        continue;
+      }
+      const { symbols, missing } = openOrderSymbols(markets, venueId, options.pairs);
+      if (symbols.length === 0) continue;
+      if (missing.length > 0) {
+        openOrderQueryFailures += 1;
+        repository.recordRiskEvent(
+          'critical',
+          'startup_open_orders_symbol_missing',
+          missing.join(','),
+          { venueId, missing },
+          now(),
+        );
+      }
+      if (typeof venue.adapter.fetchOpenOrders !== 'function') {
+        openOrderQueryFailures += 1;
+        repository.recordRiskEvent(
+          'critical',
+          'startup_open_orders_unsupported',
+          `open-order query is unavailable for ${venueId}`,
+          { venueId },
+          now(),
+        );
+        continue;
+      }
+      for (const symbol of symbols) {
+        openOrdersQueried += 1;
+        const result = await fetchOpenOrdersForSymbols(venue.adapter, venue.credentials, [symbol]);
+        openOrdersFound += result.orders.length;
+        if (result.errors.length > 0) {
+          openOrderQueryFailures += result.errors.length;
+          repository.recordRiskEvent(
+            'critical',
+            'startup_open_orders_query_failed',
+            result.errors.join('; '),
+            { venueId, symbol },
+            now(),
+          );
+        }
+      }
+    }
+    if (openOrdersFound > 0) {
+      repository.recordRiskEvent(
+        'critical',
+        'startup_open_orders_found',
+        `found ${openOrdersFound} open order(s) during startup reconciliation`,
+        { openOrdersFound },
+        now(),
+      );
+    }
+  }
+
   const openExecutions = repository.countOpenExecutions();
   const unresolvedOrders = repository.countUnresolvedOrders();
   const persistedKillSwitch = repository.getSetting('kill_switch') !== 'false';
@@ -256,6 +356,8 @@ export async function recoverExecutorStartup(
     unresolvedLegs: unresolvedOrders,
     persistedKillSwitch,
     balancesConfirmed,
+    openOrders: openOrdersFound,
+    openOrderQueryFailures,
   });
   if (decision.killSwitch) {
     repository.setSetting('kill_switch', 'true', now());
@@ -271,6 +373,9 @@ export async function recoverExecutorStartup(
       failedQueries,
       openExecutions,
       unresolvedOrders,
+      openOrdersQueried,
+      openOrdersFound,
+      openOrderQueryFailures,
       backoffs,
       balancesConfirmed,
       decision,
@@ -293,6 +398,9 @@ export async function recoverExecutorStartup(
     failedQueries,
     openExecutions,
     unresolvedOrders,
+    openOrdersQueried,
+    openOrdersFound,
+    openOrderQueryFailures,
     backoffs,
     balancesConfirmed,
   };
