@@ -21,14 +21,14 @@ The report is `data/history-all-1m-6d-2026-10-29.json`; the resorted output is
 
 ## Ranking by raw episode count
 
-| Pair   | Total episodes | Per day | Direction flips | Stress samples | Max net bps | Note                              |
-| ------ | -------------: | ------: | --------------: | -------------: | ----------: | --------------------------------- |
-| TBK    |           1107 |  184.52 |             368 |           2750 |     3179.47 | outlier-heavy, unstable live book |
-| LIGHT  |           1011 |  168.52 |             494 |             35 |      662.55 | selected primary                  |
-| KAT    |            749 |  124.85 |             262 |             65 |      214.04 | selected reserve                  |
-| HUMA   |            734 |  122.35 |             394 |              6 |      493.43 | no current executable edge        |
-| DNA    |            708 |  118.01 |             384 |              2 |      318.73 | no current executable edge        |
-| ULTIMA |            657 |  109.51 |             227 |            849 |      321.28 | wide live book / stale snapshot   |
+| Pair   | Total episodes | Per day | Direction flips | Stress samples | Max net bps | Note                            |
+| ------ | -------------: | ------: | --------------: | -------------: | ----------: | ------------------------------- |
+| TBK    |           1107 |  184.52 |             368 |           2750 |     3179.47 | active secondary, small size    |
+| LIGHT  |           1011 |  168.52 |             494 |             35 |      662.55 | selected primary                |
+| KAT    |            749 |  124.85 |             262 |             65 |      214.04 | selected reserve                |
+| HUMA   |            734 |  122.35 |             394 |              6 |      493.43 | no current executable edge      |
+| DNA    |            708 |  118.01 |             384 |              2 |      318.73 | no current executable edge      |
+| ULTIMA |            657 |  109.51 |             227 |            849 |      321.28 | wide live book / stale snapshot |
 
 Direction detail for the selected pair:
 
@@ -37,14 +37,19 @@ Direction detail for the selected pair:
 | LIGHT | Gate -> Hotcoin |      556 |   92.68 |     29 |  16.12 bps | 50.22 bps |
 | LIGHT | Hotcoin -> Gate |      455 |   75.84 |      6 |  16.73 bps | 44.86 bps |
 
-## Why TBK is not the primary
+## Why TBK is secondary, not primary
 
 TBK has the highest raw count, but its history contains a 31.8% maximum net
 print and 2,750 stress-passing samples, far outside the rest of the top group.
 That pattern is consistent with low-liquidity repricing rather than a stable
-two-sided book. A fresh six-pair live snapshot also showed TBK as the only
-positive route, but with pair skew and incomplete capacity. It is watch-only;
-the highest raw episode count is not enough evidence of a repeatable edge.
+two-sided book. It is therefore not the primary pair and must not be sized like
+LIGHT. It is, however, a valid small-size rotation when the live book shows a
+funded direction and the executor can revalidate depth and balances.
+
+On 2026-10-29 the existing inventory supported a real `Hotcoin -> Gate` TBK
+rotation. The first batch closed with both FOK legs filled at 39 TBK, realizing
+`0.20706918882 USDT` economic profit. See
+`docs/s1-tbk-live-rotation-2026-10-29.md`.
 
 ## Current live check
 
@@ -56,8 +61,9 @@ A live snapshot of TBK, LIGHT, KAT, HUMA, DNA, and ULTIMA found:
 - KAT both directions were negative;
 - HUMA and DNA both directions were negative.
 
-The market therefore does not offer a LIGHT entry at the time of seeding. The
-supervisor must wait for a fresh executable edge rather than forcing a trade.
+The market did not offer a LIGHT entry at the time of seeding. The supervisor
+waits for a fresh executable edge rather than forcing a trade. TBK did offer a
+funded direction and was executed by the automatic supervisor.
 
 ## Seed state
 
@@ -72,3 +78,15 @@ ready direction: Gate -> Hotcoin
 The fill leaves Gate quote plus Hotcoin base, so the dominant historical
 direction is funded first. After a completed Gate -> Hotcoin round trip the
 inventory becomes ready for Hotcoin -> Gate.
+
+The TBK rotation used the pre-existing Gate TBK balance:
+
+```text
+before: Gate 39.9604 TBK + Hotcoin 9.707534 USDT
+trade:  Hotcoin buy 39 TBK at 0.22799, Gate sell 39 TBK at 0.23346
+after:  Gate 0.9604 TBK + Hotcoin 39.836 TBK
+state:  Gate USDT + Hotcoin TBK, ready for Gate -> Hotcoin
+```
+
+LIGHT and TBK are tracked independently. A completed TBK rotation does not
+change the LIGHT inventory state.

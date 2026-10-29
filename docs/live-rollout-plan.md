@@ -84,30 +84,32 @@ Exit criteria:
 
 Duration: 2-3 days
 
-Initial pair:
+Initial pairs:
 
 ```text
-CAKE/USDT on Gate.io and Hotcoin
+LIGHT/USDT on Gate.io and Hotcoin (primary)
+TBK/USDT on Gate.io and Hotcoin (secondary, small size)
 ```
 
 Fallback pair:
 
 ```text
-A medium-cap token listed on Gate.io and Hotcoin with acceptable depth
+A low-volume token listed on both venues with verified executable depth
 ```
 
 Limits:
 
 ```text
-notional per batch: 15-20 USDT
+notional per batch: 3-20 USDT (per-market minimum still applies)
 max batches per day: 5
 max concurrent batches: 1
 manual confirmation: required
 daily max loss: 5 USDT
 ```
 
-The lower bound comes from each Hotcoin market's minOrderAmount/minNotional. Do not
-run a leg below the selected market's actual minimum.
+The lower bound comes from each venue's actual minOrderAmount/minNotional. Do not
+run a leg below the selected market's actual minimum. Hotcoin TBK is 0 and a
+1 TBK FOK sell has been verified; other Hotcoin symbols may require 15 USDT.
 
 Exit criteria:
 

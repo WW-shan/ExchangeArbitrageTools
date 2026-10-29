@@ -1,5 +1,6 @@
-# Two-sided S1 rotation profile: LIGHT primary, small automatic batches.
-# The manual CLI remains available; --auto uses the persisted automatic gate.
+# Two-sided S1 rotation profile: LIGHT primary, TBK secondary with existing
+# inventory, small automatic batches. The manual CLI remains available; --auto
+# uses the persisted automatic gate.
 
 [scanner]
 # Hotcoin minimums are per symbol. The executor enforces market.minNotional.
@@ -8,20 +9,23 @@ quote_currency = "USDT"
 # Keep the first live batch narrow. Use config/discovery.toml for read-only
 # volume-ranked opportunity discovery.
 asset_universe_mode = "explicit"
-base_assets = ["LIGHT"]
+base_assets = ["LIGHT", "TBK"]
 quote_currencies = ["USDT"]
-max_base_assets = 1
+max_base_assets = 2
 fetch_concurrency = 4
 scan_interval_hot_ms = 30000
 scan_interval_top100_ms = 120000
 scan_interval_top500_ms = 600000
 signal_cooldown_ms = 60000
 max_order_notional = "20"
-max_orderbook_age_ms = 3000
-max_feed_latency_ms = 3000
-max_freeze_ms = 5000
+# Low-liquidity books can legitimately go 2-15 seconds without a new exchange
+# update. Keep received-at/WebSocket freshness separate from this window; the
+# executor re-fetches both books and uses FOK before submitting.
+max_orderbook_age_ms = 20000
+max_feed_latency_ms = 20000
+max_freeze_ms = 10000
 feed_mode = 'websocket'
-ws_max_book_age_ms = 3000
+ws_max_book_age_ms = 5000
 ws_max_subscriptions = 200
 ws_max_reconnect_attempts = 5
 ws_rest_fallback_per_venue = 4
@@ -33,15 +37,15 @@ min_profit_usd = "0.01"
 max_slippage_bps = 30
 max_gas_cost_usd = "0.50"
 max_transfer_tax_bps = 0
-max_pair_skew_ms = 2500
+max_pair_skew_ms = 5000
 min_reliability_score = '0.3'
-max_price_deviation_bps = 500
-suspicious_spread_bps = 200
+max_price_deviation_bps = 1000
+suspicious_spread_bps = 1000
 rebalance_cost_bps = 0
 execution_mode = 'taker_taker'
 maker_fill_probability = '0.5'
 optimal_sizing = true
-min_sizing_notional = "9.5"
+min_sizing_notional = "3"
 sizing_step = "0.01"
 max_sizing_candidates_per_cycle = 20
 sizing_samples = 12
@@ -79,12 +83,17 @@ fok_venues = ['gateio', 'hotcoin']
 enabled = true
 poll_interval_ms = 1000
 balance_refresh_ms = 5000
-max_signal_age_ms = 5000
+max_signal_age_ms = 10000
 cooldown_ms = 3000
 max_consecutive_failures = 3
 
 [[auto_rotation.pairs]]
 base = 'LIGHT'
+quote = 'USDT'
+max_notional = '20'
+
+[[auto_rotation.pairs]]
+base = 'TBK'
 quote = 'USDT'
 max_notional = '20'
 

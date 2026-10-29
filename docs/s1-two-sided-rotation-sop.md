@@ -1,7 +1,8 @@
 # S1 Two-Sided Inventory Rotation SOP
 
-Status: automatic supervisor implemented and started, 2026-10-29. Manual live
-entry remains separately gated.
+Status: automatic supervisor implemented and live-tested, 2026-10-29. The first
+TBK round trip closed with both FOK legs filled. Manual live entry remains
+separately gated.
 
 ## 1. What this is
 
@@ -32,11 +33,13 @@ buy on one venue and wait for a transfer.
 
 Primary: `LIGHT/USDT`.
 
-Reserve: `KAT/USDT`.
+Secondary live rotation: `TBK/USDT`. TBK has the highest raw historical episode
+count, and the existing inventory now supports the two-sided rotation. It is
+outlier-heavy, so it is limited to small batches and a 10% suspicious-spread
+cap. The first live TBK round trip is documented in
+`docs/s1-tbk-live-rotation-2026-10-29.md`.
 
-Watch-only: `TBK/USDT`, because its raw episode count is the highest but its
-history is outlier-heavy and its live book is unstable. See
-`docs/s1-full-universe-backtest-2026-10-29.md`.
+Reserve / watch-only: `KAT/USDT`.
 
 Never enable a pair only because its historical median is high. The live book
 must show a fresh executable edge after fees, slippage, and live depth.
@@ -57,9 +60,6 @@ Option B: start ready for Hotcoin -> Gate
   Hotcoin: keep about 10 USDT
 ```
 
-At the current balances, Option A fits better because Hotcoin already holds
-about 19.69 USDT while Gate holds about 10.51 USDT.
-
 Seed rules:
 
 - Order by base quantity, not by spending all quote. A quote-sized market buy
@@ -73,9 +73,19 @@ Seed rules:
 The first 2026-10-29 seed used 37.5 LIGHT on Hotcoin at 0.26596, leaving the
 account ready for Gate -> Hotcoin.
 
+The first TBK rotation used existing inventory instead of a new seed:
+
+```text
+before: Gate 39.9604 TBK + Hotcoin 9.707534 USDT
+trade:  Hotcoin buy 39 TBK at 0.22799, Gate sell 39 TBK at 0.23346
+after:  Gate 0.9604 TBK + Hotcoin 39.836 TBK
+state:  Gate USDT + Hotcoin TBK, ready for Gate -> Hotcoin
+```
+
 ## 4. Signal and entry gate
 
-The scanner evaluates both directions on every fresh WebSocket book:
+The scanner evaluates both directions on every fresh book, using WebSocket
+updates when available and REST fallback for thin markets:
 
 ```text
 net = executable sell proceeds
@@ -88,7 +98,9 @@ net = executable sell proceeds
 Entry requires all of:
 
 - pair in the rotation whitelist;
-- fresh books within 2 seconds, pair skew within 1 second;
+- books within the configured received-at and exchange-timestamp windows;
+  the live low-liquidity profile uses 5 seconds for WebSocket freshness and
+  20 seconds for the exchange timestamp, with pair skew up to 5 seconds;
 - buy and sell depth each cover the planned base amount;
 - expected net profit above the live threshold;
 - buy venue quote and sell venue base confirmed by a fresh private balance read;
@@ -189,9 +201,10 @@ trades, and balances first.
 
 ## 9. No automatic transfer
 
-The rotation is designed to avoid transfers. LIGHT and KAT are both available
-on Gate and Hotcoin, but transfers are unnecessary for the rotation. KAT has restricted Hotcoin
-deposit/withdrawal routes; LIGHT transfers are expensive relative to a
+The rotation is designed to avoid transfers. LIGHT and TBK are both available
+on Gate and Hotcoin, and TBK is active in the live rotation. KAT remains
+watch-only and has restricted Hotcoin deposit/withdrawal routes. Transfers are
+unnecessary for the normal rotation and would be expensive relative to a
 10-20 USDT batch. Therefore:
 
 - do not withdraw as part of the per-trade path;
@@ -212,5 +225,7 @@ Implemented and wired:
 4. `scripts/seed-rotation.ts` performs the bounded one-time seed.
 5. `scripts/start-rotation.ps1` starts the scanner and supervisor together.
 
-The remaining limitation is market-driven: the live LIGHT book must actually
-show a fresh executable edge. The supervisor waits when it does not.
+The remaining limitation is market-driven: each pair must show a fresh
+executable edge in the direction that is currently funded. The supervisor waits
+when it does not. On 2026-10-29 the TBK `Hotcoin -> Gate` direction met the
+condition and closed at `0.20706918882 USDT` economic profit.

@@ -1,8 +1,9 @@
 # S1 Automatic Two-Sided Rotation Runbook
 
-Status: implemented in code, 2026-10-29. The supervisor uses the persisted
-scanner signal but performs its own private-balance and fresh-book checks
-before every order. It is not a cross-exchange atomic arbitrage strategy.
+Status: implemented and live-tested, 2026-10-29. The first automatic TBK round
+trip closed successfully. The supervisor uses the persisted scanner signal but
+performs its own private-balance and fresh-book checks before every order. It is
+not a cross-exchange atomic arbitrage strategy.
 
 ## What runs
 
@@ -31,6 +32,34 @@ Hotcoin quote + Gate base  -> buy Hotcoin, sell Gate
 After a completed round trip the inventory naturally becomes ready for the
 opposite direction. No withdrawal or deposit is part of the trade path. If the
 market only offers the unfunded direction, the supervisor waits.
+
+The inventory state is tracked per pair. The current TBK state after the first
+live round trip is:
+
+```text
+Gate USDT + Hotcoin TBK -> ready for Gate buy / Hotcoin sell
+```
+
+The LIGHT seed remains separate and is still ready for Gate buy / Hotcoin sell.
+
+## Low-liquidity book timestamps
+
+Gate TBK can go 2-15 seconds without a new order-book update. The exchange
+timestamp is the last update time, not the HTTP response time. The live rotation
+profile therefore uses a wider exchange-age window:
+
+```toml
+max_orderbook_age_ms = 20000
+max_feed_latency_ms = 20000
+max_freeze_ms = 10000
+ws_max_book_age_ms = 5000
+max_pair_skew_ms = 5000
+```
+
+This does not weaken execution safety: the executor re-fetches both books,
+refreshes both private balances, re-evaluates depth and net edge, and submits
+FOK limit orders. A stale or wrong price cannot be chased with an unbounded
+market order.
 
 ## One-time seed
 
@@ -89,6 +118,8 @@ The executor still re-evaluates the books after the scanner signal. It requires:
 - Gate and Hotcoin health A or B;
 - fresh private balance snapshots on both venues;
 - the direction implied by the signal to be fully funded;
+- exchange timestamps within the configured low-liquidity window, with
+  received-at and WebSocket freshness checked separately;
 - no open execution, unresolved order, balance mismatch, or kill switch;
 - daily loss limit not reached and the per-batch cooldown elapsed;
 - fresh executable depth and positive net edge after fees and safety buffer.
@@ -104,7 +135,7 @@ funds automatically.
 enabled = true
 poll_interval_ms = 1000
 balance_refresh_ms = 5000
-max_signal_age_ms = 5000
+max_signal_age_ms = 10000
 cooldown_ms = 3000
 max_consecutive_failures = 3
 
@@ -112,14 +143,45 @@ max_consecutive_failures = 3
 base = 'LIGHT'
 quote = 'USDT'
 max_notional = '20'
+
+[[auto_rotation.pairs]]
+base = 'TBK'
+quote = 'USDT'
+max_notional = '20'
 ```
 
 `execution.live_enabled` must be true and the persisted kill switch must be
 false. The scanner and supervisor both read the same database path.
 
+The live profile also uses `min_sizing_notional = '3'`. Hotcoin TBK has
+`minOrderAmount = 0`, and a 1 TBK FOK sell has been verified. Do not hardcode a
+15 USDT minimum for TBK; 15 USDT applies to some other Hotcoin symbols only.
+
+## First live TBK execution
+
+```text
+batch:            S1-111631-1793244608063
+execution id:     1
+direction:        Hotcoin buy -> Gate sell
+quantity:         39 TBK
+buy price:        0.22799 USDT
+sell price:       0.23346 USDT
+status:           CLOSED
+realized profit:  0.20706918882 USDT
+cash profit:      0.1865328894 USDT
+rebate receivable:0.02053629942 USDT
+net fees:         0.00626081118 USDT
+```
+
+Both legs filled, the execution is reconciled, and there are no open batches or
+unhedged rows. Full evidence is in
+`docs/s1-tbk-live-rotation-2026-10-29.md`.
+
 ## Known limitations
 
 - Historical frequency is not a guarantee of a live executable edge.
+- TBK is low-liquidity and outlier-heavy; keep the 10% suspicious-spread cap and
+  small batch size rather than treating the backtest count as a profit promise.
 - The strategy holds base inventory on one venue between round trips, so it is
   exposed to the base token price.
 - The two venue legs are not atomic. A fast reversal or a venue rejection can
