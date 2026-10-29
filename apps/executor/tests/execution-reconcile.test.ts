@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { Decimal } from '@arb/core';
 import { ArbitrageRepository, openDatabase } from '@arb/storage';
-import { reconcileCarriedInventory } from '../src/execution-reconcile.js';
+import { reconcileCarriedInventory, reconcileNoFillExecution } from '../src/execution-reconcile.js';
 
 const now = 1_700_000_000_000;
 const batchId = 'S1-RECONCILE-TEST';
@@ -62,6 +62,45 @@ function seed(freeLight = '20') {
     total: new Decimal(freeLight),
     fetchedAt: now,
   });
+  return { db, repository, executionId };
+}
+
+function seedNoFill() {
+  const db = openDatabase(':memory:');
+  const repository = new ArbitrageRepository(db);
+  repository.upsertVenue({ id: 'gateio', type: 'cex', name: 'Gate.io', tier: 'S', now });
+  repository.upsertVenue({ id: 'bitget', type: 'cex', name: 'Bitget', tier: 'A', now });
+  const executionId = repository.createExecution({
+    strategy: 'S1',
+    batchId,
+    status: 'SAFE_STOP',
+    plannedNotional: new Decimal('6'),
+    expectedProfit: new Decimal('0.01'),
+    openedAt: now,
+    metadata: { states: ['PARALLEL_RECONCILING', 'SAFE_STOP'] },
+  });
+  repository.addExecutionLeg({
+    executionId,
+    legNumber: 1,
+    venueId: 'gateio',
+    side: 'buy',
+    requestedAmount: new Decimal('1300'),
+    requestedPrice: new Decimal('0.0046'),
+    status: 'canceled',
+  });
+  repository.addExecutionLeg({
+    executionId,
+    legNumber: 2,
+    venueId: 'bitget',
+    side: 'sell',
+    requestedAmount: new Decimal('1300'),
+    requestedPrice: new Decimal('0.0047'),
+    status: 'canceled',
+  });
+  db.prepare('UPDATE execution_legs SET filled_amount = ? WHERE execution_id = ?').run(
+    '0',
+    executionId,
+  );
   return { db, repository, executionId };
 }
 
@@ -133,6 +172,28 @@ describe('SAFE_STOP carried-inventory reconciliation', () => {
         maxBalanceAgeMs: 60_000,
       }),
     ).toThrow(/need 26/);
+    repository.close();
+  });
+});
+
+describe('SAFE_STOP zero-fill reconciliation', () => {
+  it('closes an execution after every leg is confirmed zero-fill', () => {
+    const { db, repository } = seedNoFill();
+    const result = reconcileNoFillExecution({ db, repository, batchId, now });
+    expect(result.status).toBe('RECONCILED');
+    expect(repository.countOpenExecutions()).toBe(0);
+    const execution = db
+      .prepare('SELECT status, closed_at, metadata_json FROM executions WHERE batch_id = ?')
+      .get(batchId) as { status: string; closed_at: number; metadata_json: string };
+    expect(execution.status).toBe('RECONCILED');
+    expect(execution.closed_at).toBe(now);
+    expect(JSON.parse(execution.metadata_json).resolution).toBe('no_fill');
+    const risk = db
+      .prepare(
+        `SELECT COUNT(*) AS count FROM risk_events WHERE rule = 'execution_reconciled_no_fill'`,
+      )
+      .get() as { count: number };
+    expect(risk.count).toBe(1);
     repository.close();
   });
 });

@@ -170,6 +170,7 @@ function isDefinitiveNoFillCreateError(error: unknown): boolean {
 }
 
 function isOrderNotFoundError(message: string): boolean {
+  if (/ordernotfound|client_id_not_found/i.test(message)) return true;
   return /委单不存在|order not found/i.test(message);
 }
 

@@ -124,6 +124,7 @@ interface FakeOptions {
   queryUnknownSide?: 'buy' | 'sell';
   queryNotFound?: boolean;
   queryNotFoundSide?: 'buy' | 'sell';
+  queryNotFoundError?: Error;
   balanceAfterCreate?: (venueId: string) => BalanceSnapshot[];
   baseFree?: Decimal;
   onFetchBook?: () => void;
@@ -243,6 +244,13 @@ function fakeAdapter(venueId: string, options: FakeOptions = {}) {
     },
     fetchOrder: async (request) => {
       const isBuy = request.clientOrderId?.endsWith('-L1') ?? true;
+      if (
+        options.queryNotFound &&
+        options.queryNotFoundError &&
+        (!options.queryNotFoundSide || (options.queryNotFoundSide === 'buy') === isBuy)
+      ) {
+        throw options.queryNotFoundError;
+      }
       if (
         options.queryNotFound &&
         (!options.queryNotFoundSide || (options.queryNotFoundSide === 'buy') === isBuy)
@@ -1366,6 +1374,39 @@ describe('parallel FOK two-leg execution', () => {
       fillMismatchCanonical: '0.01',
       fillMismatchToleranceCanonical: '0.012',
     });
+    repo.close();
+  });
+
+  it('treats Gate CLIENT_ID_NOT_FOUND as a confirmed zero-fill rejection', async () => {
+    const { repo, executor, buy, sell } = setup(
+      {
+        leg1FillRatio: new Decimal(0),
+        leg2FillRatio: new Decimal(0),
+        queryNotFound: true,
+        queryNotFoundSide: 'buy',
+        queryNotFoundError: new Error('OrderNotFound: gate CLIENT_ID_NOT_FOUND'),
+      },
+      'parallel_fok',
+    );
+    const result = await executor.execute(
+      request(
+        {
+          adapter: buy.adapter,
+          market: fokMarket('gateio'),
+          credentials: keys,
+          healthState: 'A',
+        },
+        {
+          adapter: sell.adapter,
+          market: fokMarket('mexc'),
+          credentials: keys,
+          healthState: 'A',
+        },
+      ),
+    );
+    expect(result.outcome).toBe('PARALLEL_REJECTED');
+    expect(repo.getSetting('kill_switch')).toBe('false');
+    expect(repo.openUnhedgedInventory()).toHaveLength(0);
     repo.close();
   });
 
