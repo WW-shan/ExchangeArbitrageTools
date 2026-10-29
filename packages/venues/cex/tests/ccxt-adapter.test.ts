@@ -30,10 +30,13 @@ describe('CCXT adapter construction', () => {
     );
   });
 
-  it('accepts decimal step sizes as well as precision digit counts', () => {
+  it('accepts tick sizes as well as decimal precision digit counts', () => {
     expect(stepFromCcxt(0.01)?.toFixed()).toBe('0.01');
     expect(stepFromCcxt(0.0001)?.toFixed()).toBe('0.0001');
     expect(stepFromCcxt(2)?.toFixed()).toBe('0.01');
+    expect(stepFromCcxt(1, ccxt.TICK_SIZE)?.toFixed()).toBe('1');
+    expect(stepFromCcxt('1', ccxt.TICK_SIZE)?.toFixed()).toBe('1');
+    expect(stepFromCcxt(0.0001, ccxt.TICK_SIZE)?.toFixed()).toBe('0.0001');
     expect(stepFromCcxt(undefined)).toBeUndefined();
     expect(stepFromCcxt('2')?.toFixed()).toBe('0.01');
     expect(stepFromCcxt('0.01')?.toFixed()).toBe('0.01');
@@ -399,7 +402,8 @@ describe('ccxt market denomination aliases', () => {
         quote: 'USDT',
       });
       expect(markets[0]?.baseMultiplier?.toFixed()).toBe('1000');
-      expect(markets[0]?.amountStep?.toFixed()).toBe('0.1');
+      expect(markets[0]?.amountStep?.toFixed()).toBe('1');
+      expect(markets[0]?.amountPrecision).toBe(0);
       expect(markets[0]?.minAmount?.toFixed()).toBe('100');
     } finally {
       prototype.loadMarkets = original;

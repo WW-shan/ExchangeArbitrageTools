@@ -1364,7 +1364,15 @@ export class CexLiveExecutor {
       );
       return plan.safeStop('parallel_leg_not_fully_filled');
     }
-    if (!boughtCanonical.eq(soldCanonical)) {
+    const fillMismatch = boughtCanonical.minus(soldCanonical).abs();
+    const buyStepCanonical = (request.buy.market.amountStep ?? ZERO).mul(plan.buyMultiplier);
+    const sellStepCanonical = (request.sell.market.amountStep ?? ZERO).mul(plan.sellMultiplier);
+    const fillMismatchTolerance = Decimal.max(
+      buyStepCanonical,
+      sellStepCanonical,
+      boughtCanonical.mul('0.001'),
+    );
+    if (fillMismatch.gt(fillMismatchTolerance)) {
       this.recordParallelResidualRisk(
         request,
         plan.executionId,
@@ -1375,6 +1383,20 @@ export class CexLiveExecutor {
         'parallel_fill_mismatch',
       );
       return plan.safeStop('parallel_fill_mismatch');
+    }
+    if (fillMismatch.gt(0)) {
+      this.#repository.recordRiskEvent(
+        'warning',
+        'parallel_fill_dust',
+        'parallel fills differ within one venue step / 10 bps',
+        {
+          batchId: request.batchId,
+          buyFilled: buyFilled.toFixed(),
+          sellFilled: sellFilled.toFixed(),
+          mismatchCanonical: fillMismatch.toFixed(),
+          toleranceCanonical: fillMismatchTolerance.toFixed(),
+        },
+      );
     }
 
     const buyAverage = buyOrderState.averagePrice ?? plan.buyPrice;
@@ -1436,6 +1458,8 @@ export class CexLiveExecutor {
         leg2Filled: sellFilled.toFixed(),
         leg1CanonicalFilled: boughtCanonical.toFixed(),
         leg2CanonicalFilled: soldCanonical.toFixed(),
+        fillMismatchCanonical: fillMismatch.toFixed(),
+        fillMismatchToleranceCanonical: fillMismatchTolerance.toFixed(),
         leg1AveragePrice: buyOrderState.averagePrice?.toFixed() ?? null,
         leg2AveragePrice: sellOrderState.averagePrice?.toFixed() ?? null,
         ...(accounting

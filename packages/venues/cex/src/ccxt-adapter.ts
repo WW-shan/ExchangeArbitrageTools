@@ -292,9 +292,13 @@ function gateRequiredPairsAllowed(
   );
 }
 
-export function stepFromCcxt(precision: unknown): Decimal | undefined {
+const CCXT_TICK_SIZE = 4;
+
+export function stepFromCcxt(precision: unknown, precisionMode?: number): Decimal | undefined {
+  const tickSize = precisionMode === CCXT_TICK_SIZE;
   if (typeof precision === 'number') {
     if (!Number.isFinite(precision) || precision <= 0) return undefined;
+    if (tickSize) return new Decimal(precision);
     if (Number.isInteger(precision)) {
       return precision <= 30 ? new Decimal(10).pow(-precision) : undefined;
     }
@@ -303,6 +307,7 @@ export function stepFromCcxt(precision: unknown): Decimal | undefined {
   if (typeof precision === 'string' && precision.trim() !== '') {
     const value = decimalOrUndefined(precision);
     if (!value || value.lte(0)) return undefined;
+    if (tickSize) return value;
     if (value.gte(1) && value.isInteger()) {
       return value.lte(30) ? new Decimal(10).pow(value.negated().toNumber()) : undefined;
     }
@@ -311,18 +316,15 @@ export function stepFromCcxt(precision: unknown): Decimal | undefined {
   return undefined;
 }
 
-function precisionDigits(value: unknown, fallback = 8): number {
-  const numeric = numberOrUndefined(value);
-  if (numeric === undefined || numeric < 0) return fallback;
-  if (Number.isInteger(numeric)) return numeric <= 30 ? numeric : fallback;
-  try {
-    const decimalPlaces = new Decimal(String(value)).decimalPlaces();
-    return decimalPlaces <= 30 ? decimalPlaces : fallback;
-  } catch {
-    return fallback;
-  }
+function precisionDigitsFromStep(step: Decimal | undefined, fallback = 8): number {
+  if (!step || !step.isFinite() || step.lte(0)) return fallback;
+  return Math.min(30, step.decimalPlaces());
 }
-function toMarket(venueId: string, market: Market | undefined): MarketMetadata | undefined {
+function toMarket(
+  venueId: string,
+  market: Market | undefined,
+  precisionMode?: number,
+): MarketMetadata | undefined {
   if (!market || market.active === false || !market.base || !market.quote || !market.symbol) {
     return undefined;
   }
@@ -331,8 +333,8 @@ function toMarket(venueId: string, market: Market | undefined): MarketMetadata |
   const feeConfig = market as Market & { fee?: { taker?: unknown; maker?: unknown } };
   const taker = decimalOrUndefined(market.taker ?? feeConfig.fee?.taker);
   const maker = decimalOrUndefined(market.maker ?? feeConfig.fee?.maker);
-  const amountStep = stepFromCcxt(market.precision?.amount);
-  const priceStep = stepFromCcxt(market.precision?.price);
+  const amountStep = stepFromCcxt(market.precision?.amount, precisionMode);
+  const priceStep = stepFromCcxt(market.precision?.price, precisionMode);
   const minAmount = decimalOrUndefined(market.limits?.amount?.min);
   const minNotional = decimalOrUndefined(market.limits?.cost?.min);
   return {
@@ -345,8 +347,8 @@ function toMarket(venueId: string, market: Market | undefined): MarketMetadata |
       : {}),
     quote,
     active: true,
-    pricePrecision: precisionDigits(market.precision?.price),
-    amountPrecision: precisionDigits(market.precision?.amount),
+    pricePrecision: precisionDigitsFromStep(priceStep),
+    amountPrecision: precisionDigitsFromStep(amountStep),
     ...(amountStep ? { amountStep } : {}),
     ...(priceStep ? { priceStep } : {}),
     ...(minAmount ? { minAmount } : {}),
@@ -539,7 +541,7 @@ export class CcxtCexAdapter implements CexAdapter {
         const typed = market as Market & { spot?: boolean; swap?: boolean };
         return this.#marketType === 'perp' ? typed.swap === true : typed.spot === true;
       })
-      .map((market) => toMarket(this.venueId, market))
+      .map((market) => toMarket(this.venueId, market, this.#exchange.precisionMode))
       .filter((market): market is MarketMetadata => market !== undefined)
       .map((market) => ({
         ...market,

@@ -134,6 +134,7 @@ interface FakeOptions {
   orderFeeRate?: Decimal;
   openOrders?: OrderState[];
   openOrdersError?: Error;
+  sellAmountTransform?: (amount: Decimal) => Decimal;
 }
 
 function fakeAdapter(venueId: string, options: FakeOptions = {}) {
@@ -204,7 +205,11 @@ function fakeAdapter(venueId: string, options: FakeOptions = {}) {
     createOrder: async (request) => {
       state.createCalls += 1;
       state.createSides.push(request.side);
-      state.createdAmounts[request.side] = request.amount;
+      const orderAmount =
+        request.side === 'sell' && options.sellAmountTransform
+          ? options.sellAmountTransform(request.amount)
+          : request.amount;
+      state.createdAmounts[request.side] = orderAmount;
       if (options.concurrency) {
         options.concurrency.active += 1;
         options.concurrency.max = Math.max(options.concurrency.max, options.concurrency.active);
@@ -231,7 +236,7 @@ function fakeAdapter(venueId: string, options: FakeOptions = {}) {
         request.side === 'buy' ? options.leg1PartialOpen : options.leg2PartialOpen;
       return orderFor(
         request.side === 'buy',
-        request.amount,
+        orderAmount,
         request.clientOrderId,
         ratio.eq(1) ? 'closed' : partialOpen ? 'open' : 'canceled',
       );
@@ -1325,6 +1330,41 @@ describe('parallel FOK two-leg execution', () => {
     expect(JSON.parse(execution.metadata_json)).toMatchObject({
       mode: 'parallel_fok',
       outcome: 'CLOSED',
+    });
+    repo.close();
+  });
+
+  it('treats a dust fill mismatch within one venue step / 10 bps as closed', async () => {
+    const { db, repo, executor, buy, sell } = setup(
+      { sellAmountTransform: (amount) => amount.minus('0.01') },
+      'parallel_fok',
+    );
+    const result = await executor.execute(
+      request(
+        {
+          adapter: buy.adapter,
+          market: fokMarket('gateio'),
+          credentials: keys,
+          healthState: 'A',
+        },
+        {
+          adapter: sell.adapter,
+          market: fokMarket('mexc'),
+          credentials: keys,
+          healthState: 'A',
+        },
+      ),
+    );
+    expect(result.outcome).toBe('CLOSED');
+    expect(repo.openUnhedgedInventory()).toHaveLength(0);
+    expect(repo.getSetting('kill_switch')).toBe('false');
+    expect(repo.listRiskEvents(10).some((event) => event.rule === 'parallel_fill_dust')).toBe(true);
+    const execution = db
+      .prepare('SELECT metadata_json FROM executions WHERE batch_id = ?')
+      .get('exec-batch') as { metadata_json: string };
+    expect(JSON.parse(execution.metadata_json)).toMatchObject({
+      fillMismatchCanonical: '0.01',
+      fillMismatchToleranceCanonical: '0.012',
     });
     repo.close();
   });
