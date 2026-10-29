@@ -10,9 +10,12 @@ quote_currency = "USDT"
 # Keep the first live batch narrow. Use config/discovery.toml for read-only
 # volume-ranked opportunity discovery.
 asset_universe_mode = "explicit"
-base_assets = ["WARD", "KAT"]
+# Gate/Bitget 1m backtest, 2026-10-24..2026-10-30. WARD and KAT remain the
+# highest-quality stress candidates. LIGHT, LA, BREV and AEON add breadth but
+# have fewer stress samples; they stay monitor-only until inventory is seeded.
+base_assets = ["WARD", "KAT", "LIGHT", "LA", "BREV", "AEON"]
 quote_currencies = ["USDT"]
-max_base_assets = 2
+max_base_assets = 6
 fetch_concurrency = 4
 scan_interval_hot_ms = 30000
 scan_interval_top100_ms = 120000
@@ -143,6 +146,30 @@ base = 'KAT'
 quote = 'USDT'
 venues = ['gateio', 'bitget']
 max_notional = '20'
+
+[[auto_rotation.pairs]]
+base = 'LIGHT'
+quote = 'USDT'
+venues = ['gateio', 'bitget']
+max_notional = '10'
+
+[[auto_rotation.pairs]]
+base = 'LA'
+quote = 'USDT'
+venues = ['gateio', 'bitget']
+max_notional = '10'
+
+[[auto_rotation.pairs]]
+base = 'BREV'
+quote = 'USDT'
+venues = ['gateio', 'bitget']
+max_notional = '10'
+
+[[auto_rotation.pairs]]
+base = 'AEON'
+quote = 'USDT'
+venues = ['gateio', 'bitget']
+max_notional = '10'
 
 # 2026-10-29 live check: Gate/Bitget WARD withdraw=false; Bitget KAT
 # withdraw=false. WARD/KAT have no two-way transfer route. See
