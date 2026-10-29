@@ -193,7 +193,7 @@ min_quote_reserve_usd = '5'
 min_useful_notional_usd = '3'
 min_stable_ms = 3000
 max_pair_deviation_bps = '30'
-max_price_drift_bps = '25'
+max_price_drift_bps = '100'
 check_interval_ms = 1000
 retry_cooldown_ms = 60000
 ```

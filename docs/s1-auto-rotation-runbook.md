@@ -88,7 +88,8 @@ arbitrage trade:
   delta, order events, audit and balance snapshots.
 
 The live profile uses 5 USDT per seed, keeps at least 5 USDT quote, requires 3
-USDT of useful base, and uses a 30 bps near-parity band. Unknown or partial seed
+USDT of useful base, and uses a 30 bps near-parity band and a 100 bps stability
+window. Unknown or partial seed
 fills open the kill switch and require manual reconciliation. A rejected FOK
 does not open the kill switch; it waits for the retry cooldown.
 
