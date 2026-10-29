@@ -10,10 +10,26 @@ $stopPath = Join-Path $data 'rotation.stop'
 $executorScript = Join-Path $root 'apps/executor/src/main.ts'
 $scannerScript = Join-Path $root 'apps/scanner/src/main.ts'
 
+function Read-TextFileShared {
+  param([string]$Path)
+  $share = [IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete
+  $stream = [IO.FileStream]::new(
+    $Path,
+    [IO.FileMode]::Open,
+    [IO.FileAccess]::Read,
+    $share
+  )
+  try {
+    $reader = [IO.StreamReader]::new($stream, [Text.UTF8Encoding]::new($false), $true)
+    try { return $reader.ReadToEnd() } finally { $reader.Dispose() }
+  } finally {
+    $stream.Dispose()
+  }
+}
 function Read-JsonFile {
   param([string]$Path)
   if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return $null }
-  try { return (Get-Content -LiteralPath $Path -Raw | ConvertFrom-Json) } catch { return $null }
+  try { return (Read-TextFileShared -Path $Path | ConvertFrom-Json) } catch { return $null }
 }
 function Count-RoleProcesses {
   param([string]$Needle, [string]$Relative, [switch]$Executor)

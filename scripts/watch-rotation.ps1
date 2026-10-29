@@ -82,10 +82,27 @@ function Write-WatchdogStatus {
   }
 }
 
+function Read-TextFileShared {
+  param([string]$Path)
+  $share = [IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete
+  $stream = [IO.FileStream]::new(
+    $Path,
+    [IO.FileMode]::Open,
+    [IO.FileAccess]::Read,
+    $share
+  )
+  try {
+    $reader = [IO.StreamReader]::new($stream, [Text.UTF8Encoding]::new($false), $true)
+    try { return $reader.ReadToEnd() } finally { $reader.Dispose() }
+  } finally {
+    $stream.Dispose()
+  }
+}
+
 function Read-RotationHeartbeat {
   param([string]$Path)
   if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return $null }
-  try { return (Get-Content -LiteralPath $Path -Raw | ConvertFrom-Json) } catch { return $null }
+  try { return (Read-TextFileShared -Path $Path | ConvertFrom-Json) } catch { return $null }
 }
 
 function Get-HeartbeatAgeMs {

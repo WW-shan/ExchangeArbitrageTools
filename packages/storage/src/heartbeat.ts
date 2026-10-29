@@ -1,6 +1,33 @@
 import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 
+const RENAME_RETRY_DELAYS_MS = [0, 5, 10, 20, 40, 80] as const;
+
+function sleepSync(milliseconds: number): void {
+  if (milliseconds <= 0) return;
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, milliseconds);
+}
+
+function isRetryableRenameError(error: unknown): boolean {
+  const code = (error as NodeJS.ErrnoException | undefined)?.code;
+  return code === 'EPERM' || code === 'EACCES' || code === 'EBUSY';
+}
+
+function replaceFileWithRetry(temporary: string, destination: string): void {
+  let lastError: unknown;
+  for (const delay of RENAME_RETRY_DELAYS_MS) {
+    sleepSync(delay);
+    try {
+      renameSync(temporary, destination);
+      return;
+    } catch (error) {
+      lastError = error;
+      if (!isRetryableRenameError(error)) throw error;
+    }
+  }
+  throw lastError;
+}
+
 export interface RotationHeartbeat {
   version?: 1;
   role?: 'executor' | 'scanner';
@@ -22,7 +49,7 @@ export function writeHeartbeat(path: string, heartbeat: RotationHeartbeat): void
   const temporary = `${path}.${process.pid}.${Date.now()}.tmp`;
   try {
     writeFileSync(temporary, `${JSON.stringify(heartbeat)}\n`, 'utf8');
-    renameSync(temporary, path);
+    replaceFileWithRetry(temporary, path);
   } finally {
     rmSync(temporary, { force: true });
   }
