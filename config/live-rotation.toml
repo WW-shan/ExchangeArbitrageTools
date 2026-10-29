@@ -65,6 +65,9 @@ cross_venue_mode = "off"
 max_venue_switches = 1
 balance_max_age_ms = 300000
 require_balances_for_s1 = true
+# Reserve 1% of the limiting balance for preflight price movement and fees.
+# Without this, a full-balance signal can safe-stop as sell_base_balance_insufficient.
+balance_safety_buffer_bps = 100
 min_top_depth_qty = "0"
 liquidity_top_levels = 5
 
@@ -123,6 +126,9 @@ quote = 'USDT'
 venues = ['gateio', 'bitget']
 max_notional = '20'
 
+# 2026-10-29 live check: Gate/Bitget WARD withdraw=false; Bitget KAT
+# withdraw=false. WARD/KAT have no two-way transfer route. See
+# docs/s1-transfer-route-check-2026-10-29.md before enabling this section.
 [transfers]
 enabled = false
 require_manual_confirmation = true

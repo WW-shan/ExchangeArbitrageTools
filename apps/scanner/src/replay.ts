@@ -302,6 +302,7 @@ export async function runReplay(
     crossVenueMode: options.crossVenueMode ?? (fixture.balances?.length ? 'inventory' : 'off'),
     maxVenueSwitches: 1,
     balanceMaxAgeMs: Number.MAX_SAFE_INTEGER,
+    balanceSafetyBufferBps: new Decimal(100),
     optimalSizing: options.optimalSizing ?? true,
     minSizingNotional: options.minSizingNotional ?? new Decimal(1),
     sizingStep: options.sizingStep ?? new Decimal('0.01'),

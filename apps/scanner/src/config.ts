@@ -87,6 +87,7 @@ export interface ScannerConfig {
   maxVenueSwitches: number;
   balanceMaxAgeMs: number;
   requireBalancesForS1: boolean;
+  balanceSafetyBufferBps: Decimal;
   optimalSizing: boolean;
   minSizingNotional: Decimal;
   sizingStep: Decimal;
@@ -363,6 +364,7 @@ export function loadConfig(path = 'config/default.toml'): AppConfig {
       maxVenueSwitches: numberValue(scanner, 'max_venue_switches', 1),
       balanceMaxAgeMs: numberValue(scanner, 'balance_max_age_ms', 300_000),
       requireBalancesForS1: booleanValue(scanner, 'require_balances_for_s1', false),
+      balanceSafetyBufferBps: decimalValue(scanner, 'balance_safety_buffer_bps', '100'),
       optimalSizing: booleanValue(scanner, 'optimal_sizing', true),
       minSizingNotional: decimalValue(scanner, 'min_sizing_notional', '1'),
       sizingStep: decimalValue(scanner, 'sizing_step', '0.01'),

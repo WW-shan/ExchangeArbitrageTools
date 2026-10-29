@@ -184,6 +184,7 @@ export interface ScannerServiceOptions {
   maxVenueSwitches?: number;
   balanceMaxAgeMs?: number;
   requireBalancesForS1?: boolean;
+  balanceSafetyBufferBps?: Decimal;
   monitorOnlyVenues?: string[];
   optimalSizing?: boolean;
   minSizingNotional?: Decimal;
@@ -251,6 +252,7 @@ export class ScannerService {
   readonly #maxVenueSwitches: number;
   readonly #balanceMaxAgeMs: number;
   readonly #requireBalancesForS1: boolean;
+  readonly #balanceSafetyBufferBps: Decimal;
   readonly #monitorOnlyVenues: ReadonlySet<string>;
   readonly #optimalSizing: boolean;
   readonly #minSizingNotional: Decimal;
@@ -370,6 +372,13 @@ export class ScannerService {
     this.#maxVenueSwitches = Math.max(0, options.maxVenueSwitches ?? 1);
     this.#balanceMaxAgeMs = Math.max(0, options.balanceMaxAgeMs ?? 300_000);
     this.#requireBalancesForS1 = options.requireBalancesForS1 ?? false;
+    const balanceSafetyBufferBps = options.balanceSafetyBufferBps ?? new Decimal(100);
+    this.#balanceSafetyBufferBps =
+      balanceSafetyBufferBps.isFinite() &&
+      balanceSafetyBufferBps.gte(0) &&
+      balanceSafetyBufferBps.lt(10_000)
+        ? balanceSafetyBufferBps
+        : new Decimal(100);
     this.#monitorOnlyVenues = new Set(
       (options.monitorOnlyVenues ?? []).map((venueId) => venueId.trim().toLowerCase()),
     );
@@ -822,6 +831,7 @@ export class ScannerService {
             input.buyMarket.venueId,
             input.sellMarket.venueId,
             sourceSellMarket,
+            input.buyMarket,
             input.quote,
             buyPrice,
           );
@@ -1218,6 +1228,7 @@ export class ScannerService {
     buyVenueId: string,
     sellVenueId: string,
     sellMarket: MarketMetadata,
+    buyMarket: MarketMetadata,
     quote: string,
     buyPrice: Decimal | undefined,
   ): { maxNotional?: Decimal; missing: boolean; limited: boolean } {
@@ -1234,7 +1245,12 @@ export class ScannerService {
       return { missing: true, limited: false };
     }
     const baseFreeCanonical = baseFree.mul(marketBaseMultiplier(sellMarket));
-    const maxNotional = Decimal.min(quoteFree, baseFreeCanonical.mul(buyPrice));
+    const bufferFactor = new Decimal(1).minus(this.#balanceSafetyBufferBps.div(10_000));
+    const buyFeeBps = buyMarket.feeTakerBps ?? ZERO;
+    const quoteFactor = new Decimal(1).plus(buyFeeBps.div(10_000));
+    const quoteCap = quoteFree.div(quoteFactor).mul(bufferFactor);
+    const baseCap = baseFreeCanonical.mul(buyPrice).mul(bufferFactor);
+    const maxNotional = Decimal.min(quoteCap, baseCap);
     return {
       maxNotional,
       missing: false,

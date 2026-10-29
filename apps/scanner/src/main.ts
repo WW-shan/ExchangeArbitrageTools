@@ -228,6 +228,7 @@ async function main(): Promise<void> {
     maxVenueSwitches: config.scanner.maxVenueSwitches,
     balanceMaxAgeMs: config.scanner.balanceMaxAgeMs,
     requireBalancesForS1: config.scanner.requireBalancesForS1,
+    balanceSafetyBufferBps: config.scanner.balanceSafetyBufferBps,
     monitorOnlyVenues: config.scanner.monitorOnlyVenues,
     optimalSizing: config.scanner.optimalSizing,
     minSizingNotional: config.scanner.minSizingNotional,
