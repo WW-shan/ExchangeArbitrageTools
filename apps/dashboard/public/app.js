@@ -23,6 +23,14 @@ const clock = (value) => {
   return Number.isNaN(date.getTime()) ? '—' : date.toLocaleTimeString([], { hour12: false });
 };
 
+const age = (value) => {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed < 0) return '—';
+  if (parsed < 1000) return `${Math.round(parsed)} ms`;
+  if (parsed < 60_000) return `${Math.round(parsed / 1000)} s`;
+  return `${Math.round(parsed / 60_000)} min`;
+};
+
 const cell = (value, className) => {
   const td = document.createElement('td');
   if (className) td.className = className;
@@ -205,6 +213,80 @@ function renderInventory(rows) {
   }
 }
 
+function renderUnhedged(rows) {
+  const list = $('unhedged-list');
+  list.replaceChildren();
+  if (!rows.length) {
+    const p = document.createElement('p');
+    p.className = 'empty';
+    p.textContent = 'No unhedged inventory.';
+    list.append(p);
+    return;
+  }
+  for (const row of rows) {
+    const item = document.createElement('div');
+    item.className = 'episode';
+    const title = document.createElement('strong');
+    title.textContent = `UNHEDGED / ${row.venue_id} / ${row.asset}`;
+    const detail = document.createElement('span');
+    detail.className = 'muted';
+    detail.textContent = `${text(row.amount)} ${row.asset} · ${text(row.direction)} · ${clock(row.created_at)}`;
+    item.append(title, detail);
+    list.append(item);
+  }
+}
+
+function renderExecutions(rows) {
+  const list = $('executions-list');
+  list.replaceChildren();
+  if (!rows.length) {
+    const p = document.createElement('p');
+    p.className = 'empty';
+    p.textContent = 'No live executions recorded.';
+    list.append(p);
+    return;
+  }
+  for (const row of rows) {
+    const item = document.createElement('div');
+    item.className = 'episode';
+    const title = document.createElement('strong');
+    title.textContent = `${row.strategy} / ${row.status}`;
+    const detail = document.createElement('span');
+    detail.className = 'muted';
+    detail.textContent = `${row.batchId} · P&L ${fixed(row.realizedProfit, 6)} · ${clock(row.closedAt ?? row.openedAt)}`;
+    item.append(title, detail);
+    list.append(item);
+  }
+}
+
+function renderAccount(data) {
+  $('account-stamp').textContent = `UPDATED ${clock(data.capturedAt)}`;
+  const body = $('account-body');
+  body.replaceChildren();
+  if (!data.balances.length) {
+    const tr = document.createElement('tr');
+    const td = cell('No account snapshot yet.', 'empty');
+    td.colSpan = 6;
+    tr.append(td);
+    body.append(tr);
+  } else {
+    for (const row of data.balances) {
+      const tr = document.createElement('tr');
+      tr.append(
+        cell(row.venueId),
+        cell(row.asset),
+        cell(fixed(row.free, 8)),
+        cell(fixed(row.used, 8)),
+        cell(fixed(row.total, 8)),
+        cell(age(row.ageMs)),
+      );
+      body.append(tr);
+    }
+  }
+  renderUnhedged(data.unhedged ?? []);
+  renderExecutions(data.recentExecutions ?? []);
+}
+
 function renderRisks(rows) {
   const list = $('risk-list');
   list.replaceChildren();
@@ -229,18 +311,20 @@ function renderRisks(rows) {
 }
 
 async function refreshTables() {
-  const [venues, opportunities, episodes, inventory, risks] = await Promise.all([
+  const [venues, opportunities, episodes, inventory, risks, account] = await Promise.all([
     getJson('/api/venues'),
     getJson('/api/opportunities?limit=40'),
     getJson('/api/episodes?limit=20'),
     getJson('/api/inventory'),
     getJson('/api/risk-events'),
+    getJson('/api/account'),
   ]);
   renderVenues(venues);
   renderOpportunities(opportunities);
   renderEpisodes(episodes);
   renderInventory(inventory);
   renderRisks(risks);
+  renderAccount(account);
 }
 
 async function refresh() {

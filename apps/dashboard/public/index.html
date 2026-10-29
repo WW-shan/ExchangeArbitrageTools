@@ -241,6 +241,9 @@
               </tbody>
             </table>
           </div>
+          <div id="unhedged-list" class="episode-list" aria-label="Unhedged inventory">
+            <p class="empty">No unhedged inventory.</p>
+          </div>
         </article>
         <article class="panel">
           <div class="panel__head">
@@ -249,6 +252,43 @@
           </div>
           <div id="risk-list" class="risk-list"><p class="empty">No risk events recorded.</p></div>
         </article>
+      </section>
+
+      <section class="desk-grid">
+        <article class="panel panel--venues">
+          <div class="panel__head">
+            <h2>Account &amp; Positions</h2>
+            <span class="stamp" id="account-stamp">LOCAL SNAPSHOT</span>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Venue</th>
+                  <th>Asset</th>
+                  <th>Free</th>
+                  <th>Used</th>
+                  <th>Total</th>
+                  <th>Age</th>
+                </tr>
+              </thead>
+              <tbody id="account-body">
+                <tr>
+                  <td colspan="6" class="empty">No account snapshot yet.</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </article>
+        <aside class="panel">
+          <div class="panel__head">
+            <h2>Recent Executions</h2>
+            <span class="stamp">NEWEST FIRST</span>
+          </div>
+          <div id="executions-list" class="episode-list">
+            <p class="empty">No live executions recorded.</p>
+          </div>
+        </aside>
       </section>
     </main>
 

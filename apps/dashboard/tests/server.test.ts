@@ -61,6 +61,15 @@ describe('local dashboard API', () => {
       usdValue: new Decimal(100),
       capturedAt: Date.now(),
     });
+    repo.recordBalance({
+      venueId: 'gateio',
+      accountId: 'default',
+      currency: 'USDT',
+      free: new Decimal(100),
+      used: new Decimal(0),
+      total: new Decimal(100),
+      fetchedAt: Date.now(),
+    });
     repo.recordRiskEvent('warning', 'dashboard_smoke', 'seeded risk event');
     repo.recordAudit('test', 'dashboard_smoke');
     repo.recordAudit('operator', 'dashboard_operator_action');
@@ -132,6 +141,16 @@ describe('local dashboard API', () => {
     expect(inventory.statusCode).toBe(200);
     expect(inventory.json()).toHaveLength(1);
 
+    const account = await app.inject({ method: 'GET', url: '/api/account' });
+    expect(account.statusCode).toBe(200);
+    expect(account.json().balances).toHaveLength(1);
+    expect(account.json().balances[0]).toMatchObject({
+      venueId: 'gateio',
+      asset: 'USDT',
+      total: '100',
+    });
+    expect(account.json().recovery).toEqual({ openExecutions: 0, unresolvedLegs: 0 });
+
     const opportunities = await app.inject({ method: 'GET', url: '/api/opportunities' });
     expect(opportunities.statusCode).toBe(200);
     expect(opportunities.json()).toHaveLength(1);
@@ -166,5 +185,6 @@ describe('local dashboard API', () => {
     expect(page.statusCode).toBe(200);
     expect(page.body).toContain('ARB');
     expect(page.body).toContain('Rollout Diagnostics');
+    expect(page.body).toContain('Account &amp; Positions');
   });
 });

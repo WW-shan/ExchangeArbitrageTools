@@ -8,7 +8,7 @@ import {
   type OpportunityResult,
   type RotationBalances,
 } from '@arb/core';
-import type { ArbitrageRepository, LoadedOpportunity } from '@arb/storage';
+import type { ArbitrageRepository, LoadedOpportunity, RotationHeartbeat } from '@arb/storage';
 import { applyFeeOverride, mergeAccountFeeFile } from '@arb/venues-cex';
 import {
   decideAutoRotation,
@@ -219,6 +219,48 @@ function logAccountState(
   });
 }
 
+function heartbeatAccount(
+  repository: ArbitrageRepository,
+  now: number,
+): NonNullable<RotationHeartbeat['account']> {
+  const balances = repository
+    .latestBalances({ now })
+    .filter((row) => row.free.gt(0) || row.used.gt(0))
+    .map((row) => ({
+      venueId: row.venueId,
+      asset: row.currency,
+      free: row.free.toFixed(),
+      used: row.used.toFixed(),
+      total: row.total.toFixed(),
+      fetchedAt: row.fetchedAt,
+      ageMs: Math.max(0, now - row.fetchedAt),
+    }));
+  const unhedged = repository.openUnhedgedInventory().map((row) => ({
+    batchId: String(row.batch_id),
+    venueId: String(row.venue_id),
+    asset: String(row.asset),
+    amount: String(row.amount),
+    direction: String(row.direction),
+    createdAt: Number(row.created_at),
+  }));
+  const recentExecutions = (
+    repository.db
+      .prepare(
+        `SELECT strategy, batch_id, status, realized_profit, opened_at, closed_at
+         FROM executions ORDER BY id DESC LIMIT 8`,
+      )
+      .all() as Array<Record<string, unknown>>
+  ).map((row) => ({
+    batchId: String(row.batch_id),
+    strategy: String(row.strategy),
+    status: String(row.status),
+    realizedProfit: row.realized_profit === null ? null : String(row.realized_profit),
+    openedAt: Number(row.opened_at),
+    closedAt: row.closed_at === null ? null : Number(row.closed_at),
+  }));
+  return { capturedAt: now, balances, unhedged, recentExecutions };
+}
+
 function recordHeartbeat(
   repository: ArbitrageRepository,
   config: ExecutorConfig,
@@ -227,6 +269,7 @@ function recordHeartbeat(
   phase?: string,
 ): void {
   try {
+    const now = Date.now();
     writeHeartbeat(
       process.env.ARB_ROTATION_EXECUTOR_HEARTBEAT ?? config.autoRotation.heartbeatFile,
       {
@@ -235,12 +278,13 @@ function recordHeartbeat(
         ...(process.env.ARB_ROTATION_RUN_ID ? { runId: process.env.ARB_ROTATION_RUN_ID } : {}),
         pid: process.pid,
         startedAt: Number(process.env.ARB_ROTATION_STARTED_AT ?? EXECUTOR_STARTED_AT),
-        updatedAt: Date.now(),
+        updatedAt: now,
         state,
         phase: state === 'stopped' ? 'STOPPED' : (phase ?? 'RUNNING'),
-        lastProgressAt: Date.now(),
+        lastProgressAt: now,
         openExecutions: repository.countOpenExecutions(),
         unresolvedOrders: repository.countUnresolvedOrders(),
+        account: heartbeatAccount(repository, now),
         ...(lastWaitReasons ? { lastWaitReasons } : {}),
         details: {
           autoExecutionEnabled: repository.getSetting('auto_execution_enabled'),

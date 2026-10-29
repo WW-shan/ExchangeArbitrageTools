@@ -40,6 +40,34 @@ export interface RotationHeartbeat {
   lastProgressAt?: number;
   openExecutions?: number;
   unresolvedOrders?: number;
+  account?: {
+    capturedAt: number;
+    balances: Array<{
+      venueId: string;
+      asset: string;
+      free: string;
+      used: string;
+      total: string;
+      fetchedAt: number;
+      ageMs: number;
+    }>;
+    unhedged: Array<{
+      batchId: string;
+      venueId: string;
+      asset: string;
+      amount: string;
+      direction: string;
+      createdAt: number;
+    }>;
+    recentExecutions: Array<{
+      batchId: string;
+      strategy: string;
+      status: string;
+      realizedProfit: string | null;
+      openedAt: number;
+      closedAt: number | null;
+    }>;
+  };
   lastWaitReasons?: string[];
   details?: Record<string, unknown>;
 }

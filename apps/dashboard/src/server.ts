@@ -54,6 +54,48 @@ export async function buildServer(options: DashboardServerOptions = {}): Promise
 
   app.get('/api/venues', async () => repo.latestHealth());
   app.get('/api/inventory', async () => repo.latestInventory(100));
+  app.get('/api/account', async () => {
+    const now = Date.now();
+    const balances = repo
+      .latestBalances({ now })
+      .filter((row) => row.free.gt(0) || row.used.gt(0))
+      .map((row) => ({
+        venueId: row.venueId,
+        asset: row.currency,
+        free: row.free.toFixed(),
+        used: row.used.toFixed(),
+        total: row.total.toFixed(),
+        fetchedAt: row.fetchedAt,
+        ageMs: Math.max(0, now - row.fetchedAt),
+      }));
+    const recentExecutions = (
+      repo.db
+        .prepare(
+          `SELECT strategy, batch_id, status, planned_notional, realized_profit,
+                  opened_at, closed_at, safe_mode_reason
+           FROM executions ORDER BY id DESC LIMIT 8`,
+        )
+        .all() as Array<Record<string, unknown>>
+    ).map((row) => ({
+      strategy: String(row.strategy),
+      batchId: String(row.batch_id),
+      status: String(row.status),
+      plannedNotional: row.planned_notional === null ? null : String(row.planned_notional),
+      realizedProfit: row.realized_profit === null ? null : String(row.realized_profit),
+      openedAt: Number(row.opened_at),
+      closedAt: row.closed_at === null ? null : Number(row.closed_at),
+      safeModeReason: row.safe_mode_reason === null ? null : String(row.safe_mode_reason),
+    }));
+    return {
+      capturedAt: now,
+      balances,
+      unhedged: repo.openUnhedgedInventory(),
+      recentExecutions,
+      recovery: repo.recoveryCounts(),
+      killSwitch: repo.getSetting('kill_switch') !== 'false',
+      liveEnabled: repo.getSetting('live_enabled') === 'true',
+    };
+  });
   app.get('/api/risk-events', async () => repo.listRiskEvents(100));
   app.get('/api/audit', async () => repo.listAuditLogs(100));
 

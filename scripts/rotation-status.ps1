@@ -63,6 +63,7 @@ $output = [ordered]@{
       phase = $executor.phase
       updatedAt = $executor.updatedAt
       ageMs = if ($executor.updatedAt) { $now - [int64]$executor.updatedAt } else { $null }
+      account = $executor.account
     }
   } else { $null }
   scannerHeartbeat = if ($scanner) {
