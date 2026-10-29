@@ -19,6 +19,7 @@ import {
   rotationRebalanceTargets,
   rotationRequirementFromOpportunity,
   scannerDirectionForRotation,
+  venuesForRotationDirection,
 } from './auto-rotation.js';
 import { refreshBalances } from './balance-service.js';
 import type { RecoveryVenue } from './bootstrap.js';
@@ -94,10 +95,12 @@ interface UnfundedCandidate {
   balances: PairBalances;
 }
 
-const ROTATION_EXECUTION_VENUES = new Set(['gateio', 'hotcoin']);
-
-export function isRotationExecutionVenue(venueId: string): boolean {
-  return ROTATION_EXECUTION_VENUES.has(venueId.trim().toLowerCase());
+export function isRotationExecutionVenue(
+  venueId: string,
+  pair?: Pick<RotationPairConfig, 'venues'>,
+): boolean {
+  const venues = pair?.venues ?? ['gateio', 'hotcoin'];
+  return venues.includes(venueId.trim().toLowerCase());
 }
 
 function sleepDefault(ms: number): Promise<void> {
@@ -116,20 +119,21 @@ export function pairBalances(
   maxAgeMs: number,
 ): PairBalances {
   const reasons: string[] = [];
-  const gateMarket = markets.gateio?.find(
+  const [venueA, venueB] = pair.venues;
+  const gateMarket = markets[venueA]?.find(
     (market) =>
       market.active &&
       market.base.toUpperCase() === pair.base &&
       market.quote.toUpperCase() === pair.quote,
   );
-  const hotMarket = markets.hotcoin?.find(
+  const hotMarket = markets[venueB]?.find(
     (market) =>
       market.active &&
       market.base.toUpperCase() === pair.base &&
       market.quote.toUpperCase() === pair.quote,
   );
-  if (!gateMarket) reasons.push('gate_market_missing');
-  if (!hotMarket) reasons.push('hotcoin_market_missing');
+  if (!gateMarket) reasons.push(`${venueA}_market_missing`);
+  if (!hotMarket) reasons.push(`${venueB}_market_missing`);
   if (!gateMarket || !hotMarket) {
     return {
       readinessBalances: {
@@ -147,8 +151,8 @@ export function pairBalances(
   const rows = repository.latestBalances({ maxAgeMs: maxAgeMs + 1, now });
   const venueFresh = (venueId: string): boolean =>
     rows.some((balance) => balance.venueId === venueId && balance.fetchedAt >= now - maxAgeMs);
-  if (!venueFresh('gateio')) reasons.push('gate_balance_snapshot_stale');
-  if (!venueFresh('hotcoin')) reasons.push('hotcoin_balance_snapshot_stale');
+  if (!venueFresh(venueA)) reasons.push(`${venueA}_balance_snapshot_stale`);
+  if (!venueFresh(venueB)) reasons.push(`${venueB}_balance_snapshot_stale`);
   const free = (venueId: string, currency: string): Decimal =>
     rows.find(
       (balance) =>
@@ -158,15 +162,15 @@ export function pairBalances(
   return {
     readinessBalances: {
       gateBase: canonicalAmountFromExchange(
-        free('gateio', gateCurrencies.base),
+        free(venueA, gateCurrencies.base),
         marketBaseMultiplier(gateMarket),
       ),
-      gateQuote: free('gateio', gateCurrencies.quote),
+      gateQuote: free(venueA, gateCurrencies.quote),
       hotcoinBase: canonicalAmountFromExchange(
-        free('hotcoin', hotCurrencies.base),
+        free(venueB, hotCurrencies.base),
         marketBaseMultiplier(hotMarket),
       ),
-      hotcoinQuote: free('hotcoin', hotCurrencies.quote),
+      hotcoinQuote: free(venueB, hotCurrencies.quote),
     },
     fresh: reasons.length === 0,
     reasons,
@@ -186,8 +190,19 @@ function logAccountState(
   const maxAgeMs = Math.max(config.autoRotation.balanceRefreshMs * 2, 30_000);
   const pairs = config.autoRotation.pairs.map((pair) => {
     const balances = pairBalances(repository, pair, markets, now, maxAgeMs);
+    const [venueA, venueB] = pair.venues;
     return {
       pair: `${pair.base}/${pair.quote}`,
+      venues: {
+        [venueA]: {
+          base: balances.readinessBalances.gateBase.toFixed(),
+          quote: balances.readinessBalances.gateQuote.toFixed(),
+        },
+        [venueB]: {
+          base: balances.readinessBalances.hotcoinBase.toFixed(),
+          quote: balances.readinessBalances.hotcoinQuote.toFixed(),
+        },
+      },
       gateBase: balances.readinessBalances.gateBase.toFixed(),
       gateQuote: balances.readinessBalances.gateQuote.toFixed(),
       hotcoinBase: balances.readinessBalances.hotcoinBase.toFixed(),
@@ -244,7 +259,8 @@ async function loadMarkets(
 ): Promise<Record<string, MarketMetadata[]>> {
   const feeOverrides = mergeAccountFeeFile(config.feeOverrides, config.feeFile);
   const result: Record<string, MarketMetadata[]> = {};
-  for (const venueId of ['gateio', 'hotcoin']) {
+  const venueIds = [...new Set(config.autoRotation.pairs.flatMap((pair) => [...pair.venues]))];
+  for (const venueId of venueIds) {
     const adapter = adapters[venueId]?.adapter;
     if (!adapter) throw new Error(`missing trade adapter for ${venueId}`);
     result[venueId] = (await adapter.loadMarkets()).map((market) =>
@@ -284,8 +300,8 @@ function actionableCandidate(input: {
       continue;
     }
     if (
-      !isRotationExecutionVenue(opportunity.venueBuy) ||
-      !isRotationExecutionVenue(opportunity.venueSell)
+      !isRotationExecutionVenue(opportunity.venueBuy, pair) ||
+      !isRotationExecutionVenue(opportunity.venueSell, pair)
     ) {
       lastWait = [`monitor_only_route:${opportunity.venueBuy}->${opportunity.venueSell}`];
       continue;
@@ -422,7 +438,7 @@ function preparationCandidate(input: {
     );
     if (!balances.fresh) continue;
     for (const direction of ['gate->hotcoin', 'hotcoin->gate'] as const) {
-      const scannerDirection = scannerDirectionForRotation(direction);
+      const scannerDirection = scannerDirectionForRotation(direction, pair);
       const loaded = candidates.find(
         (candidate) =>
           candidate.opportunity.instrumentKey === `${pair.base}/${pair.quote}` &&
@@ -503,8 +519,7 @@ function preparationCandidate(input: {
       const readiness = assessRotationReadiness(balances.readinessBalances, requirement);
       const funded = direction === 'gate->hotcoin' ? readiness.gateToHot : readiness.hotToGate;
       if (!funded) continue;
-      const venueBuy = direction === 'gate->hotcoin' ? 'gateio' : 'hotcoin';
-      const venueSell = direction === 'gate->hotcoin' ? 'hotcoin' : 'gateio';
+      const [venueBuy, venueSell] = venuesForRotationDirection(direction, pair);
       if (states.get(venueBuy) !== 'A' || states.get(venueSell) !== 'A') continue;
       let buy: ExecutionVenue;
       let sell: ExecutionVenue;
@@ -539,7 +554,7 @@ function preparationCandidate(input: {
           sell,
           direction,
           opportunity,
-          batchId: `PREP-${pair.base}-${now}-${direction.replace('->', '-')}`,
+          batchId: `PREP-${pair.base}-${now}-${venueBuy}-${venueSell}`,
           preparation: {
             maxCostBps,
             maxCostUsd,
@@ -583,6 +598,7 @@ async function rebalanceUnfundedCandidate(input: {
     quote: unfunded.pair.quote,
     balances: unfunded.balances.readinessBalances,
     requirement: unfunded.requirement,
+    venues: unfunded.pair.venues,
     allowlist: config.transfers.allowlist,
     assetPricesUsd,
   });
@@ -629,6 +645,7 @@ async function rebalanceUnfundedCandidate(input: {
     quote: unfunded.pair.quote,
     balances: unfunded.balances.readinessBalances,
     requirement: unfunded.requirement,
+    venues: unfunded.pair.venues,
     withdrawFees: estimate.withdrawFees,
   });
   if (targets.length === 0) return { action: 'NOOP', reasons: ['no_transfer_targets'] };
@@ -677,12 +694,17 @@ export async function runAutoRotationSupervisor(
   if (!config.autoRotation.enabled) throw new Error('auto_rotation.enabled is false');
   const markets = await loadMarkets(adapters, config);
   const instruments = config.autoRotation.pairs.map((pair) => `${pair.base}/${pair.quote}`);
-  const balanceVenues = ['gateio', 'hotcoin'].flatMap((venueId) => {
+  const executionVenueIds = [
+    ...new Set(config.autoRotation.pairs.flatMap((pair) => [...pair.venues])),
+  ];
+  const balanceVenues = executionVenueIds.flatMap((venueId) => {
     const adapter = adapters[venueId];
     return adapter ? [{ adapter: adapter.adapter, credentials: adapter.credentials }] : [];
   });
-  if (balanceVenues.length !== 2)
-    throw new Error('auto rotation requires both gateio and hotcoin trade credentials');
+  if (balanceVenues.length !== executionVenueIds.length) {
+    const missing = executionVenueIds.filter((venueId) => !adapters[venueId]);
+    throw new Error(`auto rotation requires trade credentials for: ${missing.join(', ')}`);
+  }
   const statusCredentials = options.accountStatusCredentials ?? [];
   const statusTradeCredentials = statusCredentials.filter(
     (credential) => credential.role === 'trade',

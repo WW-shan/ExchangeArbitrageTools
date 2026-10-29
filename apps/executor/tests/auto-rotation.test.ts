@@ -58,7 +58,12 @@ function input(overrides: Partial<Parameters<typeof decideAutoRotation>[0]> = {}
   return {
     loaded: loaded('gateio->hotcoin'),
     ageMs: 1000,
-    pair: { base: 'KAT', quote: 'USDT', maxNotional: d('20') },
+    pair: {
+      base: 'KAT',
+      quote: 'USDT',
+      maxNotional: d('20'),
+      venues: ['gateio', 'hotcoin'] as const,
+    },
     readiness: readiness('gate'),
     liveEnabled: true,
     autoExecutionEnabled: true,
@@ -117,6 +122,19 @@ describe('automatic two-sided rotation decision', () => {
     const requirement = rotationRequirementFromOpportunity(loaded('gateio->hotcoin'), 20);
     expect(requirement?.buyQuote.toFixed()).toBe('20.04');
     expect(requirement?.sellBase.toFixed()).toBe('5000');
+  });
+
+  it('maps configured venues without hardcoding Gate and Hotcoin', () => {
+    const pair = {
+      base: 'KAT',
+      quote: 'USDT',
+      maxNotional: d('10'),
+      venues: ['gateio', 'bitget'] as const,
+    };
+    expect(rotationDirection(loaded('gateio->bitget'), pair)).toBe('gate->hotcoin');
+    expect(rotationDirection(loaded('bitget->gateio'), pair)).toBe('hotcoin->gate');
+    expect(scannerDirectionForRotation('gate->hotcoin', pair)).toBe('gateio->bitget');
+    expect(scannerDirectionForRotation('hotcoin->gate', pair)).toBe('bitget->gateio');
   });
 });
 

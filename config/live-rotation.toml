@@ -1,18 +1,16 @@
-# Two-sided S1 rotation profile: LIGHT primary, TBK secondary with existing
-# inventory, small automatic batches. The manual CLI remains available; --auto
-# uses the persisted automatic gate.
+# Two-sided S1 rotation profile for Gate.io and Bitget. WARD is the first small
+# live candidate; KAT is the deeper secondary candidate. The manual CLI remains
+# available; --auto uses the persisted automatic gate.
 
 [scanner]
-# Public monitoring runs on four venues. WEEX and Bitget are monitor-only until
-# their private credentials and execution gates are added; live execution stays
-# on Gate/Hotcoin.
-enabled_venues = ['gateio', 'hotcoin', 'weex', 'bitget']
-monitor_only_venues = ['weex', 'bitget']
+# Gate.io and Bitget are executable. WEEX stays public-monitor-only.
+enabled_venues = ['gateio', 'bitget', 'weex']
+monitor_only_venues = ['weex']
 quote_currency = "USDT"
 # Keep the first live batch narrow. Use config/discovery.toml for read-only
 # volume-ranked opportunity discovery.
 asset_universe_mode = "explicit"
-base_assets = ["LIGHT", "TBK"]
+base_assets = ["WARD", "KAT"]
 quote_currencies = ["USDT"]
 max_base_assets = 2
 fetch_concurrency = 4
@@ -45,11 +43,9 @@ max_pair_skew_ms = 5000
 min_reliability_score = '0.3'
 max_price_deviation_bps = 1000
 suspicious_spread_bps = 1000
-# Keep near-breakeven negative edges so the reversion-preparation path can see
-# them. The calibration has 5 and 12 bps bands, so the floor must cover the
-# widest band. The normal S1 entry threshold remains 5 bps; this only changes
-# which books reach the full evaluator.
-prefilter_floor_bps = -12
+# WARD/KAT preparation calibration is not generated yet, so keep the normal S1
+# floor until a fresh calibration exists.
+prefilter_floor_bps = -2
 rebalance_cost_bps = 0
 execution_mode = 'taker_taker'
 maker_fill_probability = '0.5'
@@ -84,7 +80,7 @@ max_open_batches = 1
 daily_max_loss_usd = "5"
 handoff_max_age_ms = 15000
 ioc_venues = []
-fok_venues = ['gateio', 'hotcoin']
+fok_venues = ['gateio', 'bitget']
 
 [auto_rotation]
 # Manual handoff remains available. This supervisor is the separate, explicit
@@ -97,13 +93,10 @@ cooldown_ms = 0
 max_consecutive_failures = 3
 heartbeat_file = 'data/rotation-executor.heartbeat.json'
 
-# When the funded direction converges to near breakeven, a small preparation
-# trade may shift inventory to the other side. It is a bounded inventory shift,
-# not a promise that the reverse spread returns. The 2026-10-29 calibration
-# allows TBK gate->hotcoin in the 5 bps band and TBK hotcoin->gate in the 12 bps
-# band; LIGHT remains negative in both bands.
+# Preparation is disabled until a WARD/KAT-specific calibration is generated.
+# The old LIGHT/TBK calibration must not be reused.
 [auto_rotation.preparation]
-enabled = true
+enabled = false
 max_notional = '10'
 min_stable_ms = 30000
 # No daily preparation count/cost cap and no preparation cooldown. Every new
@@ -119,13 +112,15 @@ min_expected_value_usd = '0'
 max_hold_ms = 3600000
 
 [[auto_rotation.pairs]]
-base = 'LIGHT'
+base = 'WARD'
 quote = 'USDT'
-max_notional = '20'
+venues = ['gateio', 'bitget']
+max_notional = '10'
 
 [[auto_rotation.pairs]]
-base = 'TBK'
+base = 'KAT'
 quote = 'USDT'
+venues = ['gateio', 'bitget']
 max_notional = '20'
 
 [transfers]

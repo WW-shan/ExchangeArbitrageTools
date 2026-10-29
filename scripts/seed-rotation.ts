@@ -13,6 +13,7 @@ import { loadExecutorConfig } from '../apps/executor/src/config.js';
 import { refreshBalances } from '../apps/executor/src/balance-service.js';
 import { adapterMap } from '../apps/executor/src/runtime.js';
 import { loadEncryptedSecretStore } from '../apps/executor/src/secret-store.js';
+import { rotationPairConfig } from '../apps/executor/src/auto-rotation.js';
 
 function arg(name: string, fallback: string): string {
   const index = process.argv.indexOf(name);
@@ -32,6 +33,12 @@ async function main(): Promise<void> {
   const execute = has('--execute');
   if (!base) throw new Error('--base is required');
   if (!notional.isFinite() || notional.lte(0)) throw new Error('--notional must be positive');
+  const pair = rotationPairConfig(config.autoRotation.pairs, `${base}/${quote}`);
+  if (!pair) throw new Error(`pair ${base}/${quote} is not in auto_rotation.pairs`);
+  const [venueA, venueB] = pair.venues;
+  if (buyVenueId && buyVenueId !== venueA && buyVenueId !== venueB) {
+    throw new Error(`--buy-venue must be ${venueA} or ${venueB}`);
+  }
   const masterKey = process.env.ARB_SECRET_STORE_KEY;
   if (!masterKey) throw new Error('ARB_SECRET_STORE_KEY is required');
   const credentials = await loadEncryptedSecretStore(config.secretStorePath, masterKey);
@@ -53,26 +60,28 @@ async function main(): Promise<void> {
       string,
       Awaited<ReturnType<(typeof adapters)[string]['adapter']['loadMarkets']>>
     > = {};
-    for (const venueId of ['gateio', 'hotcoin']) {
+    for (const venueId of [venueA, venueB]) {
       const bundle = adapters[venueId];
       if (!bundle) throw new Error(`missing trade credential for ${venueId}`);
       markets[venueId] = (await bundle.adapter.loadMarkets()).map((market) =>
         applyFeeOverride(market, feeOverrides),
       );
     }
-    const gateMarket = markets.gateio!.find(
+    const venueAMarket = markets[venueA]!.find(
       (market) =>
         market.active && market.base.toUpperCase() === base && market.quote.toUpperCase() === quote,
     );
-    const hotMarket = markets.hotcoin!.find(
+    const venueBMarket = markets[venueB]!.find(
       (market) =>
         market.active && market.base.toUpperCase() === base && market.quote.toUpperCase() === quote,
     );
-    if (!gateMarket || !hotMarket) throw new Error(`missing ${base}/${quote} market on one venue`);
+    if (!venueAMarket || !venueBMarket) {
+      throw new Error(`missing ${base}/${quote} market on one venue`);
+    }
 
     const balanceResult = await refreshBalances(
       repository,
-      ['gateio', 'hotcoin'].flatMap((venueId) => {
+      [venueA, venueB].flatMap((venueId) => {
         const bundle = adapters[venueId];
         return bundle ? [{ adapter: bundle.adapter, credentials: bundle.credentials }] : [];
       }),
@@ -85,28 +94,29 @@ async function main(): Promise<void> {
           balance.venueId === venueId &&
           balance.currency.trim().toUpperCase() === currency.trim().toUpperCase(),
       )?.free ?? new Decimal(0);
-    const gateQuote = free('gateio', quote);
-    const hotQuote = free('hotcoin', quote);
-    const gateBase = free('gateio', marketExchangeBase(gateMarket));
-    const hotBase = free('hotcoin', marketExchangeBase(hotMarket));
+    const venueAQuote = free(venueA, quote);
+    const venueBQuote = free(venueB, quote);
+    const venueABase = free(venueA, marketExchangeBase(venueAMarket));
+    const venueBBase = free(venueB, marketExchangeBase(venueBMarket));
 
     let chosenBuyVenue = buyVenueId;
     if (!chosenBuyVenue) {
-      if (gateQuote.gte(notional) && hotQuote.lt(notional)) chosenBuyVenue = 'gateio';
-      else if (hotQuote.gte(notional) && gateQuote.lt(notional)) chosenBuyVenue = 'hotcoin';
-      else if (gateQuote.gte(notional) && hotQuote.gte(notional)) {
-        chosenBuyVenue = (gateMarket.feeTakerBps ?? new Decimal(10)).lte(
-          hotMarket.feeTakerBps ?? new Decimal(10),
+      if (venueAQuote.gte(notional) && venueBQuote.lt(notional)) chosenBuyVenue = venueA;
+      else if (venueBQuote.gte(notional) && venueAQuote.lt(notional)) chosenBuyVenue = venueB;
+      else if (venueAQuote.gte(notional) && venueBQuote.gte(notional)) {
+        chosenBuyVenue = (venueAMarket.feeTakerBps ?? new Decimal(10)).lte(
+          venueBMarket.feeTakerBps ?? new Decimal(10),
         )
-          ? 'gateio'
-          : 'hotcoin';
+          ? venueA
+          : venueB;
       }
     }
-    if (chosenBuyVenue !== 'gateio' && chosenBuyVenue !== 'hotcoin') {
+    if (chosenBuyVenue !== venueA && chosenBuyVenue !== venueB) {
       throw new Error('both venues lack enough quote balance to seed');
     }
-    const buyMarket = chosenBuyVenue === 'gateio' ? gateMarket : hotMarket;
-    const sellMarket = chosenBuyVenue === 'gateio' ? hotMarket : gateMarket;
+    const sellVenue = chosenBuyVenue === venueA ? venueB : venueA;
+    const buyMarket = chosenBuyVenue === venueA ? venueAMarket : venueBMarket;
+    const sellMarket = chosenBuyVenue === venueA ? venueBMarket : venueAMarket;
     const buyBundle = adapters[chosenBuyVenue]!;
     const buyQuote = free(chosenBuyVenue, quote);
     if (buyQuote.lt(notional))
@@ -117,10 +127,7 @@ async function main(): Promise<void> {
 
     const [buyBook, sellBook] = await Promise.all([
       buyBundle.adapter.fetchOrderBook(buyMarket.exchangeSymbol, 20),
-      adapters[chosenBuyVenue === 'gateio' ? 'hotcoin' : 'gateio']!.adapter.fetchOrderBook(
-        sellMarket.exchangeSymbol,
-        20,
-      ),
+      adapters[sellVenue]!.adapter.fetchOrderBook(sellMarket.exchangeSymbol, 20),
     ]);
     const depth = calculateBuyDepthByQuote(buyBook, notional);
     if (depth.insufficientDepth) throw new Error('insufficient buy depth for seed notional');
@@ -149,23 +156,23 @@ async function main(): Promise<void> {
         `seed requires ${quoteRequired.toFixed()} ${quote}, available ${buyQuote.toFixed()}`,
       );
     }
+    const readyDirectionAfterFill =
+      chosenBuyVenue === venueA ? `${venueB}->${venueA}` : `${venueA}->${venueB}`;
     const summary = {
       mode: execute ? 'seed_execute' : 'seed_dry_run',
       pair: `${base}/${quote}`,
       buyVenue: chosenBuyVenue,
-      sellVenue: chosenBuyVenue === 'gateio' ? 'hotcoin' : 'gateio',
+      sellVenue,
       amount: amount.toFixed(),
       limitPrice: price.toFixed(),
       quoteRequired: quoteRequired.toFixed(),
       expectedNetBase: plan.netBase.toFixed(),
       expectedResidualBase: plan.residualBase.toFixed(),
       balances: {
-        gateBase: gateBase.toFixed(),
-        gateQuote: gateQuote.toFixed(),
-        hotcoinBase: hotBase.toFixed(),
-        hotcoinQuote: hotQuote.toFixed(),
+        [venueA]: { base: venueABase.toFixed(), quote: venueAQuote.toFixed() },
+        [venueB]: { base: venueBBase.toFixed(), quote: venueBQuote.toFixed() },
       },
-      readyDirectionAfterFill: chosenBuyVenue === 'gateio' ? 'hotcoin->gateio' : 'gateio->hotcoin',
+      readyDirectionAfterFill,
     };
     console.log(JSON.stringify(summary, null, 2));
     if (!execute) {
@@ -247,7 +254,7 @@ async function main(): Promise<void> {
     });
     await refreshBalances(
       repository,
-      ['gateio', 'hotcoin'].flatMap((venueId) => {
+      [venueA, venueB].flatMap((venueId) => {
         const bundle = adapters[venueId];
         return bundle ? [{ adapter: bundle.adapter, credentials: bundle.credentials }] : [];
       }),
@@ -267,7 +274,7 @@ async function main(): Promise<void> {
       remaining: finalOrder.remaining.toFixed(),
       averagePrice: finalOrder.averagePrice?.toFixed() ?? null,
       clientOrderId,
-      readyDirectionAfterFill: chosenBuyVenue === 'gateio' ? 'hotcoin->gateio' : 'gateio->hotcoin',
+      readyDirectionAfterFill,
     };
     console.log(JSON.stringify(result, null, 2));
     if (!finalOrder.filled.eq(amount) || finalOrder.status !== 'closed') {

@@ -135,6 +135,7 @@ max_notional = '20'
     expect(config.autoRotation.pairs).toHaveLength(1);
     expect(config.autoRotation.pairs[0]!.base).toBe('KAT');
     expect(config.autoRotation.pairs[0]!.maxNotional.toFixed()).toBe('20');
+    expect(config.autoRotation.pairs[0]!.venues).toEqual(['gateio', 'hotcoin']);
     expect(config.autoRotation.preparation.enabled).toBe(true);
     expect(
       config.autoRotation.preparation.calibration[

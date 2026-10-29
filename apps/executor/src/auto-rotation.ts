@@ -14,6 +14,20 @@ import type {
 
 export type AutoRotationAction = 'EXECUTE' | 'WAIT' | 'BLOCKED';
 
+export type RotationVenuePair = readonly [string, string];
+
+export function rotationVenues(pair?: { venues?: RotationVenuePair }): [string, string] {
+  return pair?.venues ? [pair.venues[0], pair.venues[1]] : ['gateio', 'hotcoin'];
+}
+
+export function venuesForRotationDirection(
+  direction: 'gate->hotcoin' | 'hotcoin->gate',
+  pair?: { venues?: RotationVenuePair },
+): [string, string] {
+  const [venueA, venueB] = rotationVenues(pair);
+  return direction === 'gate->hotcoin' ? [venueA, venueB] : [venueB, venueA];
+}
+
 export interface AutoRotationDecisionInput {
   loaded: LoadedOpportunity;
   ageMs: number;
@@ -47,12 +61,14 @@ export interface RotationRebalanceTargetsInput {
   quote: string;
   balances: RotationBalances;
   requirement: RotationRequirement;
+  venues?: RotationVenuePair;
   withdrawFees?: Readonly<Record<string, Decimal>>;
 }
 
 export function rotationRebalanceTargets(input: RotationRebalanceTargetsInput): RebalanceTarget[] {
   const base = input.base.trim().toUpperCase();
   const quote = input.quote.trim().toUpperCase();
+  const [venueA, venueB] = rotationVenues(input);
   const targets: RebalanceTarget[] = [];
   const move = (
     asset: string,
@@ -82,16 +98,16 @@ export function rotationRebalanceTargets(input: RotationRebalanceTargetsInput): 
   if (input.direction === 'gate->hotcoin') {
     move(
       quote,
-      'hotcoin',
-      'gateio',
+      venueB,
+      venueA,
       Decimal.max(0, input.requirement.buyQuote.minus(input.balances.gateQuote)),
       input.balances.hotcoinQuote,
       input.balances.gateQuote,
     );
     move(
       base,
-      'gateio',
-      'hotcoin',
+      venueA,
+      venueB,
       Decimal.max(0, input.requirement.sellBase.minus(input.balances.hotcoinBase)),
       input.balances.gateBase,
       input.balances.hotcoinBase,
@@ -99,16 +115,16 @@ export function rotationRebalanceTargets(input: RotationRebalanceTargetsInput): 
   } else {
     move(
       quote,
-      'gateio',
-      'hotcoin',
+      venueA,
+      venueB,
       Decimal.max(0, input.requirement.buyQuote.minus(input.balances.hotcoinQuote)),
       input.balances.gateQuote,
       input.balances.hotcoinQuote,
     );
     move(
       base,
-      'hotcoin',
-      'gateio',
+      venueB,
+      venueA,
       Decimal.max(0, input.requirement.sellBase.minus(input.balances.gateBase)),
       input.balances.hotcoinBase,
       input.balances.gateBase,
@@ -181,6 +197,7 @@ export interface RotationRebalanceEstimateInput {
   quote: string;
   balances: RotationBalances;
   requirement: RotationRequirement;
+  venues?: RotationVenuePair;
   allowlist: readonly TransferAllowlistEntry[];
   assetPricesUsd: Readonly<Record<string, Decimal>>;
 }
@@ -209,24 +226,25 @@ export function estimateRotationRebalance(
 ): RotationRebalanceEstimate {
   const base = input.base.trim().toUpperCase();
   const quote = input.quote.trim().toUpperCase();
+  const [venueA, venueB] = rotationVenues(input);
   const moves: Array<{ asset: string; fromVenue: string; toVenue: string; amount: Decimal }> = [];
   if (input.direction === 'gate->hotcoin') {
     const quoteNeed = input.requirement.buyQuote.minus(input.balances.gateQuote);
     if (quoteNeed.gt(0)) {
-      moves.push({ asset: quote, fromVenue: 'hotcoin', toVenue: 'gateio', amount: quoteNeed });
+      moves.push({ asset: quote, fromVenue: venueB, toVenue: venueA, amount: quoteNeed });
     }
     const baseNeed = input.requirement.sellBase.minus(input.balances.hotcoinBase);
     if (baseNeed.gt(0)) {
-      moves.push({ asset: base, fromVenue: 'gateio', toVenue: 'hotcoin', amount: baseNeed });
+      moves.push({ asset: base, fromVenue: venueA, toVenue: venueB, amount: baseNeed });
     }
   } else {
     const quoteNeed = input.requirement.buyQuote.minus(input.balances.hotcoinQuote);
     if (quoteNeed.gt(0)) {
-      moves.push({ asset: quote, fromVenue: 'gateio', toVenue: 'hotcoin', amount: quoteNeed });
+      moves.push({ asset: quote, fromVenue: venueA, toVenue: venueB, amount: quoteNeed });
     }
     const baseNeed = input.requirement.sellBase.minus(input.balances.gateBase);
     if (baseNeed.gt(0)) {
-      moves.push({ asset: base, fromVenue: 'hotcoin', toVenue: 'gateio', amount: baseNeed });
+      moves.push({ asset: base, fromVenue: venueB, toVenue: venueA, amount: baseNeed });
     }
   }
 
@@ -372,17 +390,21 @@ export function rotationPairConfig(
 
 export function rotationDirection(
   loaded: LoadedOpportunity,
+  pair?: { venues?: RotationVenuePair },
 ): 'gate->hotcoin' | 'hotcoin->gate' | undefined {
   const { venueBuy, venueSell } = loaded.opportunity;
-  if (venueBuy === 'gateio' && venueSell === 'hotcoin') return 'gate->hotcoin';
-  if (venueBuy === 'hotcoin' && venueSell === 'gateio') return 'hotcoin->gate';
+  const [venueA, venueB] = rotationVenues(pair);
+  if (venueBuy === venueA && venueSell === venueB) return 'gate->hotcoin';
+  if (venueBuy === venueB && venueSell === venueA) return 'hotcoin->gate';
   return undefined;
 }
 
 export function scannerDirectionForRotation(
   direction: 'gate->hotcoin' | 'hotcoin->gate',
-): 'gateio->hotcoin' | 'hotcoin->gateio' {
-  return direction === 'gate->hotcoin' ? 'gateio->hotcoin' : 'hotcoin->gateio';
+  pair?: { venues?: RotationVenuePair },
+): string {
+  const [venueBuy, venueSell] = venuesForRotationDirection(direction, pair);
+  return `${venueBuy}->${venueSell}`;
 }
 
 /**
@@ -429,7 +451,7 @@ export function decideAutoRotation(input: AutoRotationDecisionInput): AutoRotati
   if (input.lastAttemptAt !== undefined && input.now - input.lastAttemptAt < input.cooldownMs) {
     reasons.push('cooldown');
   }
-  const direction = rotationDirection(input.loaded);
+  const direction = rotationDirection(input.loaded, input.pair);
   if (!direction) reasons.push('venue_route_not_supported');
   if (reasons.length > 0)
     return { action: 'BLOCKED', reasons, ...(direction ? { direction } : {}) };

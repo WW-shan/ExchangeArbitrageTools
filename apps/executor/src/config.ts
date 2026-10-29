@@ -40,6 +40,7 @@ export interface RotationPairConfig {
   base: string;
   quote: string;
   maxNotional: Decimal;
+  venues: readonly [string, string];
 }
 
 export interface AutoRotationPreparationConfig {
@@ -346,14 +347,28 @@ function rotationPairs(value: unknown): RotationPairConfig[] {
     const base = stringValue(row, 'base').trim().toUpperCase();
     const quote = stringValue(row, 'quote').trim().toUpperCase();
     const maxNotional = decimalValue(row, 'max_notional', '20');
+    const key = `${base}/${quote}`;
+    const venues = rotationPairVenues(row.venues, key);
     if (maxNotional.lte(0)) {
       throw new Error('auto_rotation pair max_notional must be positive');
     }
-    const key = `${base}/${quote}`;
     if (seen.has(key)) throw new Error(`duplicate auto_rotation pair: ${key}`);
     seen.add(key);
-    return { base, quote, maxNotional };
+    return { base, quote, maxNotional, venues };
   });
+}
+
+function rotationPairVenues(value: unknown, pair: string): [string, string] {
+  if (value === undefined) return ['gateio', 'hotcoin'];
+  if (!Array.isArray(value) || value.length !== 2) {
+    throw new Error(`auto_rotation pair ${pair} venues must contain exactly two venue ids`);
+  }
+  const venues = value.map((item) => (typeof item === 'string' ? item.trim().toLowerCase() : ''));
+  const [first, second] = venues;
+  if (!first || !second || first === second) {
+    throw new Error(`auto_rotation pair ${pair} venues must be two distinct venue ids`);
+  }
+  return [first, second];
 }
 
 function preparationDirection(value: unknown): 'gate->hotcoin' | 'hotcoin->gate' {
@@ -515,31 +530,33 @@ function validateSafetyBounds(config: ExecutorConfig): void {
       }
     }
     const preparation = config.autoRotation.preparation;
-    if (!Number.isInteger(preparation.minStableMs) || preparation.minStableMs < 0) {
-      throw new Error('auto_rotation.preparation.min_stable_ms must be a non-negative integer');
-    }
-    if (
-      !preparation.maxNotional.isFinite() ||
-      preparation.maxNotional.lte(0) ||
-      preparation.maxNotional.gt(config.riskLimits.maxOrderNotional)
-    ) {
-      throw new Error('auto_rotation.preparation.max_notional is outside the order limit');
-    }
-    if (preparation.calibrationFile === '' || Object.keys(preparation.calibration).length === 0) {
-      throw new Error('auto_rotation.preparation requires a non-empty calibration_file');
-    }
-    if (
-      !preparation.minReverseProbability.isFinite() ||
-      preparation.minReverseProbability.lt(0) ||
-      preparation.minReverseProbability.gt(1) ||
-      !preparation.minExpectedValueBps.isFinite() ||
-      preparation.minExpectedValueBps.lt(0) ||
-      !preparation.minExpectedValueUsd.isFinite() ||
-      preparation.minExpectedValueUsd.lt(0) ||
-      !Number.isInteger(preparation.maxHoldMs) ||
-      preparation.maxHoldMs <= 0
-    ) {
-      throw new Error('auto_rotation.preparation reversion gate is outside the safety bound');
+    if (preparation.enabled) {
+      if (!Number.isInteger(preparation.minStableMs) || preparation.minStableMs < 0) {
+        throw new Error('auto_rotation.preparation.min_stable_ms must be a non-negative integer');
+      }
+      if (
+        !preparation.maxNotional.isFinite() ||
+        preparation.maxNotional.lte(0) ||
+        preparation.maxNotional.gt(config.riskLimits.maxOrderNotional)
+      ) {
+        throw new Error('auto_rotation.preparation.max_notional is outside the order limit');
+      }
+      if (preparation.calibrationFile === '' || Object.keys(preparation.calibration).length === 0) {
+        throw new Error('auto_rotation.preparation requires a non-empty calibration_file');
+      }
+      if (
+        !preparation.minReverseProbability.isFinite() ||
+        preparation.minReverseProbability.lt(0) ||
+        preparation.minReverseProbability.gt(1) ||
+        !preparation.minExpectedValueBps.isFinite() ||
+        preparation.minExpectedValueBps.lt(0) ||
+        !preparation.minExpectedValueUsd.isFinite() ||
+        preparation.minExpectedValueUsd.lt(0) ||
+        !Number.isInteger(preparation.maxHoldMs) ||
+        preparation.maxHoldMs <= 0
+      ) {
+        throw new Error('auto_rotation.preparation reversion gate is outside the safety bound');
+      }
     }
   }
   if (!Number.isInteger(config.handoffMaxAgeMs) || config.handoffMaxAgeMs <= 0) {

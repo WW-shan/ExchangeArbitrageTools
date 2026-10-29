@@ -16,6 +16,7 @@ import {
 import ccxt, { type Exchange, type Market, type Order, type OrderBook } from 'ccxt';
 import type {
   AdapterRuntime,
+  AccountCapabilityObservation,
   AccountStatusRequest,
   AccountStatusSnapshot,
   ApiCredentials,
@@ -817,6 +818,41 @@ export class CcxtCexAdapter implements CexAdapter {
     keys: ApiCredentials,
   ): Promise<AccountStatusSnapshot> {
     const observedAt = this.#runtime.clock?.now() ?? Date.now();
+    if (this.#exchangeId === 'bitget') {
+      this.setCredentials(keys);
+      const errors: string[] = [];
+      let balancesRead: AccountCapabilityObservation = 'unknown';
+      try {
+        await this.call(true, () => this.#exchange.fetchBalance(), 'execution');
+        balancesRead = 'observed_allowed';
+      } catch (error) {
+        errors.push(
+          `balance_read_failed:${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+      let openOrdersRead: AccountCapabilityObservation = 'unknown';
+      const symbol = request.requiredPairs?.[0];
+      if (symbol) {
+        try {
+          await this.call(true, () => this.#exchange.fetchOpenOrders(symbol), 'execution');
+          openOrdersRead = 'observed_allowed';
+        } catch {
+          openOrdersRead = 'unknown';
+        }
+      }
+      return {
+        venueId: this.venueId,
+        observedAt,
+        authenticated: errors.length === 0,
+        capabilities: {
+          balancesRead,
+          openOrdersRead,
+          trading: 'unknown',
+          withdrawal: 'unknown',
+        },
+        errors,
+      };
+    }
     if (this.#exchangeId !== 'gate') {
       return {
         venueId: this.venueId,

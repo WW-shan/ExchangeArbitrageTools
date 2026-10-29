@@ -98,8 +98,19 @@ async function main(): Promise<void> {
     const maxAgeMs = Math.max(config.autoRotation.balanceRefreshMs * 2, 30_000);
     const pairs = config.autoRotation.pairs.map((pair) => {
       const balances = pairBalances(repository, pair, markets, now, maxAgeMs);
+      const [venueA, venueB] = pair.venues;
       return {
         pair: `${pair.base}/${pair.quote}`,
+        venues: {
+          [venueA]: {
+            base: balances.readinessBalances.gateBase.toFixed(),
+            quote: balances.readinessBalances.gateQuote.toFixed(),
+          },
+          [venueB]: {
+            base: balances.readinessBalances.hotcoinBase.toFixed(),
+            quote: balances.readinessBalances.hotcoinQuote.toFixed(),
+          },
+        },
         gateBase: balances.readinessBalances.gateBase.toFixed(),
         gateQuote: balances.readinessBalances.gateQuote.toFixed(),
         hotcoinBase: balances.readinessBalances.hotcoinBase.toFixed(),

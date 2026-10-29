@@ -58,7 +58,12 @@ describe('rotation balance snapshot', () => {
     });
     const balances = pairBalances(
       repository,
-      { base: 'LIGHT', quote: 'USDT', maxNotional: new Decimal(20) },
+      {
+        base: 'LIGHT',
+        quote: 'USDT',
+        maxNotional: new Decimal(20),
+        venues: ['gateio', 'hotcoin'] as const,
+      },
       {
         gateio: [market('gateio', 'LIGHT/USDT')],
         hotcoin: [market('hotcoin', 'light_usdt')],
@@ -99,7 +104,12 @@ describe('rotation balance snapshot', () => {
     });
     const balances = pairBalances(
       repository,
-      { base: 'LIGHT', quote: 'USDT', maxNotional: new Decimal(20) },
+      {
+        base: 'LIGHT',
+        quote: 'USDT',
+        maxNotional: new Decimal(20),
+        venues: ['gateio', 'hotcoin'] as const,
+      },
       {
         gateio: [market('gateio', 'LIGHT/USDT')],
         hotcoin: [market('hotcoin', 'light_usdt')],
@@ -108,7 +118,7 @@ describe('rotation balance snapshot', () => {
       30_000,
     );
     expect(balances.fresh).toBe(false);
-    expect(balances.reasons).toContain('gate_balance_snapshot_stale');
+    expect(balances.reasons).toContain('gateio_balance_snapshot_stale');
     repository.close();
   });
 });
