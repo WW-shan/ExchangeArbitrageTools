@@ -165,12 +165,14 @@ max_arrival_ms = 1800000
 
 [account_status]
 # Verify authentication, Gate account identity/IP/pair whitelists and the
-# Hotcoin balance read every minute. Gate/Hotcoin do not expose the current
+# Hotcoin balance read every five minutes. Gate/Hotcoin do not expose the current
 # key's trade/withdraw permission bits, so those are reported as UNKNOWN.
 # A shared trade/withdrawal key is allowed per operator policy and audited.
 enabled = true
-refresh_ms = 60000
-stale_ms = 180000
+# Account permission checks are comparatively slow private calls. Keep them
+# frequent enough to detect permission changes, but out of the 250ms hot path.
+refresh_ms = 300000
+stale_ms = 900000
 # Gate currently has no IP whitelist on this account. Keep this false after the
 # operator explicitly accepted the shared-key blast radius; set true after an
 # IP whitelist is configured in both exchange backends.
