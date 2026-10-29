@@ -96,4 +96,39 @@ describe('automatic balance refresh', () => {
     ).toBe(true);
     repository.close();
   });
+
+  it('refreshes venues concurrently', async () => {
+    const repository = new ArbitrageRepository(openDatabase(':memory:'));
+    let started = 0;
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const delayed = (venueId: string): CexAdapter => {
+      const base = adapter(venueId, [balance(venueId, 'USDT', '10')]);
+      return {
+        ...base,
+        fetchBalances: async () => {
+          started += 1;
+          if (started === 2) release();
+          await gate;
+          return [balance(venueId, 'USDT', '10')];
+        },
+      };
+    };
+    const refresh = refreshBalances(
+      repository,
+      [
+        { adapter: delayed('gateio'), credentials: { apiKey: 'key', secret: 'secret' } },
+        { adapter: delayed('bitget'), credentials: { apiKey: 'key', secret: 'secret' } },
+      ],
+      now,
+    );
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(started).toBe(2);
+    release();
+    const result = await refresh;
+    expect(result).toEqual({ refreshed: 2, errors: [] });
+    repository.close();
+  });
 });

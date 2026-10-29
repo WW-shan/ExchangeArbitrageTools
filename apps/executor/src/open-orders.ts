@@ -66,18 +66,23 @@ export async function checkNoOpenOrders(
   venues: readonly OpenOrderVenue[],
   options: OpenOrderCheckOptions = {},
 ): Promise<{ ok: boolean; orders: OrderState[]; errors: string[] }> {
+  const results = await Promise.all(
+    venues.map(async (venue): Promise<OpenOrderQueryResult> => {
+      if (typeof venue.adapter.fetchOpenOrders !== 'function') {
+        return {
+          orders: [],
+          errors:
+            options.requireSupported === true
+              ? [`open_orders_query_unsupported:${venue.adapter.venueId}`]
+              : [],
+        };
+      }
+      return fetchOpenOrdersForSymbols(venue.adapter, venue.credentials, [venue.symbol]);
+    }),
+  );
   const orders: OrderState[] = [];
   const errors: string[] = [];
-  for (const venue of venues) {
-    if (typeof venue.adapter.fetchOpenOrders !== 'function') {
-      if (options.requireSupported === true) {
-        errors.push(`open_orders_query_unsupported:${venue.adapter.venueId}`);
-      }
-      continue;
-    }
-    const result = await fetchOpenOrdersForSymbols(venue.adapter, venue.credentials, [
-      venue.symbol,
-    ]);
+  for (const result of results) {
     orders.push(...result.orders);
     errors.push(...result.errors);
   }

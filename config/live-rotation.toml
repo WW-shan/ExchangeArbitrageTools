@@ -89,8 +89,10 @@ fok_venues = ['gateio', 'bitget']
 # Manual handoff remains available. This supervisor is the separate, explicit
 # automatic path and still requires live_enabled=true and a released kill switch.
 enabled = true
-poll_interval_ms = 1000
-balance_refresh_ms = 5000
+# Poll the signal store frequently; balance refresh is parallelized and no
+# longer blocks the execution loop for the whole refresh interval.
+poll_interval_ms = 250
+balance_refresh_ms = 30000
 max_signal_age_ms = 10000
 cooldown_ms = 0
 max_consecutive_failures = 3

@@ -269,6 +269,7 @@ export class CexLiveExecutor {
   }
 
   async execute(request: LiveExecutionRequest): Promise<LiveExecutionResult> {
+    const executeStartedAt = this.#clock();
     const machine = new BatchStateMachine();
     const states: BatchState[] = ['IDLE'];
     const reasons: string[] = [];
@@ -378,6 +379,18 @@ export class CexLiveExecutor {
       return safeStop('persisted_balance_mismatch');
     }
     const risk = this.#repository.riskSnapshot(this.#clock());
+    const openOrderCheckPromise = checkNoOpenOrders([
+      {
+        adapter: request.buy.adapter,
+        credentials: request.buy.credentials,
+        symbol: request.buy.market.exchangeSymbol,
+      },
+      {
+        adapter: request.sell.adapter,
+        credentials: request.sell.credentials,
+        symbol: request.sell.market.exchangeSymbol,
+      },
+    ]);
     const [buyBookResult, sellBookResult] = await Promise.all([
       this.fetchFreshBook(request.buy),
       this.fetchFreshBook(request.sell),
@@ -540,18 +553,7 @@ export class CexLiveExecutor {
       return outcome('PREFLIGHT_FAILED');
     }
     const balanceBaselines = { buy: balances.buy, sell: balances.sell };
-    const openOrderCheck = await checkNoOpenOrders([
-      {
-        adapter: request.buy.adapter,
-        credentials: request.buy.credentials,
-        symbol: request.buy.market.exchangeSymbol,
-      },
-      {
-        adapter: request.sell.adapter,
-        credentials: request.sell.credentials,
-        symbol: request.sell.market.exchangeSymbol,
-      },
-    ]);
+    const openOrderCheck = await openOrderCheckPromise;
     if (openOrderCheck.orders.length > 0) {
       return safeStop('open_orders_present');
     }
@@ -610,6 +612,8 @@ export class CexLiveExecutor {
         : {}),
       evaluatedAt,
       preflightAt,
+      signalAgeMs: Math.max(0, preflightAt - request.opportunity.sampledAt),
+      executeLatencyMs: Math.max(0, preflightAt - executeStartedAt),
       requestedNotional: refreshed.requestedNotional.toFixed(),
       refreshed: {
         grossSpread: refreshed.grossSpread.toFixed(),
@@ -1536,8 +1540,10 @@ export class CexLiveExecutor {
     | { ok: false; reasons: string[] }
   > {
     try {
-      const buyBalances = await request.buy.adapter.fetchBalances!(request.buy.credentials);
-      const sellBalances = await request.sell.adapter.fetchBalances!(request.sell.credentials);
+      const [buyBalances, sellBalances] = await Promise.all([
+        request.buy.adapter.fetchBalances!(request.buy.credentials),
+        request.sell.adapter.fetchBalances!(request.sell.credentials),
+      ]);
       for (const balance of [...buyBalances, ...sellBalances]) {
         this.#repository.recordBalance(balance);
         this.#repository.recordInventorySnapshot({

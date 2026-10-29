@@ -734,6 +734,7 @@ export async function runAutoRotationSupervisor(
   let accountStateLogged = false;
   let heartbeatPhase = 'STARTING';
   let heartbeatWaitReasons: string[] | undefined;
+  const failedOpportunityUntil = new Map<number, number>();
   repository.setSetting('auto_execution_enabled', 'true');
   repository.recordAudit('executor', 'auto_rotation_started', {
     pairs: instruments,
@@ -875,12 +876,17 @@ export async function runAutoRotationSupervisor(
       continue;
     }
 
-    const candidates = repository.recentValidS1Opportunities({
-      now,
-      maxAgeMs: config.autoRotation.maxSignalAgeMs,
-      instruments,
-      maxCandidates: 200,
-    });
+    for (const [opportunityId, until] of failedOpportunityUntil) {
+      if (until <= now) failedOpportunityUntil.delete(opportunityId);
+    }
+    const candidates = repository
+      .recentValidS1Opportunities({
+        now,
+        maxAgeMs: config.autoRotation.maxSignalAgeMs,
+        instruments,
+        maxCandidates: 200,
+      })
+      .filter((candidate) => (failedOpportunityUntil.get(candidate.id) ?? 0) <= now);
     candidates.sort((left, right) => {
       const byProfit = right.opportunity.netProfitBps.comparedTo(left.opportunity.netProfitBps);
       return byProfit !== 0 ? byProfit : right.opportunity.sampledAt - left.opportunity.sampledAt;
@@ -1101,6 +1107,7 @@ export async function runAutoRotationSupervisor(
       batchId,
       opportunityId: loaded.id,
       direction,
+      signalAgeMs: Math.max(0, now - opportunity.sampledAt),
       netProfitBps: opportunity.netProfitBps.toFixed(),
       requestedNotional: opportunity.requestedNotional.toFixed(),
       ...(preparation
@@ -1111,6 +1118,7 @@ export async function runAutoRotationSupervisor(
         : {}),
     });
     try {
+      const executionStartedAt = clock();
       const result = await engine.execute({
         batchId,
         opportunity,
@@ -1126,8 +1134,11 @@ export async function runAutoRotationSupervisor(
             }
           : {}),
       });
-      lastBalanceAt = 0;
-      lastExecutionClosedAt = clock();
+      const resultAt = clock();
+      if (result.outcome === 'CLOSED' || result.ordersSubmitted > 0) {
+        lastBalanceAt = 0;
+      }
+      lastExecutionClosedAt = resultAt;
       preparationKey = undefined;
       repository.recordAudit(
         'executor',
@@ -1140,9 +1151,12 @@ export async function runAutoRotationSupervisor(
           direction,
           outcome: result.outcome,
           reasons: result.reasons,
+          signalAgeMs: Math.max(0, now - opportunity.sampledAt),
+          executionDurationMs: Math.max(0, resultAt - executionStartedAt),
+          endToEndLatencyMs: Math.max(0, resultAt - opportunity.sampledAt),
           realizedProfit: result.realizedProfit?.toFixed() ?? null,
         },
-        clock(),
+        resultAt,
       );
       logEvent({
         status: 'result',
@@ -1151,8 +1165,16 @@ export async function runAutoRotationSupervisor(
         direction,
         outcome: result.outcome,
         reasons: result.reasons,
+        signalAgeMs: Math.max(0, now - opportunity.sampledAt),
+        executionDurationMs: Math.max(0, resultAt - executionStartedAt),
+        endToEndLatencyMs: Math.max(0, resultAt - opportunity.sampledAt),
         realizedProfit: result.realizedProfit?.toFixed() ?? null,
       });
+      if (result.outcome === 'CLOSED' || result.ordersSubmitted > 0) {
+        failedOpportunityUntil.delete(loaded.id);
+      } else {
+        failedOpportunityUntil.set(loaded.id, clock() + 5000);
+      }
       if (result.outcome === 'CLOSED') {
         consecutiveFailures = 0;
       } else if (result.outcome === 'SAFE_STOP') {
