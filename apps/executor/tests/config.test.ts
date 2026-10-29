@@ -117,9 +117,6 @@ max_notional = '10'
 max_cost_bps = 5
 max_cost_usd = '0.01'
 min_stable_ms = 30000
-min_holding_ms = 300000
-cooldown_ms = 600000
-max_per_day = 6
 calibration_file = 'apps/executor/tests/fixtures/prep-calibration.json'
 min_reverse_probability = '0.5'
 min_expected_value_bps = '0'
@@ -139,7 +136,6 @@ max_notional = '20'
     expect(config.autoRotation.pairs[0]!.maxNotional.toFixed()).toBe('20');
     expect(config.autoRotation.preparation.enabled).toBe(true);
     expect(config.autoRotation.preparation.maxCostBps.toFixed()).toBe('5');
-    expect(config.autoRotation.preparation.maxPerDay).toBe(6);
     expect(
       config.autoRotation.preparation.calibration[
         'KAT/USDT|gate->hotcoin'

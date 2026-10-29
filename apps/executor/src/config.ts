@@ -42,9 +42,6 @@ export interface AutoRotationPreparationConfig {
   maxCostBps: Decimal;
   maxCostUsd: Decimal;
   minStableMs: number;
-  minHoldingMs: number;
-  cooldownMs: number;
-  maxPerDay: number;
   calibrationFile: string;
   minReverseProbability: Decimal;
   minExpectedValueBps: Decimal;
@@ -417,9 +414,6 @@ function autoRotationConfig(value: unknown, handoffMaxAgeMs: number): AutoRotati
       maxCostBps: decimalValue(preparation, 'max_cost_bps', '5'),
       maxCostUsd: decimalValue(preparation, 'max_cost_usd', '0.01'),
       minStableMs: numberValue(preparation, 'min_stable_ms', 30_000),
-      minHoldingMs: numberValue(preparation, 'min_holding_ms', 300_000),
-      cooldownMs: numberValue(preparation, 'cooldown_ms', 600_000),
-      maxPerDay: numberValue(preparation, 'max_per_day', 6),
       calibrationFile,
       minReverseProbability: decimalValue(preparation, 'min_reverse_probability', '0.55'),
       minExpectedValueBps: decimalValue(preparation, 'min_expected_value_bps', '0'),
@@ -462,17 +456,8 @@ function validateSafetyBounds(config: ExecutorConfig): void {
       }
     }
     const preparation = config.autoRotation.preparation;
-    if (
-      !Number.isInteger(preparation.minStableMs) ||
-      preparation.minStableMs < 0 ||
-      !Number.isInteger(preparation.minHoldingMs) ||
-      preparation.minHoldingMs < 0 ||
-      !Number.isInteger(preparation.cooldownMs) ||
-      preparation.cooldownMs < 0 ||
-      !Number.isInteger(preparation.maxPerDay) ||
-      preparation.maxPerDay < 1
-    ) {
-      throw new Error('auto_rotation.preparation timing values must be non-negative integers');
+    if (!Number.isInteger(preparation.minStableMs) || preparation.minStableMs < 0) {
+      throw new Error('auto_rotation.preparation.min_stable_ms must be a non-negative integer');
     }
     if (
       !preparation.maxNotional.isFinite() ||

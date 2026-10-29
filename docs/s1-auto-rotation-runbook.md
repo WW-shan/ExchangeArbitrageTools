@@ -65,8 +65,9 @@ The live profile sets `prefilter_floor_bps = -5` so near-breakeven negative
 edges reach the full evaluator. This does not lower the normal S1 entry
 threshold; it only lets the preparation gate see the reversion band.
 
-After a preparation closes, another preparation is blocked until a normal S1
-round trip closes. If the reverse edge does not arrive, the supervisor logs
+There is no daily preparation count cap and no preparation cooldown. Every
+repeat must pass the same fresh calibration, expected-value, and per-trade cost
+checks. If the reverse edge does not arrive, the supervisor logs
 `preparation_carrying` after `max_hold_ms` and keeps waiting. It does not force
 an exit and does not assume convergence. See
 `docs/s1-reversion-preparation-2026-10-29.md`.
@@ -150,7 +151,7 @@ The executor still re-evaluates the books after the scanner signal. It requires:
 - exchange timestamps within the configured low-liquidity window, with
   received-at and WebSocket freshness checked separately;
 - no open execution, unresolved order, balance mismatch, or kill switch;
-- daily loss limit not reached and the per-batch cooldown elapsed;
+- daily loss limit not reached;
 - fresh executable depth and positive net edge after fees and safety buffer.
 
 If leg 1 fills but leg 2 cannot, the existing executor enters SAFE_STOP and
@@ -165,7 +166,7 @@ enabled = true
 poll_interval_ms = 1000
 balance_refresh_ms = 5000
 max_signal_age_ms = 10000
-cooldown_ms = 3000
+cooldown_ms = 0
 max_consecutive_failures = 3
 
 [auto_rotation.preparation]
@@ -174,9 +175,6 @@ max_notional = '10'
 max_cost_bps = 5
 max_cost_usd = '0.01'
 min_stable_ms = 30000
-min_holding_ms = 300000
-cooldown_ms = 600000
-max_per_day = 6
 calibration_file = 'config/s1-prep-calibration.json'
 min_reverse_probability = '0.55'
 min_expected_value_bps = '0'

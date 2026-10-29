@@ -274,19 +274,8 @@ function preparationCandidate(input: {
   adapters: Readonly<Record<string, RecoveryVenue>>;
   candidates: readonly LoadedOpportunity[];
   now: number;
-  lastPreparationAt?: number;
-  lastExecutionClosedAt?: number;
 }): { candidate: PreparationCandidate } | { waitReasons: string[] } {
-  const {
-    repository,
-    config,
-    markets,
-    adapters,
-    candidates,
-    now,
-    lastPreparationAt,
-    lastExecutionClosedAt,
-  } = input;
+  const { repository, config, markets, adapters, candidates, now } = input;
   const preparation = config.autoRotation.preparation;
   if (!preparation.enabled) return { waitReasons: ['preparation_disabled'] };
   if (repository.getSetting('balance_mismatch') === 'true') {
@@ -300,25 +289,6 @@ function preparationCandidate(input: {
   }
   if (repository.riskSnapshot(now).dailyRealizedLoss.gte(config.riskLimits.dailyMaxLoss)) {
     return { waitReasons: ['preparation_daily_loss_limit'] };
-  }
-  if (
-    lastExecutionClosedAt !== undefined &&
-    now - lastExecutionClosedAt < preparation.minHoldingMs
-  ) {
-    return { waitReasons: ['preparation_holding'] };
-  }
-  if (lastPreparationAt !== undefined && now - lastPreparationAt < preparation.cooldownMs) {
-    return { waitReasons: ['preparation_cooldown'] };
-  }
-  if (repository.preparationCarryPending()) {
-    return { waitReasons: ['preparation_carry_pending'] };
-  }
-  const stats = repository.dailyPreparationStats(now);
-  if (stats.count >= preparation.maxPerDay) {
-    return { waitReasons: ['preparation_daily_count_limit'] };
-  }
-  if (stats.cost.gte(preparation.maxCostUsd.mul(preparation.maxPerDay))) {
-    return { waitReasons: ['preparation_daily_cost_limit'] };
   }
   const states = healthStates(repository);
   const profitOnly = new Set([
@@ -540,8 +510,6 @@ export async function runAutoRotationSupervisor(
         adapters,
         candidates: prepCandidates,
         now,
-        ...(lastPreparationAt !== undefined ? { lastPreparationAt } : {}),
-        ...(lastExecutionClosedAt !== undefined ? { lastExecutionClosedAt } : {}),
       });
       if ('candidate' in preparation) {
         const key = `${preparation.candidate.pair.base}|${preparation.candidate.direction}`;

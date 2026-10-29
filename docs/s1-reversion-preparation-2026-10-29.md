@@ -40,11 +40,12 @@ A preparation candidate must satisfy all of the following:
 7. `median_time_to_reverse_ms <= max_hold_ms` (default 1 hour).
 8. The cost-adjusted expected value is positive after replacing the historical
    median preparation cost with the current preparation cost.
-9. `max_notional`, `max_cost_bps`, `max_cost_usd`, daily count, daily cost,
-   cooldown, and holding-window limits all pass.
-10. No previous successful preparation is still carried without a subsequent
-    normal S1 close. This prevents repeated back-and-forth preparation when the
-    reverse edge never arrives.
+9. `max_notional`, `max_cost_bps`, and `max_cost_usd` pass for this trade.
+
+There is no daily preparation count cap, no daily preparation cost cap, and no
+preparation cooldown. Every repeat must pass the same fresh calibration,
+expected-value, cost, balance, and market checks. `min_stable_ms` is a signal
+stability check, not a cooldown.
 
 The candidate must remain stable for `min_stable_ms` before submission.
 
@@ -111,7 +112,7 @@ venue and quote on the sell venue. The supervisor:
 
 - logs `preparation_carrying` once per minute after the holding window;
 - keeps the normal S1 path active for the now-funded reverse direction;
-- refuses another preparation until a normal S1 round trip closes;
+- may prepare again immediately when a fresh candidate passes the same gate;
 - never assumes convergence and never submits a losing reverse trade to
   complete the rotation.
 
@@ -160,8 +161,8 @@ notional, venue behavior, or the historical window.
 - Queue position, partial fills, exchange freezes, and the order of intrabar
   touches are not modeled.
 - Rebates are accounted after the fact. The account must still fund gross fees.
-- The carry lock is deliberately conservative. If the reverse edge never
-  appears, the operator must review the inventory rather than let the bot churn.
+- Removing the daily and cooldown caps makes calibration freshness important.
+  Regenerate the calibration after any fee, pair, venue, or market-regime change.
 
 ## 8. Related files
 

@@ -125,9 +125,10 @@ other TBK direction fail the conditional reverse-probability or expected-value
 gate. Details, formulas, and the exact backtest result are in
 `docs/s1-reversion-preparation-2026-10-29.md`.
 
-After a successful preparation, the supervisor will not prepare again until a
-normal S1 round trip closes. If the reverse edge never appears, it logs
-`preparation_carrying`, keeps waiting, and does not force a losing exit.
+There is no daily preparation count cap and no preparation cooldown. Every
+repeat must pass a fresh calibration, expected-value, and per-trade cost check.
+If the reverse edge never appears, the supervisor logs `preparation_carrying`,
+keeps waiting, and does not force a losing exit.
 
 ## 5. Order execution
 
@@ -171,8 +172,8 @@ signal is skipped until the inventory is replenished.
 
 If the account stays one-sided for more than the configured holding window,
 stop trading and review. Do not force a reverse trade at a negative edge. A
-preparation is also not allowed to repeat indefinitely; the carry lock remains
-until a normal S1 close proves that the inventory rotated.
+repeat preparation is allowed only when it passes a fresh expected-value and
+cost check.
 
 ## 7. Automatic execution phases
 
@@ -193,7 +194,8 @@ until a normal S1 close proves that the inventory rotated.
 
 - Auto-submit only when the rotation state is ready.
 - Keep manual confirmation available as a kill path.
-- Keep one batch in flight and a per-pair cooldown.
+- Keep one batch in flight; preparation has no artificial cooldown, but every
+  repeat must pass a fresh gate.
 - Stop after three consecutive losses or any unknown order.
 
 ### Phase 3: unattended
@@ -240,7 +242,7 @@ Implemented and wired:
 1. `assessRotationReadiness` derives the funded direction from fresh balances.
 2. `planRotationSeed` sizes the one-time seed by base quantity.
 3. `apps/executor/src/auto-supervisor.ts` implements the whitelist, one-batch,
-   cooldown, automatic-confirmation gate, balance refresh, and SAFE_STOP flow.
+   automatic-confirmation gate, balance refresh, and SAFE_STOP flow.
 4. `scripts/seed-rotation.ts` performs the bounded one-time seed.
 5. `scripts/start-rotation.ps1` starts the scanner and supervisor together.
 6. `apps/scanner/src/preparation-backtest.ts` calibrates conditional reverse

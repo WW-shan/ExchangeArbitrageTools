@@ -998,42 +998,6 @@ export class ArbitrageRepository {
     };
   }
 
-  dailyPreparationStats(now = Date.now()): { count: number; cost: Decimal } {
-    const dayStart = Date.parse(`${this.tradingDay(now)}T00:00:00.000Z`);
-    const rows = this.db
-      .prepare(
-        `SELECT realized_profit FROM executions
-         WHERE strategy = 'PREP' AND opened_at >= ?`,
-      )
-      .all(dayStart) as Array<{ realized_profit: string | null }>;
-    const cost = rows.reduce((total, row) => {
-      if (row.realized_profit === null) return total;
-      const value = new Decimal(row.realized_profit);
-      return value.lt(0) ? total.plus(value.abs()) : total;
-    }, new Decimal(0));
-    return { count: rows.length, cost };
-  }
-
-  preparationCarryPending(): boolean {
-    const lastPreparation = this.db
-      .prepare(
-        `SELECT MAX(closed_at) AS closed_at FROM executions
-         WHERE strategy = 'PREP' AND status = 'CLOSED' AND closed_at IS NOT NULL`,
-      )
-      .get() as { closed_at: number | bigint | null };
-    if (lastPreparation.closed_at === null) return false;
-    const lastArbitrage = this.db
-      .prepare(
-        `SELECT MAX(closed_at) AS closed_at FROM executions
-         WHERE strategy = 'S1' AND status = 'CLOSED' AND closed_at IS NOT NULL`,
-      )
-      .get() as { closed_at: number | bigint | null };
-    return (
-      lastArbitrage.closed_at === null ||
-      Number(lastArbitrage.closed_at) < Number(lastPreparation.closed_at)
-    );
-  }
-
   latestClosedExecutionAt(): number | undefined {
     const row = this.db
       .prepare('SELECT MAX(closed_at) AS closed_at FROM executions WHERE closed_at IS NOT NULL')
