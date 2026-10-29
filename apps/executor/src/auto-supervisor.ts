@@ -24,6 +24,7 @@ import {
 import { refreshBalances } from './balance-service.js';
 import type { RecoveryVenue } from './bootstrap.js';
 import type { ExecutorConfig, RotationPairConfig } from './config.js';
+import { attemptAutomaticResidualHedge } from './auto-residual-hedge.js';
 import { CexLiveExecutor, type ExecutionVenue } from './coordinator.js';
 import { writeHeartbeat } from './heartbeat.js';
 import { s1BatchId } from './handoff.js';
@@ -1232,6 +1233,56 @@ export async function runAutoRotationSupervisor(
         consecutiveFailures = 0;
       } else if (result.outcome === 'SAFE_STOP') {
         logEvent({ status: 'stopped', reason: 'safe_stop', batchId });
+        if (config.autoRotation.residualHedge.enabled) {
+          heartbeatPhase = 'HEDGING';
+          try {
+            const hedged = await attemptAutomaticResidualHedge({
+              repository,
+              config,
+              adapters,
+              batchId,
+            });
+            const hedgedAt = clock();
+            const hedgeResult = {
+              batchId,
+              hedgeStatus: hedged.status,
+              attempted: hedged.attempted,
+              reasons: hedged.reasons,
+              hedgeBatchId: hedged.hedgeBatchId ?? null,
+              hedgeExecutionId: hedged.hedgeExecutionId ?? null,
+              venueId: hedged.plan?.venueId ?? null,
+              orderStatus: hedged.order?.status ?? null,
+              orderFilled: hedged.order?.filled.toFixed() ?? null,
+              realizedProfit: hedged.realizedProfit?.toFixed() ?? null,
+              killSwitch: repository.getSetting('kill_switch'),
+            };
+            repository.recordAudit('executor', 'auto_residual_hedge_result', hedgeResult, hedgedAt);
+            logEvent({ status: 'residual_hedge_result', ...hedgeResult });
+          } catch (error) {
+            const failedAt = clock();
+            repository.recordAudit(
+              'executor',
+              'auto_residual_hedge_error',
+              { batchId, error: String(error), killSwitch: repository.getSetting('kill_switch') },
+              failedAt,
+            );
+            repository.recordRiskEvent(
+              'critical',
+              'auto_residual_hedge_error',
+              'automatic residual hedge failed; inventory remains unresolved',
+              { batchId, error: String(error) },
+              failedAt,
+            );
+            logEvent({
+              status: 'residual_hedge_result',
+              batchId,
+              hedgeStatus: 'BLOCKED',
+              attempted: false,
+              reasons: ['auto_residual_hedge_error'],
+              error: String(error),
+            });
+          }
+        }
         break;
       } else if (result.ordersSubmitted > 0) {
         consecutiveFailures += 1;

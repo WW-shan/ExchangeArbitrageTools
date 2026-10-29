@@ -82,4 +82,19 @@ describe('residual hedge planning', () => {
       }),
     ).toBeUndefined();
   });
+
+  it('fails closed instead of closing a residual it cannot fully sell', () => {
+    expect(
+      evaluateResidualHedgeCandidate({
+        venueId: 'bitget',
+        market,
+        book: book(),
+        residualCanonical: new Decimal('500'),
+        costPerCanonical: new Decimal('0.004'),
+        freeBase: new Decimal('400'),
+        grossFeeBps: new Decimal('10'),
+        minProfitUsd: new Decimal('0.01'),
+      }),
+    ).toBeUndefined();
+  });
 });

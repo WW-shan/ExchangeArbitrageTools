@@ -55,6 +55,12 @@ export interface AutoRotationPreparationConfig {
   calibration: Readonly<Record<string, PreparationCalibrationEntry>>;
 }
 
+export interface AutoResidualHedgeConfig {
+  enabled: boolean;
+  maxLossUsd: Decimal;
+  maxBaselineAgeMs: number;
+}
+
 export interface PreparationCalibrationEntry {
   pair: string;
   direction: 'gate->hotcoin' | 'hotcoin->gate';
@@ -74,6 +80,7 @@ export interface AutoRotationConfig {
   enabled: boolean;
   pairs: RotationPairConfig[];
   preparation: AutoRotationPreparationConfig;
+  residualHedge: AutoResidualHedgeConfig;
   heartbeatFile: string;
   pollIntervalMs: number;
   balanceRefreshMs: number;
@@ -462,6 +469,7 @@ function preparationCalibration(path: string): Record<string, PreparationCalibra
 function autoRotationConfig(value: unknown, handoffMaxAgeMs: number): AutoRotationConfig {
   const rotation = optionalTable(value, 'auto_rotation');
   const preparation = optionalTable(rotation.preparation, 'auto_rotation.preparation');
+  const residualHedge = optionalTable(rotation.residual_hedge, 'auto_rotation.residual_hedge');
   const pollIntervalMs = numberValue(rotation, 'poll_interval_ms', 1000);
   const balanceRefreshMs = numberValue(rotation, 'balance_refresh_ms', 10_000);
   const maxSignalAgeMs = numberValue(rotation, 'max_signal_age_ms', handoffMaxAgeMs);
@@ -495,6 +503,11 @@ function autoRotationConfig(value: unknown, handoffMaxAgeMs: number): AutoRotati
       minExpectedValueUsd: decimalValue(preparation, 'min_expected_value_usd', '0'),
       maxHoldMs: numberValue(preparation, 'max_hold_ms', 3_600_000),
       calibration,
+    },
+    residualHedge: {
+      enabled: booleanValue(residualHedge, 'enabled', false),
+      maxLossUsd: decimalValue(residualHedge, 'max_loss_usd', '0'),
+      maxBaselineAgeMs: numberValue(residualHedge, 'max_baseline_age_ms', 60_000),
     },
     heartbeatFile: stringValue(rotation, 'heartbeat_file', 'data/rotation-heartbeat.json'),
     pollIntervalMs,
@@ -531,6 +544,23 @@ function validateSafetyBounds(config: ExecutorConfig): void {
       }
     }
     const preparation = config.autoRotation.preparation;
+    const residualHedge = config.autoRotation.residualHedge;
+    if (
+      !residualHedge.maxLossUsd.isFinite() ||
+      residualHedge.maxLossUsd.lt(0) ||
+      residualHedge.maxLossUsd.gt(config.riskLimits.dailyMaxLoss)
+    ) {
+      throw new Error('auto_rotation.residual_hedge.max_loss_usd is outside the daily loss limit');
+    }
+    if (
+      !Number.isInteger(residualHedge.maxBaselineAgeMs) ||
+      residualHedge.maxBaselineAgeMs < 1_000 ||
+      residualHedge.maxBaselineAgeMs > 300_000
+    ) {
+      throw new Error(
+        'auto_rotation.residual_hedge.max_baseline_age_ms must be between 1000 and 300000',
+      );
+    }
     if (preparation.enabled) {
       if (!Number.isInteger(preparation.minStableMs) || preparation.minStableMs < 0) {
         throw new Error('auto_rotation.preparation.min_stable_ms must be a non-negative integer');

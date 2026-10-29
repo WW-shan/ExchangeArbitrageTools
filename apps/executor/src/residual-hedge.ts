@@ -172,6 +172,7 @@ export function evaluateResidualHedgeCandidate(input: {
   const multiplier = marketBaseMultiplier(market);
   const normalized = normalizeBookForMarket(book, market);
   const requestedExchange = exchangeAmountFromCanonical(residualCanonical, multiplier);
+  if (requestedExchange.minus(freeBase).gt(market.amountStep)) return undefined;
   const cappedExchange = Decimal.min(requestedExchange, freeBase);
   const exchangeAmount = alignAmountDown(cappedExchange, market.amountStep);
   const canonicalAmount = canonicalAmountFromExchange(exchangeAmount, multiplier);
@@ -267,7 +268,7 @@ export async function planResidualHedge(input: {
   }
   const pair = config.autoRotation.pairs.find((row) => row.base.toUpperCase() === asset);
   if (!pair) return { status: 'BLOCKED', reasons: ['rotation_pair_missing'] };
-  const residualVenue = unhedged[0]!.venue_id;
+  const residualVenue = unhedged[0]!.venue_id.trim().toLowerCase();
   const residualBaseline = baselineRows(
     repository,
     residualVenue,
@@ -283,20 +284,17 @@ export async function planResidualHedge(input: {
     return { status: 'BLOCKED', reasons: ['pre_execution_balance_baseline_incomplete'] };
   }
 
-  const candidates: ResidualHedgeVenue[] = [];
-  const markets: Record<string, MarketMetadata[]> = {};
-  for (const venueId of pair.venues) {
-    const bundle = adapters[venueId];
-    if (!bundle) return { status: 'BLOCKED', reasons: [`adapter_missing_${venueId}`] };
-    markets[venueId] = await bundle.adapter.loadMarkets();
-    const market = findMarket(markets[venueId]!, venueId, pair.base, pair.quote);
-    if (!market) return { status: 'BLOCKED', reasons: [`market_missing_${venueId}`] };
-    const balances = await fetchBalances(repository, bundle);
-    candidates.push({ adapter: bundle.adapter, credentials: bundle.credentials, market, balances });
-  }
-
-  const residualVenueData = candidates.find((row) => row.adapter.venueId === residualVenue);
-  if (!residualVenueData) return { status: 'BLOCKED', reasons: ['residual_venue_missing'] };
+  const bundle = adapters[residualVenue];
+  if (!bundle) return { status: 'BLOCKED', reasons: ['residual_venue_missing'] };
+  const markets = await bundle.adapter.loadMarkets();
+  const market = findMarket(markets, residualVenue, pair.base, pair.quote);
+  if (!market) return { status: 'BLOCKED', reasons: ['residual_market_missing'] };
+  const residualVenueData: ResidualHedgeVenue = {
+    adapter: bundle.adapter,
+    credentials: bundle.credentials,
+    market,
+    balances: await fetchBalances(repository, bundle),
+  };
   const currentBase = findBalance(residualVenueData.balances, residualVenue, asset);
   const currentQuote = findBalance(residualVenueData.balances, residualVenue, pair.quote);
   if (!currentBase || !currentQuote) {
@@ -331,46 +329,44 @@ export async function planResidualHedge(input: {
     costQuote = costPerCanonical.mul(residualCanonical);
   }
 
-  const evaluated: ResidualHedgeCandidate[] = [];
-  for (const venue of candidates) {
-    const freeBase = findBalance(
-      venue.balances,
-      venue.adapter.venueId,
-      marketExchangeBase(venue.market),
-    )?.free;
-    if (!freeBase || freeBase.lte(0)) continue;
-    if (!venue.adapter.capabilities.fok) continue;
-    let book: OrderBookSnapshot;
-    try {
-      book = await venue.adapter.fetchOrderBook(venue.market.exchangeSymbol, config.orderbookDepth);
-    } catch {
-      continue;
-    }
-    const validation = validateOrderBook(book, {
-      expectedVenueId: venue.adapter.venueId,
-      expectedSymbol: venue.market.exchangeSymbol,
-      maxAgeMs: config.settings.maxOrderbookAgeMs,
-      now: Date.now(),
-    });
-    if (!validation.valid) continue;
-    const candidate = evaluateResidualHedgeCandidate({
-      venueId: venue.adapter.venueId,
-      market: venue.market,
-      book: validation.book,
-      residualCanonical,
-      costPerCanonical,
-      freeBase,
-      grossFeeBps: grossFeeBps(config, venue.adapter.venueId, venue.market),
-      minProfitUsd,
-    });
-    if (candidate) evaluated.push(candidate);
+  const freeBase = findBalance(
+    residualVenueData.balances,
+    residualVenue,
+    marketExchangeBase(residualVenueData.market),
+  )?.free;
+  if (!freeBase || freeBase.lte(0) || !residualVenueData.adapter.capabilities.fok) {
+    return { status: 'BLOCKED', reasons: ['residual_venue_not_fok_eligible'] };
   }
-  if (evaluated.length === 0) {
-    return { status: 'BLOCKED', reasons: ['no_profitable_fok_hedge_candidate'] };
+  let book: OrderBookSnapshot;
+  try {
+    book = await residualVenueData.adapter.fetchOrderBook(
+      residualVenueData.market.exchangeSymbol,
+      config.orderbookDepth,
+    );
+  } catch {
+    return { status: 'BLOCKED', reasons: ['residual_book_unavailable'] };
   }
-  evaluated.sort((left, right) => right.projectedProfit.comparedTo(left.projectedProfit));
-  const chosen = evaluated[0]!;
-  const chosenVenue = candidates.find((row) => row.adapter.venueId === chosen.venueId)!;
+  const validation = validateOrderBook(book, {
+    expectedVenueId: residualVenue,
+    expectedSymbol: residualVenueData.market.exchangeSymbol,
+    maxAgeMs: config.settings.maxOrderbookAgeMs,
+    now: Date.now(),
+  });
+  if (!validation.valid) return { status: 'BLOCKED', reasons: ['residual_book_stale_or_invalid'] };
+  const chosen = evaluateResidualHedgeCandidate({
+    venueId: residualVenue,
+    market: residualVenueData.market,
+    book: validation.book,
+    residualCanonical,
+    costPerCanonical,
+    freeBase,
+    grossFeeBps: grossFeeBps(config, residualVenue, residualVenueData.market),
+    minProfitUsd,
+  });
+  if (!chosen) {
+    return { status: 'BLOCKED', reasons: ['no_fok_hedge_candidate_within_limits'] };
+  }
+  const chosenVenue = residualVenueData;
   const chosenBase = findBalance(
     chosenVenue.balances,
     chosen.venueId,
@@ -442,6 +438,7 @@ interface HedgeMetadata {
   hedgeVenue: string;
   base: string;
   quote: string;
+  origin?: 'manual' | 'automatic';
   exchangeBase?: string;
   exchangeSymbol?: string;
   baseMultiplier?: string;
@@ -475,6 +472,8 @@ function finalizeHedgeFill(input: {
   now: number;
 }): ResidualHedgeResult {
   const { repository, hedgeExecution, metadata, order, afterRows, now } = input;
+  const origin = metadata.origin ?? 'manual';
+  const actor = origin === 'automatic' ? 'executor' : 'operator';
   const exchangeBase = metadata.exchangeBase ?? metadata.base;
   const multiplier = new Decimal(metadata.baseMultiplier ?? '1');
   const baseline = baselineRows(repository, metadata.hedgeVenue, hedgeExecution.opened_at, 300_000);
@@ -562,11 +561,12 @@ function finalizeHedgeFill(input: {
       amount: order.filled.toFixed(),
       price: order.averagePrice?.toFixed() ?? null,
       realizedProfit: realizedProfit.toFixed(),
+      origin,
     },
     closedAt,
   );
   repository.recordAudit(
-    'operator',
+    actor,
     'residual_hedged',
     {
       batchId: metadata.originalBatchId,
@@ -576,6 +576,7 @@ function finalizeHedgeFill(input: {
       amount: order.filled.toFixed(),
       price: order.averagePrice?.toFixed() ?? null,
       realizedProfit: realizedProfit.toFixed(),
+      origin,
     },
     closedAt,
   );
@@ -715,9 +716,11 @@ export async function executeResidualHedge(input: {
   adapters: Readonly<Record<string, RecoveryVenue>>;
   batchId: string;
   plan: ResidualHedgePlan;
+  origin?: 'manual' | 'automatic';
   now?: number;
 }): Promise<ResidualHedgeResult> {
   const { repository, config, adapters, batchId, plan } = input;
+  const origin = input.origin ?? 'manual';
   const now = input.now ?? Date.now();
   if (!config.liveEnabled || repository.getSetting('live_enabled') !== 'true') {
     return { status: 'BLOCKED', reasons: ['live_execution_disabled'], plan };
@@ -745,7 +748,7 @@ export async function executeResidualHedge(input: {
     plannedNotional: plan.netProceedsQuote,
     expectedProfit: plan.projectedProfit,
     openedAt: now,
-    metadata: hedgeMetadata(plan),
+    metadata: hedgeMetadata(plan, { origin }),
   });
   repository.addExecutionLeg({
     executionId: hedgeExecutionId,
@@ -833,10 +836,10 @@ export async function executeResidualHedge(input: {
       hedgeExecutionId,
       definitive ? 'HEDGE_REJECTED' : 'HEDGE_UNKNOWN',
       definitive
-        ? { closedAt: failedAt, metadata: hedgeMetadata(plan, { error: String(error) }) }
+        ? { closedAt: failedAt, metadata: hedgeMetadata(plan, { origin, error: String(error) }) }
         : {
             safeModeReason: 'ambiguous_hedge_submission',
-            metadata: hedgeMetadata(plan, { error: String(error) }),
+            metadata: hedgeMetadata(plan, { origin, error: String(error) }),
           },
     );
     if (!definitive) {
@@ -845,7 +848,7 @@ export async function executeResidualHedge(input: {
         'critical',
         'hedge_submission_unknown',
         'residual hedge order state is unknown; do not retry',
-        { batchId, hedgeBatchId, clientOrderId, error: String(error) },
+        { batchId, hedgeBatchId, clientOrderId, origin, error: String(error) },
         Date.now(),
       );
     }
@@ -902,14 +905,14 @@ export async function executeResidualHedge(input: {
   if (order.status === 'unknown' || order.status === 'open') {
     repository.updateExecutionStatus(hedgeExecutionId, 'HEDGE_UNKNOWN', {
       safeModeReason: `hedge_order_${order.status}`,
-      metadata: hedgeMetadata(plan, { orderStatus: order.status }),
+      metadata: hedgeMetadata(plan, { origin, orderStatus: order.status }),
     });
     repository.setSetting('kill_switch', 'true', Date.now());
     repository.recordRiskEvent(
       'critical',
       'hedge_order_unresolved',
       'residual hedge order was not terminal on submission; running bounded order lookup',
-      { batchId, hedgeBatchId, clientOrderId, orderStatus: order.status },
+      { batchId, hedgeBatchId, clientOrderId, origin, orderStatus: order.status },
       Date.now(),
     );
     const reconciled = await reconcileResidualHedgeFill({
@@ -930,7 +933,7 @@ export async function executeResidualHedge(input: {
   if (order.filled.lte(0)) {
     repository.updateExecutionStatus(hedgeExecutionId, 'HEDGE_REJECTED', {
       closedAt: Date.now(),
-      metadata: hedgeMetadata(plan, { orderStatus: order.status }),
+      metadata: hedgeMetadata(plan, { orderStatus: order.status, origin }),
     });
     return {
       status: 'BLOCKED',
@@ -945,6 +948,7 @@ export async function executeResidualHedge(input: {
     repository.updateExecutionStatus(hedgeExecutionId, 'HEDGE_PARTIAL', {
       safeModeReason: 'hedge_fok_partial_fill',
       metadata: hedgeMetadata(plan, {
+        origin,
         orderStatus: order.status,
         filled: order.filled.toFixed(),
         remaining: order.remaining.toFixed(),
@@ -959,6 +963,7 @@ export async function executeResidualHedge(input: {
         batchId,
         hedgeBatchId,
         clientOrderId,
+        origin,
         status: order.status,
         filled: order.filled.toFixed(),
         remaining: order.remaining.toFixed(),
@@ -982,6 +987,7 @@ export async function executeResidualHedge(input: {
     hedgeVenue: plan.venueId,
     base: plan.base,
     quote: plan.quote,
+    origin,
     exchangeBase: plan.exchangeBase,
     exchangeSymbol: plan.exchangeSymbol,
     baseMultiplier: plan.baseMultiplier.toFixed(),

@@ -123,6 +123,15 @@ min_expected_value_bps = '0'
 min_expected_value_usd = '0'
 max_hold_ms = 3600000
 
+# After a confirmed one-leg SAFE_STOP, attempt one reduce-only FOK flatten.
+# Unknown orders never reach this path. The hedge may realize up to 0.05 USDT
+# of loss to remove inventory risk; anything worse stays SAFE_STOP for manual
+# review. The kill switch remains on after the hedge, so no new rotation starts.
+[auto_rotation.residual_hedge]
+enabled = true
+max_loss_usd = '0.05'
+max_baseline_age_ms = 60000
+
 [[auto_rotation.pairs]]
 base = 'WARD'
 quote = 'USDT'

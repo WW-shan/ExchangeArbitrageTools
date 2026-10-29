@@ -234,13 +234,17 @@ The executor still re-evaluates the books after the scanner signal. It requires:
 
 If leg 1 fills but leg 2 cannot, the existing executor enters SAFE_STOP and
 records unhedged inventory. It does not retry blindly and does not transfer
-funds automatically.
+funds automatically. A confirmed long residual may receive one automatic FOK
+flatten on the same venue when `[auto_rotation.residual_hedge]` is enabled.
+Unknown orders, mixed assets, stale baselines, partial-only quantity and losses
+above `max_loss_usd` never reach the automatic path.
 
 ## SAFE_STOP reconciliation
 
 A SAFE_STOP deliberately leaves the kill switch on and leaves the execution
-open. Do not edit the database by hand. First refresh private balances and open
-orders:
+open. It may also leave a separate HEDGE execution when the automatic flatten
+attempted an order whose result was unknown. Do not edit the database by hand.
+First refresh private balances and open orders:
 
 ```powershell
 . .\scripts\load-env.ps1
@@ -342,6 +346,8 @@ unhedged rows. Full evidence is in
 - The two venue legs are not atomic. A fast reversal or a venue rejection can
   leave inventory unhedged.
 - The first seed is a deliberate inventory purchase, not an arbitrage trade.
+- Automatic residual hedging is reduce-only and same-venue only. It keeps the
+  kill switch on and cannot recover an unknown order by retrying.
 - Automatic withdrawal/balance-transfer execution is implemented but disabled
   in the live profile until allowlist addresses and measured fees are supplied.
 - Reversion preparation is calibrated on OHLCV and is not a guarantee. The

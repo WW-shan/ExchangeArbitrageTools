@@ -61,6 +61,9 @@ describe('executor configuration', () => {
     expect(config.transfers.minNetEdgeBps.toFixed()).toBe('5');
     expect(config.transfers.maxCostUsd.toFixed()).toBe('0.5');
     expect(config.accountStatus.enabled).toBe(false);
+    expect(config.autoRotation.residualHedge.enabled).toBe(false);
+    expect(config.autoRotation.residualHedge.maxLossUsd.toFixed()).toBe('0');
+    expect(config.autoRotation.residualHedge.maxBaselineAgeMs).toBe(60_000);
     expect(config.transfers.allowlist).toEqual([]);
   });
 
@@ -175,6 +178,48 @@ max_notional = '20'
         {},
       ),
     ).toThrow('30000');
+  });
+
+  it('parses a bounded automatic residual hedge', () => {
+    const appendix = `
+[auto_rotation]
+enabled = true
+max_signal_age_ms = 5000
+[auto_rotation.residual_hedge]
+enabled = true
+max_loss_usd = '0.05'
+max_baseline_age_ms = 60000
+[[auto_rotation.pairs]]
+base = 'KAT'
+quote = 'USDT'
+max_notional = '20'
+`;
+    const config = loadExecutorConfig(configWithAppendix(appendix), {});
+    expect(config.autoRotation.residualHedge.enabled).toBe(true);
+    expect(config.autoRotation.residualHedge.maxLossUsd.toFixed()).toBe('0.05');
+    expect(config.autoRotation.residualHedge.maxBaselineAgeMs).toBe(60_000);
+  });
+
+  it('rejects an automatic residual hedge outside the loss and baseline bounds', () => {
+    const section = (loss: string, baseline: number): string => `
+[auto_rotation]
+enabled = true
+max_signal_age_ms = 5000
+[auto_rotation.residual_hedge]
+enabled = true
+max_loss_usd = '${loss}'
+max_baseline_age_ms = ${baseline}
+[[auto_rotation.pairs]]
+base = 'KAT'
+quote = 'USDT'
+max_notional = '20'
+`;
+    expect(() => loadExecutorConfig(configWithAppendix(section('21', 60000)), {})).toThrow(
+      'max_loss_usd',
+    );
+    expect(() => loadExecutorConfig(configWithAppendix(section('0.05', 500)), {})).toThrow(
+      'max_baseline_age_ms',
+    );
   });
 
   it('fails closed when reversion preparation is enabled without calibration', () => {
