@@ -208,10 +208,6 @@ function logAccountState(
           quote: balances.readinessBalances.hotcoinQuote.toFixed(),
         },
       },
-      gateBase: balances.readinessBalances.gateBase.toFixed(),
-      gateQuote: balances.readinessBalances.gateQuote.toFixed(),
-      hotcoinBase: balances.readinessBalances.hotcoinBase.toFixed(),
-      hotcoinQuote: balances.readinessBalances.hotcoinQuote.toFixed(),
       fresh: balances.fresh,
       reasons: balances.reasons,
     };
