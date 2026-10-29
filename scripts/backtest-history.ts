@@ -1,5 +1,5 @@
 import { mkdirSync, writeFileSync } from 'node:fs';
-import { dirname, resolve } from 'node:path';
+import { dirname, relative, resolve } from 'node:path';
 import { Decimal, type MarketMetadata, type OhlcvCandle, type TickerSnapshot } from '@arb/core';
 import {
   applyFeeOverride,
@@ -14,6 +14,11 @@ import {
   bestHistoricalDirection,
   rankHistoricalPairs,
 } from '../apps/scanner/src/historical-backtest.js';
+import {
+  analyzePreparationPair,
+  bestPreparationHorizon,
+  type PreparationPairResult,
+} from '../apps/scanner/src/preparation-backtest.js';
 import {
   collectHistoricalCandles,
   historicalMaxLookbackDays,
@@ -58,8 +63,12 @@ function jsonSafe(value: unknown): unknown {
   return value;
 }
 
-function fmt(value: Decimal | undefined, digits = 2): string {
+function fmt(value: Decimal | null | undefined, digits = 2): string {
   return value ? value.toFixed(digits) : '-';
+}
+
+function executionDirection(venue: string): string {
+  return venue === 'gateio' ? 'gate' : venue;
 }
 
 async function withRetry<T>(operation: () => Promise<T>, label: string, attempts = 3): Promise<T> {
@@ -150,6 +159,18 @@ async function main(): Promise<void> {
   const extraSlippageBps = new Decimal(arg('--extra-slippage-bps', '10'));
   const minCandleQuoteVolumeUsd = new Decimal(arg('--min-candle-volume-usd', '20'));
   const maxSaneSpreadBps = new Decimal(arg('--max-sane-spread-bps', '3000'));
+  const prepEnabled = process.argv.includes('--prep');
+  const prepHorizonsMs = listArg('--prep-horizons-ms', '900000,1800000,3600000')
+    .map((value) => Number(value))
+    .filter((value) => Number.isFinite(value) && value > 0);
+  const prepBandBps = new Decimal(arg('--prep-band-bps', '5'));
+  const prepTargetBps = new Decimal(arg('--prep-target-bps', '5'));
+  const prepStopBps = new Decimal(arg('--prep-stop-bps', '50'));
+  const prepMinSamples = Math.max(1, Number(arg('--prep-min-samples', '20')));
+  const prepOutputPath = resolve(arg('--prep-out', 'config/s1-prep-calibration.json'));
+  if (prepEnabled && prepHorizonsMs.length === 0) {
+    throw new Error('--prep-horizons-ms must contain at least one positive horizon');
+  }
   const notional = new Decimal(arg('--notional', config.scanner.requestedNotional.toFixed()));
   const concurrency = Math.max(1, Number(arg('--concurrency', '3')));
   const rps = Math.max(1, Number(arg('--rps', '4')));
@@ -291,8 +312,27 @@ async function main(): Promise<void> {
         maxSaneSpreadBps,
         episodeGapMs: timeframeMs * 1.5,
       });
+      const preparation = prepEnabled
+        ? analyzePreparationPair({
+            base: candidate.base,
+            quote,
+            candlesByVenue,
+            feeBpsByVenue,
+            timeframeMs,
+            notional,
+            safetyBufferBps,
+            extraSlippageBps,
+            minCandleQuoteVolumeUsd,
+            maxSaneSpreadBps,
+            prepBandBps,
+            reverseTargetBps: prepTargetBps,
+            stopBps: prepStopBps,
+            horizonsMs: prepHorizonsMs,
+          })
+        : undefined;
       return {
         pair,
+        preparation,
         error:
           pairErrors.length > 0
             ? `${candidate.base}/${quote}: ${pairErrors.join('; ')}`
@@ -301,6 +341,38 @@ async function main(): Promise<void> {
     });
 
     const ranked = rankHistoricalPairs(pairs.flatMap((entry) => (entry.pair ? [entry.pair] : [])));
+    const preparationByPair = new Map<string, PreparationPairResult>();
+    for (const entry of pairs) {
+      if (entry.pair && entry.preparation) {
+        preparationByPair.set(`${entry.pair.base}/${entry.pair.quote}`, entry.preparation);
+      }
+    }
+    const preparationRanking = ranked
+      .map((pair) => preparationByPair.get(`${pair.base}/${pair.quote}`))
+      .filter((entry): entry is PreparationPairResult => entry !== undefined);
+    const calibrationEntries = ranked.flatMap((pair) => {
+      const preparation = preparationByPair.get(`${pair.base}/${pair.quote}`);
+      if (!preparation) return [];
+      return preparation.directions.flatMap((direction) => {
+        const best = bestPreparationHorizon(direction, prepMinSamples);
+        if (!best) return [];
+        return [
+          {
+            pair: `${pair.base}/${pair.quote}`,
+            direction: `${executionDirection(direction.buyVenue)}->${executionDirection(direction.sellVenue)}`,
+            horizonMs: best.horizonMs,
+            candidateSamples: best.candidateSamples,
+            reverseProbability: best.reverseHitRate,
+            medianTimeToReverseMs: best.medianTimeToReverseMs ?? null,
+            medianReverseNetBps: best.medianReverseNetBps ?? null,
+            medianPrepCostBps: best.medianPrepCostBps,
+            meanNoReverseLossBps: best.meanNoReverseLossBps,
+            expectedValueBps: best.expectedValueBps,
+            expectedValueUsd: best.expectedValueUsd,
+          },
+        ];
+      });
+    });
     const report = {
       generatedAt: new Date().toISOString(),
       configPath,
@@ -323,12 +395,22 @@ async function main(): Promise<void> {
         extraSlippageBps: extraSlippageBps.toFixed(),
         minCandleQuoteVolumeUsd: minCandleQuoteVolumeUsd.toFixed(),
         maxSaneSpreadBps: maxSaneSpreadBps.toFixed(),
+        ...(prepEnabled
+          ? {
+              prepHorizonsMs,
+              prepBandBps: prepBandBps.toFixed(),
+              prepTargetBps: prepTargetBps.toFixed(),
+              prepStopBps: prepStopBps.toFixed(),
+              prepMinSamples,
+            }
+          : {}),
       },
       candidateCount: universe.length,
       analyzedPairs: ranked.length,
       loadErrors,
       pairErrors: pairs.flatMap((entry) => (entry.error ? [entry.error] : [])),
       ranking: ranked,
+      ...(prepEnabled ? { preparation: preparationRanking } : {}),
     };
 
     console.log(
@@ -362,6 +444,55 @@ async function main(): Promise<void> {
     mkdirSync(dirname(outputPath), { recursive: true });
     writeFileSync(outputPath, `${JSON.stringify(jsonSafe(report), null, 2)}\n`, 'utf8');
     console.log(`wrote ${outputPath}`);
+    if (prepEnabled) {
+      const calibration = {
+        generatedAt: new Date().toISOString(),
+        source: relative(process.cwd(), outputPath).replaceAll('\\', '/'),
+        referenceNotional: notional.toFixed(),
+        parameters: {
+          timeframe,
+          days,
+          prepHorizonsMs,
+          prepBandBps: prepBandBps.toFixed(),
+          prepTargetBps: prepTargetBps.toFixed(),
+          prepStopBps: prepStopBps.toFixed(),
+          prepMinSamples,
+        },
+        entries: calibrationEntries.map((entry) => ({
+          pair: entry.pair,
+          direction: entry.direction,
+          horizon_ms: entry.horizonMs,
+          candidate_samples: entry.candidateSamples,
+          reverse_probability: entry.reverseProbability,
+          median_time_to_reverse_ms: entry.medianTimeToReverseMs,
+          median_reverse_net_bps: entry.medianReverseNetBps,
+          median_prep_cost_bps: entry.medianPrepCostBps,
+          mean_no_reverse_loss_bps: entry.meanNoReverseLossBps,
+          expected_value_bps: entry.expectedValueBps,
+          expected_value_usd: entry.expectedValueUsd,
+        })),
+      };
+      mkdirSync(dirname(prepOutputPath), { recursive: true });
+      writeFileSync(prepOutputPath, `${JSON.stringify(jsonSafe(calibration), null, 2)}\n`, 'utf8');
+      console.log(`wrote ${prepOutputPath}`);
+      for (const entry of calibrationEntries) {
+        console.log(
+          [
+            entry.pair,
+            entry.direction,
+            `horizonMin=${(entry.horizonMs / 60_000).toFixed(0)}`,
+            `samples=${entry.candidateSamples}`,
+            `pReverse=${entry.reverseProbability.toFixed(4)}`,
+            `medianTimeMin=${entry.medianTimeToReverseMs === null ? '-' : (entry.medianTimeToReverseMs / 60_000).toFixed(1)}`,
+            `medianReverseBps=${fmt(entry.medianReverseNetBps)}`,
+            `prepCostBps=${fmt(entry.medianPrepCostBps)}`,
+            `noReverseLossBps=${fmt(entry.meanNoReverseLossBps)}`,
+            `evBps=${fmt(entry.expectedValueBps)}`,
+            `evUsd=${fmt(entry.expectedValueUsd, 4)}`,
+          ].join(' '),
+        );
+      }
+    }
   } finally {
     for (const adapter of adapters.values()) {
       try {

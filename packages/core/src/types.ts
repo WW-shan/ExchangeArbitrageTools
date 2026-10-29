@@ -49,6 +49,7 @@ export type RejectionReason =
   | 'venue_reliability_low'
   | 'below_percentile_gate'
   | 'book_sanity_blocked'
+  | 'preparation_cost_above_limit'
   | 'invalid_request';
 
 export interface Level {

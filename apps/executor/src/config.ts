@@ -36,9 +36,42 @@ export interface RotationPairConfig {
   maxNotional: Decimal;
 }
 
+export interface AutoRotationPreparationConfig {
+  enabled: boolean;
+  maxNotional: Decimal;
+  maxCostBps: Decimal;
+  maxCostUsd: Decimal;
+  minStableMs: number;
+  minHoldingMs: number;
+  cooldownMs: number;
+  maxPerDay: number;
+  calibrationFile: string;
+  minReverseProbability: Decimal;
+  minExpectedValueBps: Decimal;
+  minExpectedValueUsd: Decimal;
+  maxHoldMs: number;
+  reversionBandBps: Decimal;
+  calibration: Readonly<Record<string, PreparationCalibrationEntry>>;
+}
+
+export interface PreparationCalibrationEntry {
+  pair: string;
+  direction: 'gate->hotcoin' | 'hotcoin->gate';
+  horizonMs: number;
+  candidateSamples: number;
+  reverseProbability: Decimal;
+  medianTimeToReverseMs: number;
+  medianReverseNetBps?: Decimal;
+  medianPrepCostBps: Decimal;
+  meanNoReverseLossBps: Decimal;
+  expectedValueBps: Decimal;
+  expectedValueUsd: Decimal;
+}
+
 export interface AutoRotationConfig {
   enabled: boolean;
   pairs: RotationPairConfig[];
+  preparation: AutoRotationPreparationConfig;
   pollIntervalMs: number;
   balanceRefreshMs: number;
   maxSignalAgeMs: number;
@@ -54,6 +87,8 @@ export interface ExecutorConfig {
   manualConfirmation: boolean;
   maxOpenBatches: 1;
   handoffMaxAgeMs: number;
+  orderbookDepth: number;
+  minSizingNotional: Decimal;
   legMode: LegExecutionMode;
   iocVenues: string[];
   fokVenues: string[];
@@ -267,13 +302,101 @@ function rotationPairs(value: unknown): RotationPairConfig[] {
   });
 }
 
+function preparationDirection(value: unknown): 'gate->hotcoin' | 'hotcoin->gate' {
+  if (typeof value !== 'string') {
+    throw new Error('preparation calibration direction must be a string');
+  }
+  const normalized = value
+    .trim()
+    .toLowerCase()
+    .replaceAll('gateio', 'gate')
+    .replaceAll('hotcoin', 'hotcoin');
+  if (normalized === 'gate->hotcoin' || normalized === 'hotcoin->gate') return normalized;
+  throw new Error(`unsupported preparation direction: ${value}`);
+}
+
+function preparationCalibration(path: string): Record<string, PreparationCalibrationEntry> {
+  if (path.trim() === '') return {};
+  let document: unknown;
+  try {
+    document = JSON.parse(readFileSync(path, 'utf8'));
+  } catch (error) {
+    throw new Error(`failed to read preparation calibration ${path}: ${String(error)}`);
+  }
+  if (!document || typeof document !== 'object' || Array.isArray(document)) {
+    throw new Error('preparation calibration must be a JSON object');
+  }
+  const rawEntries = (document as Table).entries;
+  if (!Array.isArray(rawEntries)) {
+    throw new Error('preparation calibration entries must be an array');
+  }
+  const result: Record<string, PreparationCalibrationEntry> = {};
+  for (const raw of rawEntries) {
+    const row = table(raw, 'preparation calibration entry');
+    const pair = stringValue(row, 'pair').trim().toUpperCase();
+    const direction = preparationDirection(row.direction);
+    const horizonMs = numberValue(row, 'horizon_ms');
+    const candidateSamples = numberValue(row, 'candidate_samples');
+    const reverseProbability = decimalValue(row, 'reverse_probability');
+    const medianTimeToReverseMs = numberValue(row, 'median_time_to_reverse_ms');
+    const medianPrepCostBps = decimalValue(row, 'median_prep_cost_bps');
+    const meanNoReverseLossBps = decimalValue(row, 'mean_no_reverse_loss_bps');
+    const expectedValueBps = decimalValue(row, 'expected_value_bps');
+    const expectedValueUsd = decimalValue(row, 'expected_value_usd');
+    const medianReverseNetBps =
+      row.median_reverse_net_bps === null || row.median_reverse_net_bps === undefined
+        ? undefined
+        : decimalValue(row, 'median_reverse_net_bps');
+    if (
+      !Number.isInteger(horizonMs) ||
+      horizonMs <= 0 ||
+      !Number.isInteger(candidateSamples) ||
+      candidateSamples <= 0 ||
+      !reverseProbability.isFinite() ||
+      reverseProbability.lt(0) ||
+      reverseProbability.gt(1) ||
+      !Number.isFinite(medianTimeToReverseMs) ||
+      medianTimeToReverseMs < 0 ||
+      !medianPrepCostBps.isFinite() ||
+      medianPrepCostBps.lt(0) ||
+      !meanNoReverseLossBps.isFinite() ||
+      meanNoReverseLossBps.lt(0) ||
+      !expectedValueBps.isFinite() ||
+      !expectedValueUsd.isFinite()
+    ) {
+      throw new Error(`invalid preparation calibration entry for ${pair} ${direction}`);
+    }
+    const key = `${pair}|${direction}`;
+    if (result[key]) throw new Error(`duplicate preparation calibration entry: ${key}`);
+    result[key] = {
+      pair,
+      direction,
+      horizonMs,
+      candidateSamples,
+      reverseProbability,
+      medianTimeToReverseMs,
+      medianPrepCostBps,
+      meanNoReverseLossBps,
+      expectedValueBps,
+      expectedValueUsd,
+      ...(medianReverseNetBps ? { medianReverseNetBps } : {}),
+    };
+  }
+  return result;
+}
+
 function autoRotationConfig(value: unknown, handoffMaxAgeMs: number): AutoRotationConfig {
   const rotation = optionalTable(value, 'auto_rotation');
+  const preparation = optionalTable(rotation.preparation, 'auto_rotation.preparation');
   const pollIntervalMs = numberValue(rotation, 'poll_interval_ms', 1000);
   const balanceRefreshMs = numberValue(rotation, 'balance_refresh_ms', 10_000);
   const maxSignalAgeMs = numberValue(rotation, 'max_signal_age_ms', handoffMaxAgeMs);
   const cooldownMs = numberValue(rotation, 'cooldown_ms', 5000);
   const maxConsecutiveFailures = numberValue(rotation, 'max_consecutive_failures', 3);
+  const preparationEnabled = booleanValue(preparation, 'enabled', false);
+  const calibrationFile =
+    typeof preparation.calibration_file === 'string' ? preparation.calibration_file.trim() : '';
+  const calibration = preparationEnabled ? preparationCalibration(calibrationFile) : {};
   for (const [name, value] of [
     ['poll_interval_ms', pollIntervalMs],
     ['balance_refresh_ms', balanceRefreshMs],
@@ -288,6 +411,23 @@ function autoRotationConfig(value: unknown, handoffMaxAgeMs: number): AutoRotati
   return {
     enabled: booleanValue(rotation, 'enabled', false),
     pairs: rotationPairs(rotation.pairs),
+    preparation: {
+      enabled: preparationEnabled,
+      maxNotional: decimalValue(preparation, 'max_notional', '10'),
+      maxCostBps: decimalValue(preparation, 'max_cost_bps', '5'),
+      maxCostUsd: decimalValue(preparation, 'max_cost_usd', '0.01'),
+      minStableMs: numberValue(preparation, 'min_stable_ms', 30_000),
+      minHoldingMs: numberValue(preparation, 'min_holding_ms', 300_000),
+      cooldownMs: numberValue(preparation, 'cooldown_ms', 600_000),
+      maxPerDay: numberValue(preparation, 'max_per_day', 6),
+      calibrationFile,
+      minReverseProbability: decimalValue(preparation, 'min_reverse_probability', '0.55'),
+      minExpectedValueBps: decimalValue(preparation, 'min_expected_value_bps', '0'),
+      minExpectedValueUsd: decimalValue(preparation, 'min_expected_value_usd', '0'),
+      maxHoldMs: numberValue(preparation, 'max_hold_ms', 3_600_000),
+      reversionBandBps: decimalValue(preparation, 'reversion_band_bps', '5'),
+      calibration,
+    },
     pollIntervalMs,
     balanceRefreshMs,
     maxSignalAgeMs,
@@ -321,9 +461,64 @@ function validateSafetyBounds(config: ExecutorConfig): void {
         );
       }
     }
+    const preparation = config.autoRotation.preparation;
+    if (
+      !Number.isInteger(preparation.minStableMs) ||
+      preparation.minStableMs < 0 ||
+      !Number.isInteger(preparation.minHoldingMs) ||
+      preparation.minHoldingMs < 0 ||
+      !Number.isInteger(preparation.cooldownMs) ||
+      preparation.cooldownMs < 0 ||
+      !Number.isInteger(preparation.maxPerDay) ||
+      preparation.maxPerDay < 1
+    ) {
+      throw new Error('auto_rotation.preparation timing values must be non-negative integers');
+    }
+    if (
+      !preparation.maxNotional.isFinite() ||
+      preparation.maxNotional.lte(0) ||
+      preparation.maxNotional.gt(config.riskLimits.maxOrderNotional)
+    ) {
+      throw new Error('auto_rotation.preparation.max_notional is outside the order limit');
+    }
+    if (
+      !preparation.maxCostBps.isFinite() ||
+      preparation.maxCostBps.lt(0) ||
+      preparation.maxCostBps.gt(20) ||
+      !preparation.maxCostUsd.isFinite() ||
+      preparation.maxCostUsd.lt(0) ||
+      preparation.maxCostUsd.gt(new Decimal('0.05'))
+    ) {
+      throw new Error('auto_rotation.preparation cost budget is outside the safety bound');
+    }
+    if (preparation.calibrationFile === '' || Object.keys(preparation.calibration).length === 0) {
+      throw new Error('auto_rotation.preparation requires a non-empty calibration_file');
+    }
+    if (
+      !preparation.minReverseProbability.isFinite() ||
+      preparation.minReverseProbability.lt(0) ||
+      preparation.minReverseProbability.gt(1) ||
+      !preparation.minExpectedValueBps.isFinite() ||
+      preparation.minExpectedValueBps.lt(0) ||
+      !preparation.minExpectedValueUsd.isFinite() ||
+      preparation.minExpectedValueUsd.lt(0) ||
+      !Number.isInteger(preparation.maxHoldMs) ||
+      preparation.maxHoldMs <= 0 ||
+      !preparation.reversionBandBps.isFinite() ||
+      preparation.reversionBandBps.lt(0) ||
+      preparation.reversionBandBps.gt(20)
+    ) {
+      throw new Error('auto_rotation.preparation reversion gate is outside the safety bound');
+    }
   }
   if (!Number.isInteger(config.handoffMaxAgeMs) || config.handoffMaxAgeMs <= 0) {
     throw new Error('execution.handoff_max_age_ms must be a positive integer');
+  }
+  if (!Number.isInteger(config.orderbookDepth) || config.orderbookDepth < 1) {
+    throw new Error('scanner.orderbook_depth must be a positive integer');
+  }
+  if (!config.minSizingNotional.isFinite() || config.minSizingNotional.lte(0)) {
+    throw new Error('scanner.min_sizing_notional must be positive');
   }
   const transfers = config.transfers;
   if (transfers.maxInFlightBatches !== 1) {
@@ -379,6 +574,8 @@ export function loadExecutorConfig(
   const maxOpenBatches = numberValue(execution, 'max_open_batches', 1);
   const minNetProfitBps = decimalValue(scanner, 'min_net_profit_bps', '20');
   const maxOrderbookAgeMs = numberValue(scanner, 'max_orderbook_age_ms', 3000);
+  const orderbookDepth = numberValue(scanner, 'orderbook_depth', 20);
+  const minSizingNotional = decimalValue(scanner, 'min_sizing_notional', '1');
   const maxSlippageBps = decimalValue(scanner, 'max_slippage_bps', '50');
   const maxOrderNotional = decimalValue(scanner, 'max_order_notional', '30');
   const handoffMaxAgeMs = numberValue(execution, 'handoff_max_age_ms', 15_000);
@@ -391,6 +588,8 @@ export function loadExecutorConfig(
     manualConfirmation,
     maxOpenBatches: 1,
     handoffMaxAgeMs,
+    orderbookDepth,
+    minSizingNotional,
     legMode: legModeValue(execution, 'leg_mode', 'serial'),
     iocVenues: stringArray(execution, 'ioc_venues', []),
     fokVenues: stringArray(execution, 'fok_venues', []),

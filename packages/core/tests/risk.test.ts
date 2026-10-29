@@ -93,6 +93,33 @@ describe('execution risk gate', () => {
     expect(decision.reasons).toContain('slippage_too_high');
   });
 
+  it('allows a bounded preparation loss but not an unbounded one', () => {
+    const gate = new ExecutionGate({
+      maxOrderNotional: new Decimal(30),
+      dailyMaxLoss: new Decimal(20),
+      maxOpenBatches: 1,
+      minNetProfitBps: new Decimal(20),
+      maxStaleOrderbookMs: 3000,
+      maxSlippageBps: new Decimal(50),
+      killSwitchDefault: false,
+    });
+    const allowed = gate.preflight({
+      ...validCheck,
+      expectedNetProfit: new Decimal('-0.004'),
+      expectedNetProfitBps: new Decimal(-4),
+      preparation: { maxCostBps: new Decimal(5), maxCostUsd: new Decimal('0.01') },
+    });
+    expect(allowed.allowed).toBe(true);
+    const rejected = gate.preflight({
+      ...validCheck,
+      expectedNetProfit: new Decimal('-0.02'),
+      expectedNetProfitBps: new Decimal(-20),
+      preparation: { maxCostBps: new Decimal(5), maxCostUsd: new Decimal('0.01') },
+    });
+    expect(rejected.allowed).toBe(false);
+    expect(rejected.reasons).toContain('preparation_cost_above_limit');
+  });
+
   it('fails closed when risk values or limits are non-finite', () => {
     const gate = new ExecutionGate({
       maxOrderNotional: new Decimal(30),

@@ -112,6 +112,23 @@ Entry requires all of:
 Residual step fragments are recorded in the audit but are not a pair-selection
 filter; every low-priced symbol can produce them after a base-charged fee.
 
+### 4.1 Reversion preparation
+
+When no normal S1 edge is available and the funded direction returns to near
+breakeven, the supervisor may submit a small preparation trade to shift
+inventory to the opposite side. This is allowed only for a direction with a
+positive historical calibration. It is not a promise that the reverse spread
+will return.
+
+The current calibration allows only `TBK/USDT|gate->hotcoin`. LIGHT and the
+other TBK direction fail the conditional reverse-probability or expected-value
+gate. Details, formulas, and the exact backtest result are in
+`docs/s1-reversion-preparation-2026-10-29.md`.
+
+After a successful preparation, the supervisor will not prepare again until a
+normal S1 round trip closes. If the reverse edge never appears, it logs
+`preparation_carrying`, keeps waiting, and does not force a losing exit.
+
 ## 5. Order execution
 
 Keep serial FOK as the default:
@@ -153,7 +170,9 @@ The next eligible direction is normally the reverse one. A same-direction
 signal is skipped until the inventory is replenished.
 
 If the account stays one-sided for more than the configured holding window,
-stop trading and review. Do not force a reverse trade at a negative edge.
+stop trading and review. Do not force a reverse trade at a negative edge. A
+preparation is also not allowed to repeat indefinitely; the carry lock remains
+until a normal S1 close proves that the inventory rotated.
 
 ## 7. Automatic execution phases
 
@@ -224,6 +243,9 @@ Implemented and wired:
    cooldown, automatic-confirmation gate, balance refresh, and SAFE_STOP flow.
 4. `scripts/seed-rotation.ts` performs the bounded one-time seed.
 5. `scripts/start-rotation.ps1` starts the scanner and supervisor together.
+6. `apps/scanner/src/preparation-backtest.ts` calibrates conditional reverse
+   probability and expected value; `config/s1-prep-calibration.json` is loaded
+   by the executor.
 
 The remaining limitation is market-driven: each pair must show a fresh
 executable edge in the direction that is currently funded. The supervisor waits

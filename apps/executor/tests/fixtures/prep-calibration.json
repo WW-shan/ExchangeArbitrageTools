@@ -1,0 +1,33 @@
+{
+  "generatedAt": "2026-10-29T00:00:00.000Z",
+  "source": "fixture",
+  "referenceNotional": "10",
+  "entries": [
+    {
+      "pair": "KAT/USDT",
+      "direction": "gate-\u003ehotcoin",
+      "horizon_ms": 1800000,
+      "candidate_samples": 40,
+      "reverse_probability": "0.6",
+      "median_time_to_reverse_ms": 240000,
+      "median_reverse_net_bps": "12",
+      "median_prep_cost_bps": "3",
+      "mean_no_reverse_loss_bps": "8",
+      "expected_value_bps": "2",
+      "expected_value_usd": "0.002"
+    },
+    {
+      "pair": "KAT/USDT",
+      "direction": "hotcoin-\u003egate",
+      "horizon_ms": 1800000,
+      "candidate_samples": 40,
+      "reverse_probability": "0.55",
+      "median_time_to_reverse_ms": 300000,
+      "median_reverse_net_bps": "10",
+      "median_prep_cost_bps": "3",
+      "mean_no_reverse_loss_bps": "7",
+      "expected_value_bps": "1",
+      "expected_value_usd": "0.001"
+    }
+  ]
+}

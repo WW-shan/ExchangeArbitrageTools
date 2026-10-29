@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { Decimal } from 'decimal.js';
 import {
   evaluateS1Direction,
+  evaluateS1Preparation,
   type CostSettings,
   type MarketMetadata,
   type OrderBookSnapshot,
@@ -68,6 +69,51 @@ describe('S1 opportunity evaluation', () => {
     expect(result.conservativeNetProfit.gt(0)).toBe(true);
     expect(result.netProfitBps.gte(20)).toBe(true);
     expect(result.buyDepth?.insufficientDepth).toBe(false);
+  });
+
+  it('allows a bounded negative-edge inventory preparation', () => {
+    const preparationSettings: CostSettings = {
+      ...settings,
+      minProfitUsd: new Decimal(0),
+      safetyBufferBps: new Decimal(0),
+      minNetProfitBps: new Decimal(0),
+    };
+    const buyMarket = {
+      ...market('gateio', 'CAKE/USDT', '1'),
+      pricePrecision: 5,
+      priceStep: new Decimal('0.00001'),
+    };
+    const sellMarket = {
+      ...market('mexc', 'CAKE/USDT', '1'),
+      pricePrecision: 5,
+      priceStep: new Decimal('0.00001'),
+    };
+    const input = {
+      base: 'CAKE',
+      quote: 'USDT',
+      buyMarket,
+      sellMarket,
+      buyBook: book('gateio', '2.50000', '2.49000'),
+      sellBook: book('mexc', '2.51000', '2.49950'),
+      requestedNotional: new Decimal('10'),
+      settings: preparationSettings,
+      now,
+      venueHealth: { gateio: 'B' as const, mexc: 'B' as const },
+    };
+    const allowed = evaluateS1Preparation(input, {
+      maxCostBps: new Decimal(5),
+      maxCostUsd: new Decimal('0.01'),
+    });
+    expect(allowed.valid).toBe(true);
+    expect(allowed.metadata?.intent).toBe('inventory_preparation');
+    expect(new Decimal(allowed.metadata?.preparationCostBps ?? '999').lte(5)).toBe(true);
+
+    const rejected = evaluateS1Preparation(input, {
+      maxCostBps: new Decimal(1),
+      maxCostUsd: new Decimal('0.01'),
+    });
+    expect(rejected.valid).toBe(false);
+    expect(rejected.rejectionReasons).toContain('preparation_cost_above_limit');
   });
 
   it('rejects stale data and insufficient depth', () => {

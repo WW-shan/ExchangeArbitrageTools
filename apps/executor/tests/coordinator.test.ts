@@ -3,6 +3,7 @@ import { Decimal } from 'decimal.js';
 import {
   ExecutionGate,
   evaluateS1Direction,
+  evaluateS1Preparation,
   type CostSettings,
   type MarketMetadata,
   type OrderBookSnapshot,
@@ -130,6 +131,7 @@ interface FakeOptions {
   bookQuote?: (venueId: string, call: number) => { ask: string; bid: string };
   createDelayMs?: number;
   concurrency?: { active: number; max: number };
+  orderFeeRate?: Decimal;
 }
 
 function fakeAdapter(venueId: string, options: FakeOptions = {}) {
@@ -139,6 +141,7 @@ function fakeAdapter(venueId: string, options: FakeOptions = {}) {
     cancelCalls: 0,
     canceled: false,
     createSides: [] as Array<'buy' | 'sell'>,
+    createdAmounts: { buy: new Decimal(12), sell: new Decimal(12) },
   };
   const orderFor = (
     isBuy: boolean,
@@ -162,7 +165,7 @@ function fakeAdapter(venueId: string, options: FakeOptions = {}) {
       filled,
       remaining: amount.minus(filled),
       averagePrice: price,
-      fee: filled.mul(price).mul('0.001'),
+      fee: filled.mul(price).mul(options.orderFeeRate ?? new Decimal('0.001')),
       status,
       raw: { fake: true },
     };
@@ -199,6 +202,7 @@ function fakeAdapter(venueId: string, options: FakeOptions = {}) {
     createOrder: async (request) => {
       state.createCalls += 1;
       state.createSides.push(request.side);
+      state.createdAmounts[request.side] = request.amount;
       if (options.concurrency) {
         options.concurrency.active += 1;
         options.concurrency.max = Math.max(options.concurrency.max, options.concurrency.active);
@@ -250,7 +254,7 @@ function fakeAdapter(venueId: string, options: FakeOptions = {}) {
       const partialOpen = isBuy ? options.leg1PartialOpen : options.leg2PartialOpen;
       return orderFor(
         isBuy,
-        new Decimal(12),
+        state.createdAmounts[isBuy ? 'buy' : 'sell'],
         request.clientOrderId,
         ratio.eq(1) ? 'closed' : state.canceled || !partialOpen ? 'canceled' : 'open',
       );
@@ -262,7 +266,7 @@ function fakeAdapter(venueId: string, options: FakeOptions = {}) {
       const isBuy = request.clientOrderId?.endsWith('-L1') ?? true;
       return orderFor(
         isBuy,
-        new Decimal(12),
+        state.createdAmounts[isBuy ? 'buy' : 'sell'],
         request.clientOrderId,
         options.cancelStaysOpen ? 'open' : 'canceled',
       );
@@ -425,6 +429,69 @@ describe('live executor safety gates', () => {
     expect(buy.state.createCalls).toBe(1);
     expect(sell.state.createCalls).toBe(1);
     expect(repo.countOpenExecutions()).toBe(0);
+    repo.close();
+  });
+
+  it('executes a bounded negative-edge preparation as PREP', async () => {
+    const { db, repo, buy, sell } = setup({
+      bookQuote: (venueId) =>
+        venueId === 'gateio' ? { ask: '2.500', bid: '2.490' } : { ask: '2.510', bid: '2.4995' },
+      orderFeeRate: new Decimal('0.0001'),
+    });
+    const prepBuyMarket = {
+      ...market('gateio'),
+      feeTakerBps: new Decimal('1'),
+      priceStep: new Decimal('0.0001'),
+    };
+    const prepSellMarket = {
+      ...market('mexc'),
+      feeTakerBps: new Decimal('1'),
+      priceStep: new Decimal('0.0001'),
+    };
+    const prepSettings = {
+      ...settings,
+      minProfitUsd: new Decimal(0),
+      safetyBufferBps: new Decimal(0),
+      minNetProfitBps: new Decimal(0),
+    };
+    const opportunity = evaluateS1Preparation(
+      {
+        base: 'CAKE',
+        quote: 'USDT',
+        buyMarket: prepBuyMarket,
+        sellMarket: prepSellMarket,
+        buyBook: book('gateio', '2.500', '2.490'),
+        sellBook: book('mexc', '2.510', '2.4995'),
+        requestedNotional: new Decimal('10'),
+        settings: prepSettings,
+        now,
+        venueHealth: { gateio: 'A', mexc: 'A' },
+      },
+      { maxCostBps: new Decimal('5'), maxCostUsd: new Decimal('0.01') },
+    );
+    expect(opportunity.valid).toBe(true);
+    const result = await new CexLiveExecutor({
+      repository: repo,
+      gate: new ExecutionGate(limits),
+      limits,
+      liveEnabled: true,
+      settings,
+      sleep: async () => {},
+      clock: () => now,
+    }).execute({
+      batchId: 'prep-batch',
+      opportunity,
+      buy: { adapter: buy.adapter, market: prepBuyMarket, credentials: keys, healthState: 'A' },
+      sell: { adapter: sell.adapter, market: prepSellMarket, credentials: keys, healthState: 'A' },
+      confirmedBatchId: 'prep-batch',
+      intent: 'inventory_preparation',
+      preparation: { maxCostBps: new Decimal('5'), maxCostUsd: new Decimal('0.01') },
+    });
+    expect(result.outcome).toBe('CLOSED');
+    const row = db
+      .prepare('SELECT strategy, status FROM executions WHERE batch_id = ?')
+      .get('prep-batch') as { strategy: string; status: string };
+    expect(row).toMatchObject({ strategy: 'PREP', status: 'CLOSED' });
     repo.close();
   });
 

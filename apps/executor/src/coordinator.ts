@@ -9,6 +9,7 @@ import {
   canonicalMarketForEvaluation,
   canonicalPriceFromExchange,
   calculateSellDepthByBase,
+  evaluateS1Preparation,
   evaluateS1Direction,
   exchangeAmountFromCanonical,
   exchangePriceFromCanonical,
@@ -50,6 +51,11 @@ export interface LiveExecutionRequest {
   sell: ExecutionVenue;
   confirmedBatchId: string;
   confirmationMode?: ExecutionConfirmationMode;
+  intent?: 'arbitrage' | 'inventory_preparation';
+  preparation?: {
+    maxCostBps: Decimal;
+    maxCostUsd: Decimal;
+  };
 }
 
 export type ExecutionConfirmationMode = 'manual' | 'automatic';
@@ -303,6 +309,12 @@ export class CexLiveExecutor {
       }
       return outcome('SAFE_STOP');
     };
+    const intent = request.intent ?? 'arbitrage';
+    const preparation = intent === 'inventory_preparation' ? request.preparation : undefined;
+    if (intent === 'inventory_preparation' && !preparation) {
+      reasons.push('preparation_budget_missing');
+      return outcome('BLOCKED');
+    }
 
     if (!this.#liveEnabled) {
       reasons.push('live_execution_disabled');
@@ -394,7 +406,15 @@ export class CexLiveExecutor {
       transition('PREFLIGHT_FAILED');
       return outcome('PREFLIGHT_FAILED');
     }
-    const refreshed = evaluateS1Direction({
+    const evaluationSettings = preparation
+      ? {
+          ...this.#settings,
+          safetyBufferBps: ZERO,
+          minProfitUsd: ZERO,
+          minNetProfitBps: ZERO,
+        }
+      : this.#settings;
+    const evaluationInput = {
       base: buyEvalMarket.base,
       quote: buyEvalMarket.quote,
       buyMarket: buyEvalMarket,
@@ -402,13 +422,16 @@ export class CexLiveExecutor {
       buyBook: buyEvalBook,
       sellBook: sellEvalBook,
       requestedNotional: request.opportunity.requestedNotional,
-      settings: this.#settings,
+      settings: evaluationSettings,
       now: evaluatedAt,
       venueHealth: {
         [request.buy.adapter.venueId]: request.buy.healthState,
         [request.sell.adapter.venueId]: request.sell.healthState,
       },
-    });
+    } as const;
+    const refreshed = preparation
+      ? evaluateS1Preparation(evaluationInput, preparation)
+      : evaluateS1Direction(evaluationInput);
     if (!refreshed.valid) {
       reasons.push(...refreshed.rejectionReasons);
       transition('PREFLIGHT_FAILED');
@@ -545,6 +568,7 @@ export class CexLiveExecutor {
         request.sell.market.priceStep,
       ),
       balanceMismatch: false,
+      ...(preparation ? { preparation } : {}),
     });
     if (!decision.allowed) {
       reasons.push(...decision.reasons);
@@ -553,7 +577,16 @@ export class CexLiveExecutor {
     }
 
     const preflight = {
-      strategy: 'S1',
+      strategy: intent === 'inventory_preparation' ? 'PREP' : 'S1',
+      intent,
+      ...(preparation
+        ? {
+            preparation: {
+              maxCostBps: preparation.maxCostBps.toFixed(),
+              maxCostUsd: preparation.maxCostUsd.toFixed(),
+            },
+          }
+        : {}),
       evaluatedAt,
       preflightAt,
       requestedNotional: refreshed.requestedNotional.toFixed(),
@@ -623,7 +656,7 @@ export class CexLiveExecutor {
     };
 
     const executionId = this.#repository.createExecution({
-      strategy: 'S1',
+      strategy: intent === 'inventory_preparation' ? 'PREP' : 'S1',
       batchId: request.batchId,
       status: 'PREFLIGHT_CHECK',
       plannedNotional: refreshed.requestedNotional,
@@ -635,6 +668,7 @@ export class CexLiveExecutor {
         opportunityKey: refreshed.opportunityKey,
         instrumentKey: refreshed.instrumentKey,
         direction: refreshed.direction,
+        intent,
       },
     });
     this.#executionIds.set(request.batchId, executionId);
@@ -880,15 +914,24 @@ export class CexLiveExecutor {
       (request.sell.market.feeTakerBps ?? ZERO).div(10_000),
     );
     const projectedProfit = executionSellDepth.executableQuoteAmount.minus(sellFee).minus(buyCost);
-    if (projectedProfit.lte(0)) {
+    const postFillProfitBps = request.opportunity.requestedNotional.gt(0)
+      ? projectedProfit.div(request.opportunity.requestedNotional).mul(10_000)
+      : new Decimal(Number.NEGATIVE_INFINITY);
+    const preparationCostTooHigh =
+      preparation !== undefined &&
+      (projectedProfit.lt(preparation.maxCostUsd.neg()) ||
+        postFillProfitBps.lt(preparation.maxCostBps.neg()));
+    if (preparation ? preparationCostTooHigh : projectedProfit.lte(0)) {
       this.recordUnhedgedInventory(
         request,
         executionId,
         boughtCanonical,
         this.conservativePrice(buyCanonicalAverage, executionSellDepth.averagePrice),
-        'post_fill_profit_not_positive',
+        preparation ? 'post_fill_preparation_cost_too_high' : 'post_fill_profit_not_positive',
       );
-      return safeStop('post_fill_profit_not_positive');
+      return safeStop(
+        preparation ? 'post_fill_preparation_cost_too_high' : 'post_fill_profit_not_positive',
+      );
     }
     const precisionResidual = boughtCanonical.minus(leg2CanonicalActual);
     if (precisionResidual.gt(0)) {

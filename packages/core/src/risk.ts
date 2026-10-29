@@ -29,6 +29,10 @@ export interface BatchPreflight {
   feesConfigured: boolean;
   precisionConfigured: boolean;
   balanceMismatch: boolean;
+  preparation?: {
+    maxCostBps: Decimal;
+    maxCostUsd: Decimal;
+  };
 }
 
 export interface PreflightDecision {
@@ -84,14 +88,33 @@ export class ExecutionGate {
     ) {
       reasons.push('notional_outside_limits');
     }
-    if (!check.expectedNetProfit.isFinite() || check.expectedNetProfit.lte(0)) {
-      reasons.push('expected_profit_not_positive');
-    }
-    if (
-      !check.expectedNetProfitBps.isFinite() ||
-      check.expectedNetProfitBps.lt(this.#limits.minNetProfitBps)
-    ) {
-      reasons.push('min_profit_below_threshold');
+    if (check.preparation) {
+      const budget = check.preparation;
+      if (
+        !check.expectedNetProfit.isFinite() ||
+        !check.expectedNetProfitBps.isFinite() ||
+        !budget.maxCostBps.isFinite() ||
+        budget.maxCostBps.lt(0) ||
+        !budget.maxCostUsd.isFinite() ||
+        budget.maxCostUsd.lt(0)
+      ) {
+        reasons.push('preparation_cost_above_limit');
+      } else {
+        const cost = check.expectedNetProfit.lt(0) ? check.expectedNetProfit.abs() : ZERO;
+        if (cost.gt(budget.maxCostUsd) || check.expectedNetProfitBps.lt(budget.maxCostBps.neg())) {
+          reasons.push('preparation_cost_above_limit');
+        }
+      }
+    } else {
+      if (!check.expectedNetProfit.isFinite() || check.expectedNetProfit.lte(0)) {
+        reasons.push('expected_profit_not_positive');
+      }
+      if (
+        !check.expectedNetProfitBps.isFinite() ||
+        check.expectedNetProfitBps.lt(this.#limits.minNetProfitBps)
+      ) {
+        reasons.push('min_profit_below_threshold');
+      }
     }
     if (!Number.isInteger(check.openBatches) || check.openBatches < 0) {
       reasons.push('max_open_batches_reached');

@@ -366,6 +366,68 @@ export function evaluateS1Direction(input: S1EvaluationInput): OpportunityResult
   };
 }
 
+export interface S1PreparationBudget {
+  maxCostBps: Decimal;
+  maxCostUsd: Decimal;
+}
+
+/**
+ * Evaluate a small negative-edge inventory preparation trade. The ordinary
+ * S1 evaluator still owns depth, balance-independent market, fee, and freshness
+ * checks. This wrapper only replaces the profit rejection with a bounded
+ * preparation cost budget.
+ */
+export function evaluateS1Preparation(
+  input: S1EvaluationInput,
+  budget: S1PreparationBudget,
+): OpportunityResult {
+  const evaluated = evaluateS1Direction(input);
+  const profitOnly = new Set<RejectionReason>([
+    'gross_profit_below_threshold',
+    'conservative_profit_below_threshold',
+  ]);
+  const blocking = evaluated.rejectionReasons.filter((reason) => !profitOnly.has(reason));
+  if (blocking.length > 0) return evaluated;
+  const validBudget =
+    budget.maxCostBps.isFinite() &&
+    budget.maxCostBps.gte(0) &&
+    budget.maxCostUsd.isFinite() &&
+    budget.maxCostUsd.gte(0);
+  if (!validBudget) {
+    return {
+      ...evaluated,
+      valid: false,
+      rejectionReasons: uniqueReasons([...blocking, 'preparation_cost_above_limit']),
+    };
+  }
+  const costUsd = evaluated.conservativeNetProfit.lt(0)
+    ? evaluated.conservativeNetProfit.abs()
+    : ZERO;
+  const costBps = evaluated.requestedNotional.gt(0)
+    ? costUsd.div(evaluated.requestedNotional).mul(10_000)
+    : new Decimal(Number.POSITIVE_INFINITY);
+  if (costUsd.gt(budget.maxCostUsd) || costBps.gt(budget.maxCostBps)) {
+    return {
+      ...evaluated,
+      valid: false,
+      rejectionReasons: uniqueReasons([...blocking, 'preparation_cost_above_limit']),
+    };
+  }
+  return {
+    ...evaluated,
+    valid: true,
+    rejectionReasons: [],
+    metadata: {
+      ...(evaluated.metadata ?? {}),
+      intent: 'inventory_preparation',
+      preparationCostUsd: costUsd.toFixed(),
+      preparationCostBps: costBps.toFixed(),
+      preparationMaxCostUsd: budget.maxCostUsd.toFixed(),
+      preparationMaxCostBps: budget.maxCostBps.toFixed(),
+    },
+  };
+}
+
 export function evaluateS1BothDirections(
   first: S1EvaluationInput,
   second: S1EvaluationInput,

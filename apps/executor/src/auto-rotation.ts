@@ -1,6 +1,6 @@
 import { Decimal, type RotationReadiness, type RotationRequirement } from '@arb/core';
 import type { LoadedOpportunity } from '@arb/storage';
-import type { RotationPairConfig } from './config.js';
+import type { PreparationCalibrationEntry, RotationPairConfig } from './config.js';
 
 export type AutoRotationAction = 'EXECUTE' | 'WAIT' | 'BLOCKED';
 
@@ -31,6 +31,79 @@ export interface AutoRotationDecision {
   direction?: 'gate->hotcoin' | 'hotcoin->gate';
 }
 
+export interface PreparationGateInput {
+  calibration?: PreparationCalibrationEntry;
+  depthNetBps: Decimal;
+  requestedNotional: Decimal;
+  costBps: Decimal;
+  costUsd: Decimal;
+  minReverseProbability: Decimal;
+  maxHoldMs: number;
+  reversionBandBps: Decimal;
+  maxCostBps: Decimal;
+  maxCostUsd: Decimal;
+  minExpectedValueBps: Decimal;
+  minExpectedValueUsd: Decimal;
+}
+
+export interface PreparationGateDecision {
+  allowed: boolean;
+  reasons: string[];
+  adjustedExpectedValueBps?: Decimal;
+  adjustedExpectedValueUsd?: Decimal;
+}
+
+/**
+ * The preparation is a small inventory shift, not a promise that the spread
+ * will return. It is allowed only when the historical calibration says the
+ * reverse opportunity arrived often enough, soon enough, and with enough edge
+ * to pay for this specific preparation cost.
+ */
+export function evaluatePreparationGate(input: PreparationGateInput): PreparationGateDecision {
+  const reasons: string[] = [];
+  if (!input.calibration) reasons.push('preparation_calibration_missing');
+  if (input.depthNetBps.gt(input.reversionBandBps)) {
+    reasons.push('preparation_not_at_reversion');
+  }
+  if (input.calibration) {
+    if (input.calibration.reverseProbability.lt(input.minReverseProbability)) {
+      reasons.push('preparation_reverse_probability_too_low');
+    }
+    if (input.calibration.medianTimeToReverseMs > input.maxHoldMs) {
+      reasons.push('preparation_reverse_time_too_long');
+    }
+  }
+  if (input.costBps.gt(input.maxCostBps) || input.costUsd.gt(input.maxCostUsd)) {
+    reasons.push('preparation_cost_above_limit');
+  }
+  if (reasons.length > 0 || !input.calibration) {
+    return { allowed: false, reasons };
+  }
+  const adjustedExpectedValueBps = input.calibration.expectedValueBps
+    .plus(input.calibration.medianPrepCostBps)
+    .minus(input.costBps);
+  const adjustedExpectedValueUsd = input.requestedNotional
+    .mul(adjustedExpectedValueBps)
+    .div(10_000);
+  if (
+    adjustedExpectedValueBps.lt(input.minExpectedValueBps) ||
+    adjustedExpectedValueUsd.lt(input.minExpectedValueUsd)
+  ) {
+    return {
+      allowed: false,
+      reasons: ['preparation_expected_value_too_low'],
+      adjustedExpectedValueBps,
+      adjustedExpectedValueUsd,
+    };
+  }
+  return {
+    allowed: true,
+    reasons: [],
+    adjustedExpectedValueBps,
+    adjustedExpectedValueUsd,
+  };
+}
+
 export function rotationPairKey(instrumentKey: string): string {
   return instrumentKey.trim().toUpperCase();
 }
@@ -50,6 +123,12 @@ export function rotationDirection(
   if (venueBuy === 'gateio' && venueSell === 'hotcoin') return 'gate->hotcoin';
   if (venueBuy === 'hotcoin' && venueSell === 'gateio') return 'hotcoin->gate';
   return undefined;
+}
+
+export function scannerDirectionForRotation(
+  direction: 'gate->hotcoin' | 'hotcoin->gate',
+): 'gateio->hotcoin' | 'hotcoin->gateio' {
+  return direction === 'gate->hotcoin' ? 'gateio->hotcoin' : 'hotcoin->gateio';
 }
 
 /**

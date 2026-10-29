@@ -601,6 +601,41 @@ describe('SQLite storage', () => {
     repo.close();
   });
 
+  it('blocks repeated preparation until a normal S1 round trip closes', () => {
+    const db = openDatabase(':memory:');
+    const repo = new ArbitrageRepository(db);
+    const preparationId = repo.createExecution({
+      strategy: 'PREP',
+      batchId: 'prep-1',
+      status: 'PREFLIGHT_CHECK',
+      plannedNotional: new Decimal(10),
+      expectedProfit: new Decimal('-0.004'),
+      openedAt: now,
+    });
+    repo.updateExecutionStatus(preparationId, 'CLOSED', {
+      realizedProfit: new Decimal('-0.004'),
+      closedAt: now + 1000,
+    });
+    expect(repo.dailyPreparationStats(now + 1000)).toMatchObject({ count: 1 });
+    expect(repo.dailyPreparationStats(now + 1000).cost.toFixed()).toBe('0.004');
+    expect(repo.preparationCarryPending()).toBe(true);
+
+    const arbitrageId = repo.createExecution({
+      strategy: 'S1',
+      batchId: 's1-1',
+      status: 'PREFLIGHT_CHECK',
+      plannedNotional: new Decimal(10),
+      expectedProfit: new Decimal('0.01'),
+      openedAt: now + 2000,
+    });
+    repo.updateExecutionStatus(arbitrageId, 'CLOSED', {
+      realizedProfit: new Decimal('0.01'),
+      closedAt: now + 3000,
+    });
+    expect(repo.preparationCarryPending()).toBe(false);
+    repo.close();
+  });
+
   it('backs up an existing database before pending migrations are applied', () => {
     const directory = mkdtempSync(join(tmpdir(), 'arb-migration-'));
     const path = join(directory, 'legacy.sqlite');

@@ -4,8 +4,10 @@ import { assessRotationReadiness, type OpportunityResult } from '@arb/core';
 import type { LoadedOpportunity } from '@arb/storage';
 import {
   decideAutoRotation,
+  evaluatePreparationGate,
   rotationDirection,
   rotationRequirementFromOpportunity,
+  scannerDirectionForRotation,
 } from '../src/auto-rotation.js';
 
 const d = (value: string): Decimal => new Decimal(value);
@@ -107,8 +109,82 @@ describe('automatic two-sided rotation decision', () => {
 
   it('supports the reverse route and derives a conservative base requirement', () => {
     expect(rotationDirection(loaded('hotcoin->gateio'))).toBe('hotcoin->gate');
+    expect(scannerDirectionForRotation('gate->hotcoin')).toBe('gateio->hotcoin');
+    expect(scannerDirectionForRotation('hotcoin->gate')).toBe('hotcoin->gateio');
     const requirement = rotationRequirementFromOpportunity(loaded('gateio->hotcoin'), 20);
     expect(requirement?.buyQuote.toFixed()).toBe('20.04');
     expect(requirement?.sellBase.toFixed()).toBe('5000');
+  });
+});
+
+describe('reversion preparation gate', () => {
+  const calibration = {
+    pair: 'KAT/USDT',
+    direction: 'gate->hotcoin' as const,
+    horizonMs: 1_800_000,
+    candidateSamples: 40,
+    reverseProbability: d('0.62'),
+    medianTimeToReverseMs: 240_000,
+    medianReverseNetBps: d('12'),
+    medianPrepCostBps: d('3'),
+    meanNoReverseLossBps: d('8'),
+    expectedValueBps: d('2'),
+    expectedValueUsd: d('0.002'),
+  };
+
+  function gateInput(overrides: Partial<Parameters<typeof evaluatePreparationGate>[0]> = {}) {
+    return {
+      calibration,
+      depthNetBps: d('-2'),
+      requestedNotional: d('10'),
+      costBps: d('2'),
+      costUsd: d('0.002'),
+      minReverseProbability: d('0.55'),
+      maxHoldMs: 3_600_000,
+      reversionBandBps: d('5'),
+      maxCostBps: d('5'),
+      maxCostUsd: d('0.01'),
+      minExpectedValueBps: d('0'),
+      minExpectedValueUsd: d('0'),
+      ...overrides,
+    };
+  }
+
+  it('allows only a calibrated, near-reversion shift with positive expected value', () => {
+    const decision = evaluatePreparationGate(gateInput());
+    expect(decision.allowed).toBe(true);
+    expect(decision.adjustedExpectedValueBps?.toFixed()).toBe('3');
+    expect(decision.adjustedExpectedValueUsd?.toFixed()).toBe('0.003');
+  });
+
+  it('fails closed when calibration is missing or the reverse probability is too low', () => {
+    const { calibration: _calibration, ...withoutCalibration } = gateInput();
+    expect(evaluatePreparationGate(withoutCalibration).reasons).toContain(
+      'preparation_calibration_missing',
+    );
+    expect(
+      evaluatePreparationGate(
+        gateInput({ calibration: { ...calibration, reverseProbability: d('0.4') } }),
+      ).reasons,
+    ).toContain('preparation_reverse_probability_too_low');
+  });
+
+  it('rejects a wide spread, slow reversal, oversized cost, or negative expected value', () => {
+    expect(evaluatePreparationGate(gateInput({ depthNetBps: d('8') })).reasons).toContain(
+      'preparation_not_at_reversion',
+    );
+    expect(
+      evaluatePreparationGate(
+        gateInput({ calibration: { ...calibration, medianTimeToReverseMs: 7_200_000 } }),
+      ).reasons,
+    ).toContain('preparation_reverse_time_too_long');
+    expect(
+      evaluatePreparationGate(gateInput({ costBps: d('6'), costUsd: d('0.006') })).reasons,
+    ).toContain('preparation_cost_above_limit');
+    expect(
+      evaluatePreparationGate(
+        gateInput({ calibration: { ...calibration, expectedValueBps: d('-10') } }),
+      ).reasons,
+    ).toContain('preparation_expected_value_too_low');
   });
 });

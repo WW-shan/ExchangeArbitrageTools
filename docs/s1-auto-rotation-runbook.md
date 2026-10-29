@@ -42,6 +42,35 @@ Gate USDT + Hotcoin TBK -> ready for Gate buy / Hotcoin sell
 
 The LIGHT seed remains separate and is still ready for Gate buy / Hotcoin sell.
 
+## Reversion preparation
+
+The supervisor can shift inventory when a funded direction returns to near
+breakeven. It does this only when the pair and direction have a positive
+calibration in `config/s1-prep-calibration.json`, the reverse probability is at
+least `min_reverse_probability`, the median reverse time is within
+`max_hold_ms`, and the cost-adjusted expected value is positive.
+
+The 2026-10-29 calibration allows only `TBK/USDT|gate->hotcoin`:
+
+```text
+reverse probability: 0.5667 within 60 minutes
+median reverse time: 4 minutes
+median reverse edge: 47.82 bps
+mean no-reverse loss: 36.87 bps
+median preparation cost: 2.05 bps
+expected value: +9.07 bps at 20 USDT
+```
+
+The live profile sets `prefilter_floor_bps = -5` so near-breakeven negative
+edges reach the full evaluator. This does not lower the normal S1 entry
+threshold; it only lets the preparation gate see the reversion band.
+
+After a preparation closes, another preparation is blocked until a normal S1
+round trip closes. If the reverse edge does not arrive, the supervisor logs
+`preparation_carrying` after `max_hold_ms` and keeps waiting. It does not force
+an exit and does not assume convergence. See
+`docs/s1-reversion-preparation-2026-10-29.md`.
+
 ## Low-liquidity book timestamps
 
 Gate TBK can go 2-15 seconds without a new order-book update. The exchange
@@ -139,6 +168,22 @@ max_signal_age_ms = 10000
 cooldown_ms = 3000
 max_consecutive_failures = 3
 
+[auto_rotation.preparation]
+enabled = true
+max_notional = '10'
+max_cost_bps = 5
+max_cost_usd = '0.01'
+min_stable_ms = 30000
+min_holding_ms = 300000
+cooldown_ms = 600000
+max_per_day = 6
+calibration_file = 'config/s1-prep-calibration.json'
+min_reverse_probability = '0.55'
+min_expected_value_bps = '0'
+min_expected_value_usd = '0'
+max_hold_ms = 3600000
+reversion_band_bps = 5
+
 [[auto_rotation.pairs]]
 base = 'LIGHT'
 quote = 'USDT'
@@ -188,3 +233,5 @@ unhedged rows. Full evidence is in
   leave inventory unhedged.
 - The first seed is a deliberate inventory purchase, not an arbitrage trade.
 - Automatic withdrawals and balance transfers remain disabled.
+- Reversion preparation is calibrated on OHLCV and is not a guarantee. The
+  live executor still re-fetches both books, checks balances, and uses FOK.

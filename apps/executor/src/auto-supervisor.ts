@@ -5,14 +5,17 @@ import {
   marketBaseMultiplier,
   marketExchangeBase,
   type MarketMetadata,
+  type OpportunityResult,
   type RotationBalances,
 } from '@arb/core';
 import type { ArbitrageRepository, LoadedOpportunity } from '@arb/storage';
 import { applyFeeOverride, mergeAccountFeeFile } from '@arb/venues-cex';
 import {
   decideAutoRotation,
+  evaluatePreparationGate,
   rotationPairConfig,
   rotationRequirementFromOpportunity,
+  scannerDirectionForRotation,
 } from './auto-rotation.js';
 import { refreshBalances } from './balance-service.js';
 import type { RecoveryVenue } from './bootstrap.js';
@@ -35,6 +38,34 @@ interface PairBalances {
   readinessBalances: RotationBalances;
   fresh: boolean;
   reasons: string[];
+}
+
+interface PreparationCandidate {
+  loaded: LoadedOpportunity;
+  pair: RotationPairConfig;
+  buy: ExecutionVenue;
+  sell: ExecutionVenue;
+  direction: 'gate->hotcoin' | 'hotcoin->gate';
+  opportunity: OpportunityResult;
+  batchId: string;
+  preparation: {
+    maxCostBps: Decimal;
+    maxCostUsd: Decimal;
+  };
+}
+
+interface ExecutionSelection {
+  loaded: LoadedOpportunity;
+  buy: ExecutionVenue;
+  sell: ExecutionVenue;
+  batchId: string;
+  opportunity: OpportunityResult;
+  direction: 'gate->hotcoin' | 'hotcoin->gate';
+  intent: 'arbitrage' | 'inventory_preparation';
+  preparation?: {
+    maxCostBps: Decimal;
+    maxCostUsd: Decimal;
+  };
 }
 
 function sleepDefault(ms: number): Promise<void> {
@@ -236,6 +267,190 @@ function actionableCandidate(input: {
   return { waitReasons: lastWait };
 }
 
+function preparationCandidate(input: {
+  repository: ArbitrageRepository;
+  config: ExecutorConfig;
+  markets: Awaited<ReturnType<typeof loadMarkets>>;
+  adapters: Readonly<Record<string, RecoveryVenue>>;
+  candidates: readonly LoadedOpportunity[];
+  now: number;
+  lastPreparationAt?: number;
+  lastExecutionClosedAt?: number;
+}): { candidate: PreparationCandidate } | { waitReasons: string[] } {
+  const {
+    repository,
+    config,
+    markets,
+    adapters,
+    candidates,
+    now,
+    lastPreparationAt,
+    lastExecutionClosedAt,
+  } = input;
+  const preparation = config.autoRotation.preparation;
+  if (!preparation.enabled) return { waitReasons: ['preparation_disabled'] };
+  if (repository.getSetting('balance_mismatch') === 'true') {
+    return { waitReasons: ['preparation_balance_mismatch'] };
+  }
+  if (repository.countOpenExecutions() > 0) {
+    return { waitReasons: ['preparation_open_execution'] };
+  }
+  if (repository.countUnresolvedOrders() > 0) {
+    return { waitReasons: ['preparation_unresolved_order'] };
+  }
+  if (repository.riskSnapshot(now).dailyRealizedLoss.gte(config.riskLimits.dailyMaxLoss)) {
+    return { waitReasons: ['preparation_daily_loss_limit'] };
+  }
+  if (
+    lastExecutionClosedAt !== undefined &&
+    now - lastExecutionClosedAt < preparation.minHoldingMs
+  ) {
+    return { waitReasons: ['preparation_holding'] };
+  }
+  if (lastPreparationAt !== undefined && now - lastPreparationAt < preparation.cooldownMs) {
+    return { waitReasons: ['preparation_cooldown'] };
+  }
+  if (repository.preparationCarryPending()) {
+    return { waitReasons: ['preparation_carry_pending'] };
+  }
+  const stats = repository.dailyPreparationStats(now);
+  if (stats.count >= preparation.maxPerDay) {
+    return { waitReasons: ['preparation_daily_count_limit'] };
+  }
+  if (stats.cost.gte(preparation.maxCostUsd.mul(preparation.maxPerDay))) {
+    return { waitReasons: ['preparation_daily_cost_limit'] };
+  }
+  const states = healthStates(repository);
+  const profitOnly = new Set([
+    'gross_profit_below_threshold',
+    'conservative_profit_below_threshold',
+  ]);
+  let lastReason = 'preparation_not_available';
+  for (const pair of config.autoRotation.pairs) {
+    const balances = pairBalances(
+      repository,
+      pair,
+      markets,
+      now,
+      Math.max(config.autoRotation.balanceRefreshMs * 2, 30_000),
+    );
+    if (!balances.fresh) continue;
+    for (const direction of ['gate->hotcoin', 'hotcoin->gate'] as const) {
+      const scannerDirection = scannerDirectionForRotation(direction);
+      const loaded = candidates.find(
+        (candidate) =>
+          candidate.opportunity.instrumentKey === `${pair.base}/${pair.quote}` &&
+          candidate.opportunity.direction === scannerDirection &&
+          now - candidate.opportunity.sampledAt <= config.autoRotation.maxSignalAgeMs,
+      );
+      if (!loaded) continue;
+      const reasons = loaded.opportunity.rejectionReasons;
+      if (reasons.length === 0 || !reasons.every((reason) => profitOnly.has(reason))) continue;
+      const calibration = preparation.calibration[`${pair.base}/${pair.quote}|${direction}`];
+      const depthNetBps = loaded.opportunity.requestedNotional.gt(0)
+        ? loaded.opportunity.depthNetProfit.div(loaded.opportunity.requestedNotional).mul(10_000)
+        : new Decimal(Number.NEGATIVE_INFINITY);
+      const requestedNotional = Decimal.min(
+        loaded.opportunity.requestedNotional,
+        preparation.maxNotional,
+        pair.maxNotional,
+      );
+      if (requestedNotional.lt(config.minSizingNotional)) continue;
+      const costBps = depthNetBps.lt(0) ? depthNetBps.abs() : new Decimal(0);
+      const costUsd = costBps.div(10_000).mul(requestedNotional);
+      const gate = evaluatePreparationGate({
+        ...(calibration ? { calibration } : {}),
+        depthNetBps,
+        requestedNotional,
+        costBps,
+        costUsd,
+        minReverseProbability: preparation.minReverseProbability,
+        maxHoldMs: preparation.maxHoldMs,
+        reversionBandBps: preparation.reversionBandBps,
+        maxCostBps: preparation.maxCostBps,
+        maxCostUsd: preparation.maxCostUsd,
+        minExpectedValueBps: preparation.minExpectedValueBps,
+        minExpectedValueUsd: preparation.minExpectedValueUsd,
+      });
+      if (!gate.allowed) {
+        lastReason = gate.reasons[0] ?? lastReason;
+        continue;
+      }
+      const adjustedExpectedValueBps = gate.adjustedExpectedValueBps!;
+      const adjustedExpectedValueUsd = gate.adjustedExpectedValueUsd!;
+      const opportunity: OpportunityResult = {
+        ...loaded.opportunity,
+        requestedNotional,
+        valid: true,
+        rejectionReasons: [],
+        metadata: {
+          ...(loaded.opportunity.metadata ?? {}),
+          intent: 'inventory_preparation',
+          preparationCostBps: costBps.toFixed(),
+          preparationCostUsd: costUsd.toFixed(),
+          preparationMaxCostBps: preparation.maxCostBps.toFixed(),
+          preparationMaxCostUsd: preparation.maxCostUsd.toFixed(),
+          reversionProbability: calibration!.reverseProbability.toFixed(),
+          reversionHorizonMs: String(calibration!.horizonMs),
+          calibrationExpectedValueBps: calibration!.expectedValueBps.toFixed(),
+          adjustedExpectedValueBps: adjustedExpectedValueBps.toFixed(),
+          adjustedExpectedValueUsd: adjustedExpectedValueUsd.toFixed(),
+          calibrationSamples: String(calibration!.candidateSamples),
+        },
+      };
+      const requirement = rotationRequirementFromOpportunity({ id: loaded.id, opportunity });
+      if (!requirement) continue;
+      const readiness = assessRotationReadiness(balances.readinessBalances, requirement);
+      const funded = direction === 'gate->hotcoin' ? readiness.gateToHot : readiness.hotToGate;
+      if (!funded) continue;
+      const venueBuy = direction === 'gate->hotcoin' ? 'gateio' : 'hotcoin';
+      const venueSell = direction === 'gate->hotcoin' ? 'hotcoin' : 'gateio';
+      if (states.get(venueBuy) !== 'A' || states.get(venueSell) !== 'A') continue;
+      let buy: ExecutionVenue;
+      let sell: ExecutionVenue;
+      try {
+        buy = executionVenue(
+          venueBuy,
+          markets[venueBuy] ?? [],
+          { base: pair.base, quote: pair.quote },
+          adapters,
+          states,
+          config.feeOverrides,
+          opportunity.metadata?.buySymbol,
+        );
+        sell = executionVenue(
+          venueSell,
+          markets[venueSell] ?? [],
+          { base: pair.base, quote: pair.quote },
+          adapters,
+          states,
+          config.feeOverrides,
+          opportunity.metadata?.sellSymbol,
+        );
+      } catch {
+        continue;
+      }
+      if (repository.executionForOpportunity(loaded.id) !== undefined) continue;
+      return {
+        candidate: {
+          loaded,
+          pair,
+          buy,
+          sell,
+          direction,
+          opportunity,
+          batchId: `PREP-${pair.base}-${now}-${direction.replace('->', '-')}`,
+          preparation: {
+            maxCostBps: preparation.maxCostBps,
+            maxCostUsd: preparation.maxCostUsd,
+          },
+        },
+      };
+    }
+  }
+  return { waitReasons: [lastReason] };
+}
+
 export async function runAutoRotationSupervisor(
   options: AutoRotationSupervisorOptions,
 ): Promise<void> {
@@ -253,6 +468,11 @@ export async function runAutoRotationSupervisor(
     throw new Error('auto rotation requires both gateio and hotcoin trade credentials');
   let lastBalanceAt = 0;
   let lastAttemptAt: number | undefined;
+  let lastPreparationAt: number | undefined;
+  let lastExecutionClosedAt = repository.latestClosedExecutionAt();
+  let lastCarryLogAt = 0;
+  let preparationKey: string | undefined;
+  let preparationFirstSeenAt = 0;
   let consecutiveFailures = 0;
   let lastWaitLogAt = 0;
   repository.setSetting('auto_execution_enabled', 'true');
@@ -296,7 +516,8 @@ export async function runAutoRotationSupervisor(
       const byProfit = right.opportunity.netProfitBps.comparedTo(left.opportunity.netProfitBps);
       return byProfit !== 0 ? byProfit : right.opportunity.sampledAt - left.opportunity.sampledAt;
     });
-    const selection = actionableCandidate({
+    let executionSelection: ExecutionSelection | undefined;
+    const normalSelection = actionableCandidate({
       repository,
       config,
       markets,
@@ -305,57 +526,151 @@ export async function runAutoRotationSupervisor(
       now,
       ...(lastAttemptAt !== undefined ? { lastAttemptAt } : {}),
     });
-    if ('waitReasons' in selection) {
-      if (now - lastWaitLogAt >= 15_000) {
-        logEvent({
-          status: 'waiting',
-          reasons: selection.waitReasons,
-          candidates: candidates.length,
-        });
-        lastWaitLogAt = now;
+    if ('waitReasons' in normalSelection) {
+      const prepCandidates = repository.recentS1Opportunities({
+        now,
+        maxAgeMs: config.autoRotation.maxSignalAgeMs,
+        instruments,
+        maxCandidates: 400,
+      });
+      const preparation = preparationCandidate({
+        repository,
+        config,
+        markets,
+        adapters,
+        candidates: prepCandidates,
+        now,
+        ...(lastPreparationAt !== undefined ? { lastPreparationAt } : {}),
+        ...(lastExecutionClosedAt !== undefined ? { lastExecutionClosedAt } : {}),
+      });
+      if ('candidate' in preparation) {
+        const key = `${preparation.candidate.pair.base}|${preparation.candidate.direction}`;
+        if (preparationKey !== key) {
+          preparationKey = key;
+          preparationFirstSeenAt = now;
+        }
+        if (now - preparationFirstSeenAt >= config.autoRotation.preparation.minStableMs) {
+          executionSelection = {
+            ...preparation.candidate,
+            intent: 'inventory_preparation',
+          };
+        } else if (now - lastWaitLogAt >= 15_000) {
+          logEvent({
+            status: 'preparation_waiting',
+            pair: key,
+            stableForMs: now - preparationFirstSeenAt,
+            requiredMs: config.autoRotation.preparation.minStableMs,
+          });
+          lastWaitLogAt = now;
+        }
+      } else {
+        preparationKey = undefined;
+        if (now - lastWaitLogAt >= 15_000) {
+          logEvent({
+            status: 'waiting',
+            reasons: normalSelection.waitReasons,
+            preparation: preparation.waitReasons,
+            candidates: candidates.length,
+          });
+          lastWaitLogAt = now;
+        }
       }
-      await sleep(config.autoRotation.pollIntervalMs);
-      continue;
+      if (!executionSelection) {
+        if (
+          lastPreparationAt !== undefined &&
+          (lastExecutionClosedAt === undefined || lastExecutionClosedAt <= lastPreparationAt) &&
+          now - lastPreparationAt >= config.autoRotation.preparation.maxHoldMs &&
+          now - lastCarryLogAt >= 60_000
+        ) {
+          logEvent({
+            status: 'preparation_carrying',
+            preparationAt: lastPreparationAt,
+            carriedForMs: now - lastPreparationAt,
+            maxHoldMs: config.autoRotation.preparation.maxHoldMs,
+          });
+          lastCarryLogAt = now;
+        }
+        await sleep(config.autoRotation.pollIntervalMs);
+        continue;
+      }
+    } else {
+      executionSelection = {
+        loaded: normalSelection.loaded,
+        buy: normalSelection.buy,
+        sell: normalSelection.sell,
+        batchId: s1BatchId(normalSelection.loaded),
+        opportunity: normalSelection.loaded.opportunity,
+        direction: normalSelection.decision.direction!,
+        intent: 'arbitrage',
+      };
     }
 
-    const { loaded, buy, sell, decision } = selection;
-    const batchId = s1BatchId(loaded);
+    const { loaded, buy, sell, batchId, opportunity, direction, intent, preparation } =
+      executionSelection;
     lastAttemptAt = now;
+    if (intent === 'inventory_preparation') lastPreparationAt = now;
     repository.recordAudit(
       'executor',
-      'auto_rotation_attempt',
+      intent === 'inventory_preparation'
+        ? 'inventory_preparation_attempt'
+        : 'auto_rotation_attempt',
       {
         batchId,
         opportunityId: loaded.id,
-        direction: decision.direction,
-        netProfitBps: loaded.opportunity.netProfitBps.toFixed(),
-        requestedNotional: loaded.opportunity.requestedNotional.toFixed(),
+        direction,
+        netProfitBps: opportunity.netProfitBps.toFixed(),
+        requestedNotional: opportunity.requestedNotional.toFixed(),
+        ...(preparation
+          ? {
+              preparationMaxCostBps: preparation.maxCostBps.toFixed(),
+              preparationMaxCostUsd: preparation.maxCostUsd.toFixed(),
+            }
+          : {}),
       },
       now,
     );
     logEvent({
-      status: 'executing',
+      status: intent === 'inventory_preparation' ? 'preparing' : 'executing',
       batchId,
       opportunityId: loaded.id,
-      direction: decision.direction,
-      netProfitBps: loaded.opportunity.netProfitBps.toFixed(),
+      direction,
+      netProfitBps: opportunity.netProfitBps.toFixed(),
+      requestedNotional: opportunity.requestedNotional.toFixed(),
+      ...(preparation
+        ? {
+            preparationMaxCostBps: preparation.maxCostBps.toFixed(),
+            preparationMaxCostUsd: preparation.maxCostUsd.toFixed(),
+          }
+        : {}),
     });
     try {
       const result = await engine.execute({
         batchId,
-        opportunity: loaded.opportunity,
+        opportunity,
         opportunityId: loaded.id,
         buy,
         sell,
         confirmedBatchId: batchId,
         confirmationMode: 'automatic',
+        ...(intent === 'inventory_preparation'
+          ? {
+              intent,
+              preparation,
+            }
+          : {}),
       });
       lastBalanceAt = 0;
+      lastExecutionClosedAt = clock();
+      preparationKey = undefined;
       repository.recordAudit(
         'executor',
-        'auto_rotation_result',
+        intent === 'inventory_preparation'
+          ? 'inventory_preparation_result'
+          : 'auto_rotation_result',
         {
           batchId,
+          intent,
+          direction,
           outcome: result.outcome,
           reasons: result.reasons,
           realizedProfit: result.realizedProfit?.toFixed() ?? null,
@@ -365,6 +680,8 @@ export async function runAutoRotationSupervisor(
       logEvent({
         status: 'result',
         batchId,
+        intent,
+        direction,
         outcome: result.outcome,
         reasons: result.reasons,
         realizedProfit: result.realizedProfit?.toFixed() ?? null,
