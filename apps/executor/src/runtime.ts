@@ -49,6 +49,7 @@ export function findMarket(
 export function runtimeFor(
   repository: ArbitrageRepository,
   venueId: string,
+  requestsPerSecond = 1,
 ): ReturnType<typeof createPublicRuntime> {
   const ensureVenue = (): void => {
     repository.upsertVenue({
@@ -58,7 +59,7 @@ export function runtimeFor(
       tier: CEX_TIERS[venueId] ?? 'B',
     });
   };
-  return createPublicRuntime(1, undefined, {
+  return createPublicRuntime(requestsPerSecond, undefined, {
     onBackoff: (state) => {
       ensureVenue();
       repository.upsertVenueBackoff({
@@ -97,7 +98,7 @@ export function adapterMap(
       );
       continue;
     }
-    const runtime = runtimeFor(repository, venueId);
+    const runtime = runtimeFor(repository, venueId, config.executionRequestsPerSecond);
     const adapter = createCexAdapter(venueId, runtime, {
       credentials: credential,
       readOnly: false,

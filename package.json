@@ -68,6 +68,7 @@
     "track:spread": "tsx scripts/track-spread.ts --config config/longtail.toml --base TBK --duration-ms 180000 --interval-ms 3000",
     "probe:ioc-fok": "tsx scripts/probe-private-fok.ts",
     "execution:reconcile": "tsx apps/executor/src/reconcile-cli.ts",
+    "hedge:residual": "tsx apps/executor/src/hedge-residual-cli.ts",
     "order:reconcile": "tsx scripts/reconcile-order.ts",
     "executor:secrets:bitget": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/import-bitget-credential.ps1"
   },

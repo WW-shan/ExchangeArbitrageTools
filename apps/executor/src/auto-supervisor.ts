@@ -749,7 +749,7 @@ export async function runAutoRotationSupervisor(
   heartbeatTimer.unref?.();
 
   while (!(options.shouldStop?.() ?? false)) {
-    const now = clock();
+    let now = clock();
     recordHeartbeat(repository, config, 'running', heartbeatWaitReasons, heartbeatPhase);
     if (repository.getSetting('kill_switch') !== 'false') {
       recordHeartbeat(repository, config, 'stopped', ['kill_switch_on']);
@@ -769,6 +769,7 @@ export async function runAutoRotationSupervisor(
     if (now - lastBalanceAt >= config.autoRotation.balanceRefreshMs) {
       heartbeatPhase = 'BALANCING';
       const refreshed = await refreshBalances(repository, balanceVenues, now);
+      now = clock();
       lastBalanceAt = now;
       if (refreshed.errors.length > 0) {
         logEvent({ status: 'balance_refresh_failed', errors: refreshed.errors });
@@ -780,6 +781,7 @@ export async function runAutoRotationSupervisor(
         accountStateLogged = true;
       }
     }
+    now = clock();
     heartbeatPhase = 'CHECKING_ACCOUNT';
     if (
       config.accountStatus.enabled &&
@@ -837,6 +839,7 @@ export async function runAutoRotationSupervisor(
       logEvent({ status: 'stopped', reason });
       break;
     }
+    now = clock();
     const activeTransfers = repository.activeTransferBatches();
     if (activeTransfers.length > 0) {
       if (!transferVenues) {
@@ -876,6 +879,7 @@ export async function runAutoRotationSupervisor(
       continue;
     }
 
+    now = clock();
     for (const [opportunityId, until] of failedOpportunityUntil) {
       if (until <= now) failedOpportunityUntil.delete(opportunityId);
     }
@@ -1079,7 +1083,8 @@ export async function runAutoRotationSupervisor(
       logEvent({ status: 'stopped', reason, direction });
       break;
     }
-    lastAttemptAt = now;
+    const executionStartedAt = clock();
+    lastAttemptAt = executionStartedAt;
     if (intent === 'inventory_preparation') lastPreparationAt = now;
     heartbeatPhase = intent === 'inventory_preparation' ? 'PREPARING' : 'EXECUTING';
     repository.recordAudit(
@@ -1093,6 +1098,7 @@ export async function runAutoRotationSupervisor(
         direction,
         netProfitBps: opportunity.netProfitBps.toFixed(),
         requestedNotional: opportunity.requestedNotional.toFixed(),
+        signalAgeMs: Math.max(0, executionStartedAt - opportunity.sampledAt),
         ...(preparation
           ? {
               preparationMaxCostBps: preparation.maxCostBps.toFixed(),
@@ -1100,14 +1106,14 @@ export async function runAutoRotationSupervisor(
             }
           : {}),
       },
-      now,
+      executionStartedAt,
     );
     logEvent({
       status: intent === 'inventory_preparation' ? 'preparing' : 'executing',
       batchId,
       opportunityId: loaded.id,
       direction,
-      signalAgeMs: Math.max(0, now - opportunity.sampledAt),
+      signalAgeMs: Math.max(0, executionStartedAt - opportunity.sampledAt),
       netProfitBps: opportunity.netProfitBps.toFixed(),
       requestedNotional: opportunity.requestedNotional.toFixed(),
       ...(preparation
@@ -1118,7 +1124,6 @@ export async function runAutoRotationSupervisor(
         : {}),
     });
     try {
-      const executionStartedAt = clock();
       const result = await engine.execute({
         batchId,
         opportunity,
@@ -1151,7 +1156,9 @@ export async function runAutoRotationSupervisor(
           direction,
           outcome: result.outcome,
           reasons: result.reasons,
-          signalAgeMs: Math.max(0, now - opportunity.sampledAt),
+          signalAgeMs: Math.max(0, executionStartedAt - opportunity.sampledAt),
+          selectionToExecutionStartMs: Math.max(0, executionStartedAt - now),
+          signalAgeAtResultMs: Math.max(0, resultAt - opportunity.sampledAt),
           executionDurationMs: Math.max(0, resultAt - executionStartedAt),
           endToEndLatencyMs: Math.max(0, resultAt - opportunity.sampledAt),
           realizedProfit: result.realizedProfit?.toFixed() ?? null,
@@ -1165,7 +1172,9 @@ export async function runAutoRotationSupervisor(
         direction,
         outcome: result.outcome,
         reasons: result.reasons,
-        signalAgeMs: Math.max(0, now - opportunity.sampledAt),
+        signalAgeMs: Math.max(0, executionStartedAt - opportunity.sampledAt),
+        selectionToExecutionStartMs: Math.max(0, executionStartedAt - now),
+        signalAgeAtResultMs: Math.max(0, resultAt - opportunity.sampledAt),
         executionDurationMs: Math.max(0, resultAt - executionStartedAt),
         endToEndLatencyMs: Math.max(0, resultAt - opportunity.sampledAt),
         realizedProfit: result.realizedProfit?.toFixed() ?? null,

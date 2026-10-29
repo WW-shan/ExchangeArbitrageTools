@@ -358,9 +358,14 @@ function toMarket(
     feeProvenance: taker !== undefined ? 'ccxt' : 'default',
   };
 }
-function normalizeOrder(order: Order, venueId: string): OrderState {
-  const amount = decimalOrUndefined(order.amount) ?? new Decimal(0);
+function normalizeOrder(
+  order: Order,
+  venueId: string,
+  fallback?: { amount?: Decimal; price?: Decimal; side?: 'buy' | 'sell'; symbol?: string },
+): OrderState {
+  const amount = decimalOrUndefined(order.amount) ?? fallback?.amount ?? new Decimal(0);
   const filled = decimalOrUndefined(order.filled) ?? new Decimal(0);
+  const price = decimalOrUndefined(order.price) ?? fallback?.price;
   const remaining =
     decimalOrUndefined(order.remaining) ??
     (amount.minus(filled).lt(0) ? ZERO : amount.minus(filled));
@@ -374,10 +379,10 @@ function normalizeOrder(order: Order, venueId: string): OrderState {
   return {
     venueOrderId: String(order.id),
     ...(order.clientOrderId ? { clientOrderId: String(order.clientOrderId) } : {}),
-    symbol: String(order.symbol),
-    side: order.side === 'sell' ? 'sell' : 'buy',
+    symbol: String(order.symbol ?? fallback?.symbol ?? ''),
+    side: order.side === 'sell' ? 'sell' : order.side === 'buy' ? 'buy' : (fallback?.side ?? 'buy'),
     type: String(order.type ?? 'unknown'),
-    ...(decimalOrUndefined(order.price) ? { price: decimalOrUndefined(order.price)! } : {}),
+    ...(price ? { price } : {}),
     amount,
     filled,
     remaining,
@@ -386,7 +391,16 @@ function normalizeOrder(order: Order, venueId: string): OrderState {
       : {}),
     ...(decimalOrUndefined(order.fee?.cost) ? { fee: decimalOrUndefined(order.fee?.cost)! } : {}),
     status,
-    raw: { venueId, id: order.id, status: rawStatus },
+    raw: {
+      venueId,
+      id: order.id,
+      status: rawStatus,
+      amount: order.amount ?? null,
+      filled: order.filled ?? null,
+      remaining: order.remaining ?? null,
+      timestamp: order.timestamp ?? null,
+      info: order.info ?? null,
+    },
   };
 }
 
@@ -1071,7 +1085,53 @@ export class CcxtCexAdapter implements CexAdapter {
         ),
       'execution',
     );
-    return normalizeOrder(order, this.venueId);
+    const normalized = normalizeOrder(order, this.venueId, {
+      amount: request.amount,
+      ...(request.price ? { price: request.price } : {}),
+      side: request.side,
+      symbol: request.symbol,
+    });
+    if (normalized.status !== 'unknown' || order.id === undefined || order.id === null) {
+      return normalized;
+    }
+    // Bitget's spot create-order response can contain only the order id. Never
+    // turn that into a synthetic zero-fill; query the venue order by id until it
+    // exposes a terminal state, while keeping the request amount as a fallback.
+    let latest = normalized;
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 100 * (attempt + 1)));
+      try {
+        let fetched = await this.fetchOrder(
+          {
+            venueOrderId: normalized.venueOrderId,
+            ...(request.clientOrderId ? { clientOrderId: request.clientOrderId } : {}),
+            symbol: request.symbol,
+          },
+          keys,
+        );
+        if (!fetched.amount.gt(0)) {
+          fetched = {
+            ...fetched,
+            amount: request.amount,
+            remaining: request.amount.minus(fetched.filled),
+            ...(fetched.price || !request.price ? {} : { price: request.price }),
+            symbol: fetched.symbol || request.symbol,
+          };
+        }
+        latest = fetched;
+        if (fetched.status !== 'unknown') return fetched;
+      } catch (error) {
+        latest = {
+          ...latest,
+          raw: {
+            ...(latest.raw && typeof latest.raw === 'object' ? latest.raw : {}),
+            lookupError: String(error),
+            lookupAttempt: attempt + 1,
+          },
+        };
+      }
+    }
+    return latest;
   }
 
   async fetchOrder(request: OrderQuery, keys: ApiCredentials): Promise<OrderState> {

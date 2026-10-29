@@ -50,6 +50,7 @@ describe('executor configuration', () => {
     expect(config.riskLimits.maxOrderNotional.toFixed()).toBe('30');
     expect(config.riskLimits.dailyMaxLoss.toFixed()).toBe('20');
     expect(config.handoffMaxAgeMs).toBe(15_000);
+    expect(config.executionRequestsPerSecond).toBe(5);
     expect(config.legMode).toBe('serial');
     expect(config.iocVenues).toEqual([]);
     expect(config.transfers.enabled).toBe(false);
@@ -97,6 +98,9 @@ describe('executor configuration', () => {
     expect(() =>
       loadExecutorConfig(configWith([`leg_mode = 'serial'`, `leg_mode = 'parallel'`]), {}),
     ).toThrow('serial or parallel_fok');
+    expect(() =>
+      loadExecutorConfig(configWith(['max_open_batches = 1', 'requests_per_second = 0']), {}),
+    ).toThrow('requests_per_second');
   });
 
   it('accepts an explicitly selected parallel FOK mode', () => {

@@ -129,6 +129,116 @@ describe('CCXT adapter construction', () => {
     }
   });
 
+  it('resolves a Bitget create response that only contains an order id', async () => {
+    const credentials = { apiKey: 'key', secret: 'secret' };
+    const prototype = (ccxt.bitget as unknown as { prototype: Record<string, unknown> }).prototype;
+    const originalCreate = prototype.createOrder;
+    const originalFetch = prototype.fetchOrder;
+    let fetchCalls = 0;
+    prototype.createOrder = async (symbol: string, type: string, side: string) => ({
+      id: 'bitget-order-1',
+      symbol,
+      type,
+      side,
+      info: { orderId: 'bitget-order-1', clientOid: 'client-1' },
+    });
+    prototype.fetchOrder = async (id: string, symbol: string) => {
+      fetchCalls += 1;
+      return {
+        id,
+        clientOrderId: 'client-1',
+        symbol,
+        side: 'sell',
+        type: 'limit',
+        price: 0.0053,
+        amount: 1211.79,
+        filled: 1211.79,
+        remaining: 0,
+        status: 'closed',
+        average: 0.0053295157,
+        fee: { cost: 0.00645825386, currency: 'USDT' },
+        info: { orderId: id, status: 'filled' },
+      };
+    };
+    try {
+      const adapter = createCcxtAdapter('bitget', createPublicRuntime(10), {
+        credentials,
+        readOnly: false,
+        supportsFok: true,
+      });
+      const order = await adapter.createOrder!(
+        {
+          symbol: 'WARD/USDT',
+          side: 'sell',
+          type: 'limit',
+          amount: new Decimal('1211.79'),
+          price: new Decimal('0.0053'),
+          timeInForce: 'FOK',
+          clientOrderId: 'client-1',
+        },
+        credentials,
+      );
+      expect(fetchCalls).toBe(1);
+      expect(order).toMatchObject({
+        venueOrderId: 'bitget-order-1',
+        clientOrderId: 'client-1',
+        status: 'closed',
+      });
+      expect(order.amount.toFixed()).toBe('1211.79');
+      expect(order.filled.toFixed()).toBe('1211.79');
+      expect(order.averagePrice?.toFixed()).toBe('0.0053295157');
+      expect(order.raw).toMatchObject({ info: { orderId: 'bitget-order-1', status: 'filled' } });
+    } finally {
+      prototype.createOrder = originalCreate;
+      prototype.fetchOrder = originalFetch;
+    }
+  });
+
+  it('keeps the requested amount when Bitget lookup is still incomplete', async () => {
+    const credentials = { apiKey: 'key', secret: 'secret' };
+    const prototype = (ccxt.bitget as unknown as { prototype: Record<string, unknown> }).prototype;
+    const originalCreate = prototype.createOrder;
+    const originalFetch = prototype.fetchOrder;
+    prototype.createOrder = async (symbol: string, type: string, side: string) => ({
+      id: 'bitget-order-2',
+      symbol,
+      type,
+      side,
+    });
+    prototype.fetchOrder = async (id: string, symbol: string) => ({
+      id,
+      symbol,
+      side: 'sell',
+      type: 'limit',
+    });
+    try {
+      const adapter = createCcxtAdapter('bitget', createPublicRuntime(10), {
+        credentials,
+        readOnly: false,
+        supportsFok: true,
+      });
+      const order = await adapter.createOrder!(
+        {
+          symbol: 'WARD/USDT',
+          side: 'sell',
+          type: 'limit',
+          amount: new Decimal('10'),
+          price: new Decimal('0.5'),
+          timeInForce: 'FOK',
+          clientOrderId: 'client-2',
+        },
+        credentials,
+      );
+      expect(order.status).toBe('unknown');
+      expect(order.amount.toFixed()).toBe('10');
+      expect(order.remaining.toFixed()).toBe('10');
+      expect(order.price?.toFixed()).toBe('0.5');
+    } finally {
+      prototype.createOrder = originalCreate;
+      prototype.fetchOrder = originalFetch;
+    }
+  });
+
   it('parses Retry-After from seconds, milliseconds, and HTTP dates', () => {
     expect(parseRetryAfterMs({ response: { headers: { 'retry-after': '7' } } })).toBe(7000);
     expect(parseRetryAfterMs({ retryAfter: 2 })).toBe(2000);

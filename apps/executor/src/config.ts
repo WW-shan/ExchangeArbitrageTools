@@ -102,6 +102,7 @@ export interface ExecutorConfig {
   maxOpenBatches: 1;
   handoffMaxAgeMs: number;
   orderbookDepth: number;
+  executionRequestsPerSecond: number;
   minSizingNotional: Decimal;
   legMode: LegExecutionMode;
   iocVenues: string[];
@@ -669,10 +670,12 @@ export function loadExecutorConfig(
   const minNetProfitBps = decimalValue(scanner, 'min_net_profit_bps', '20');
   const maxOrderbookAgeMs = numberValue(scanner, 'max_orderbook_age_ms', 3000);
   const orderbookDepth = numberValue(scanner, 'orderbook_depth', 20);
+  const executionRequestsPerSecond = numberValue(execution, 'requests_per_second', 5);
   const minSizingNotional = decimalValue(scanner, 'min_sizing_notional', '1');
   const maxSlippageBps = decimalValue(scanner, 'max_slippage_bps', '50');
   const maxOrderNotional = decimalValue(scanner, 'max_order_notional', '30');
   const handoffMaxAgeMs = numberValue(execution, 'handoff_max_age_ms', 15_000);
+  const autoRotation = autoRotationConfig(document.auto_rotation, handoffMaxAgeMs);
   const config: ExecutorConfig = {
     databasePath:
       environment.ARB_DATABASE_PATH ?? stringValue(database, 'path', 'data/arbitrage.sqlite'),
@@ -683,6 +686,7 @@ export function loadExecutorConfig(
     maxOpenBatches: 1,
     handoffMaxAgeMs,
     orderbookDepth,
+    executionRequestsPerSecond,
     minSizingNotional,
     legMode: legModeValue(execution, 'leg_mode', 'serial'),
     iocVenues: stringArray(execution, 'ioc_venues', []),
@@ -690,7 +694,7 @@ export function loadExecutorConfig(
     feeFile: typeof scanner.fee_file === 'string' ? scanner.fee_file : '',
     feeOverrides: feeOverrides(document.fees),
     transfers: transferConfig(document.transfers),
-    autoRotation: autoRotationConfig(document.auto_rotation, handoffMaxAgeMs),
+    autoRotation,
     accountStatus: accountStatusConfig(document.account_status),
     riskLimits: {
       maxOrderNotional,
@@ -703,6 +707,8 @@ export function loadExecutorConfig(
     },
     settings: {
       maxOrderbookAgeMs,
+      orderbookDepth,
+      maxSignalAgeMs: autoRotation.maxSignalAgeMs,
       minNetProfitBps,
       maxSlippageBps,
       minProfitUsd: decimalValue(scanner, 'min_profit_usd', '0.25'),
@@ -712,6 +718,13 @@ export function loadExecutorConfig(
     },
   };
   if (maxOpenBatches !== 1) throw new Error('execution.max_open_batches must be 1');
+  if (
+    !Number.isInteger(executionRequestsPerSecond) ||
+    executionRequestsPerSecond < 1 ||
+    executionRequestsPerSecond > 20
+  ) {
+    throw new Error('execution.requests_per_second must be an integer between 1 and 20');
+  }
   validateSafetyBounds(config);
   return config;
 }

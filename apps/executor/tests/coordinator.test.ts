@@ -141,6 +141,7 @@ interface FakeOptions {
 function fakeAdapter(venueId: string, options: FakeOptions = {}) {
   const state = {
     createCalls: 0,
+    fetchOrderCalls: 0,
     fetchBookCalls: 0,
     cancelCalls: 0,
     canceled: false,
@@ -243,6 +244,7 @@ function fakeAdapter(venueId: string, options: FakeOptions = {}) {
       );
     },
     fetchOrder: async (request) => {
+      state.fetchOrderCalls += 1;
       const isBuy = request.clientOrderId?.endsWith('-L1') ?? true;
       if (
         options.queryNotFound &&
@@ -387,6 +389,55 @@ describe('live executor safety gates', () => {
     expect(result.reasons).toContain('persisted_kill_switch_on');
     expect(buy.state.fetchBookCalls).toBe(0);
     expect(sell.state.fetchBookCalls).toBe(0);
+    expect(buy.state.createCalls).toBe(0);
+    expect(sell.state.createCalls).toBe(0);
+    repo.close();
+  });
+
+  it('rejects a signal that is already older than the execution window', async () => {
+    const { repo, buy, sell } = setup();
+    const executor = new CexLiveExecutor({
+      repository: repo,
+      gate: new ExecutionGate(limits),
+      limits,
+      liveEnabled: true,
+      settings: { ...settings, maxSignalAgeMs: 1000 },
+      sleep: async () => {},
+      clock: () => now,
+    });
+    const stale = request(
+      { adapter: buy.adapter, market: market('gateio'), credentials: keys, healthState: 'A' },
+      { adapter: sell.adapter, market: market('mexc'), credentials: keys, healthState: 'A' },
+    );
+    stale.opportunity = { ...stale.opportunity, sampledAt: now - 2000 };
+    const result = await executor.execute(stale);
+    expect(result.outcome).toBe('PREFLIGHT_FAILED');
+    expect(result.reasons).toContain('signal_expired');
+    expect(buy.state.fetchBookCalls).toBe(0);
+    expect(buy.state.createCalls).toBe(0);
+    repo.close();
+  });
+
+  it('rechecks signal age after fresh-book and balance preflight', async () => {
+    let current = now;
+    const { repo, buy, sell } = setup({ onFetchBook: () => (current += 750) });
+    const executor = new CexLiveExecutor({
+      repository: repo,
+      gate: new ExecutionGate(limits),
+      limits,
+      liveEnabled: true,
+      settings: { ...settings, maxOrderbookAgeMs: 10_000, maxSignalAgeMs: 1000 },
+      sleep: async () => {},
+      clock: () => current,
+    });
+    const result = await executor.execute(
+      request(
+        { adapter: buy.adapter, market: market('gateio'), credentials: keys, healthState: 'A' },
+        { adapter: sell.adapter, market: market('mexc'), credentials: keys, healthState: 'A' },
+      ),
+    );
+    expect(result.outcome).toBe('PREFLIGHT_FAILED');
+    expect(result.reasons).toContain('signal_expired_at_preflight');
     expect(buy.state.createCalls).toBe(0);
     expect(sell.state.createCalls).toBe(0);
     repo.close();
@@ -1163,7 +1214,11 @@ describe('live executor safety gates', () => {
         .filter((event) => event.client_order_id === clientOrderId)
         .map((event) => event.event_type);
       expect(types).toEqual(
-        expect.arrayContaining(['submission_request', 'submission_response', 'reconcile_query_1']),
+        expect.arrayContaining([
+          'submission_request',
+          'submission_response',
+          'reconcile_terminal_fast_path',
+        ]),
       );
     }
     expect(events.some((event) => event.raw_response.includes('"fake":true'))).toBe(true);
@@ -1329,6 +1384,8 @@ describe('parallel FOK two-leg execution', () => {
     expect(concurrency.max).toBe(2);
     expect(buy.state.createSides).toEqual(['buy']);
     expect(sell.state.createSides).toEqual(['sell']);
+    expect(buy.state.fetchOrderCalls).toBe(0);
+    expect(sell.state.fetchOrderCalls).toBe(0);
     expect(repo.openUnhedgedInventory()).toHaveLength(0);
     expect(repo.getSetting('kill_switch')).toBe('false');
     const execution = db
@@ -1520,6 +1577,8 @@ describe('parallel FOK two-leg execution', () => {
     );
     expect(result.outcome).toBe('PARALLEL_REJECTED');
     expect(result.states).toContain('PARALLEL_REJECTED');
+    expect(buy.state.fetchOrderCalls).toBe(0);
+    expect(sell.state.fetchOrderCalls).toBe(0);
     expect(repo.countOpenExecutions()).toBe(0);
     expect(repo.openUnhedgedInventory()).toHaveLength(0);
     expect(repo.getSetting('kill_switch')).toBe('false');
@@ -1558,7 +1617,12 @@ describe('parallel FOK two-leg execution', () => {
 
   it('safe-stops when one leg cannot be reconciled and records the known other fill', async () => {
     const { repo, executor, buy, sell } = setup(
-      { queryUnknown: true, queryUnknownSide: 'buy' },
+      {
+        queryUnknown: true,
+        queryUnknownSide: 'buy',
+        leg1FillRatio: new Decimal('0.5'),
+        leg1PartialOpen: true,
+      },
       'parallel_fok',
     );
     const result = await executor.execute(

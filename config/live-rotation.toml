@@ -79,6 +79,10 @@ manual_confirmation = true
 # across venues. Gate and Bitget private FOK no-fill paths were verified with
 # WARD on 2026-10-29 (zero fill, no resting order, unchanged balances).
 leg_mode = 'parallel_fok'
+# Gate/Bitget allow well above five requests per second. Keep a conservative
+# execution budget while avoiding the old 1 RPS queue that serialized the
+# orderbook, balance and open-order checks during preflight.
+requests_per_second = 5
 max_open_batches = 1
 daily_max_loss_usd = "5"
 handoff_max_age_ms = 15000
@@ -93,7 +97,10 @@ enabled = true
 # longer blocks the execution loop for the whole refresh interval.
 poll_interval_ms = 250
 balance_refresh_ms = 30000
-max_signal_age_ms = 10000
+# Measured read-only preflight at 5 RPS is ~350-450 ms after warmup. Keep a
+# 2 s hard window so the executor cannot place an order on a signal that has
+# already decayed while balances/books were being refreshed.
+max_signal_age_ms = 2000
 cooldown_ms = 0
 max_consecutive_failures = 3
 heartbeat_file = 'data/rotation-executor.heartbeat.json'

@@ -142,6 +142,62 @@ async function main(): Promise<void> {
         total: balance.total.toFixed(),
         fetchedAt: balance.fetchedAt,
       }));
+    const positionRows = repository
+      .latestBalances({ now })
+      .filter(
+        (balance) =>
+          pairAssets.has(balance.currency.trim().toUpperCase()) &&
+          (balance.free.gt(0) || balance.used.gt(0)),
+      )
+      .map((balance) => {
+        const pair = config.autoRotation.pairs.find(
+          (candidate) =>
+            candidate.base.toUpperCase() === balance.currency.toUpperCase() ||
+            candidate.quote.toUpperCase() === balance.currency.toUpperCase(),
+        );
+        return {
+          venueId: balance.venueId,
+          asset: balance.currency,
+          role: pair?.base.toUpperCase() === balance.currency.toUpperCase() ? 'base' : 'quote',
+          pair: pair ? `${pair.base}/${pair.quote}` : null,
+          free: balance.free.toFixed(),
+          used: balance.used.toFixed(),
+          total: balance.total.toFixed(),
+          fetchedAt: balance.fetchedAt,
+          ageMs: Math.max(0, now - balance.fetchedAt),
+          stale: now - balance.fetchedAt > maxAgeMs,
+        };
+      });
+    const unhedged = repository.openUnhedgedInventory().map((row) => ({
+      id: Number(row.id),
+      batchId: String(row.batch_id),
+      venueId: String(row.venue_id),
+      asset: String(row.asset),
+      amount: String(row.amount),
+      usdValue: String(row.usd_value),
+      direction: String(row.direction),
+      reason: String(row.reason),
+      createdAt: Number(row.created_at),
+    }));
+    const recentExecutions = (
+      repository.db
+        .prepare(
+          `SELECT id, strategy, batch_id, status, planned_notional, realized_profit,
+                  opened_at, closed_at, safe_mode_reason
+           FROM executions ORDER BY id DESC LIMIT 8`,
+        )
+        .all() as Array<Record<string, unknown>>
+    ).map((row) => ({
+      id: Number(row.id),
+      strategy: String(row.strategy),
+      batchId: String(row.batch_id),
+      status: String(row.status),
+      plannedNotional: row.planned_notional === null ? null : String(row.planned_notional),
+      realizedProfit: row.realized_profit === null ? null : String(row.realized_profit),
+      openedAt: Number(row.opened_at),
+      closedAt: row.closed_at === null ? null : Number(row.closed_at),
+      safeModeReason: row.safe_mode_reason === null ? null : String(row.safe_mode_reason),
+    }));
 
     console.log(
       JSON.stringify(
@@ -161,7 +217,10 @@ async function main(): Promise<void> {
             })),
           },
           pairs,
+          positions: positionRows,
           balances,
+          unhedged,
+          recentExecutions,
           openOrders,
           accountStatus,
           errors,
