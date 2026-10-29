@@ -30,7 +30,7 @@
 
 - 盘口深度归一化：KuCoin 只接受 20/100；Kraken 接受 10/25/100/500/1000；Bybit WS 接受 1/50/200/1000。适配器会按交易所自动取合法值。
 - 时间戳归一化：自动识别秒、毫秒、微秒、纳秒，避免 Woo/Poloniex/Coinbase 出现数小时甚至数天的虚假 feed latency。
-- WS 重连上限：`ws_max_reconnect_attempts` 默认 5，失败交易所停止重试并回退 REST，避免无限重连。
+- WS 重连上限：`ws_max_reconnect_attempts` 默认 5，达到上限后使用最大退避间隔继续重连；重连期间仍可回退 REST，避免永久断流。
 - 默认并发提升到 16，盘口深度降到 20，适配多交易所扫描。
 - 多所订阅裁剪：`syncSubscriptions` 只订阅“同一 base/quote 至少出现在两个场所”的币种，并按 venue tier 排序、`ws_max_subscriptions` 全局限额；`activeUniverse` 在 WS 模式下对未订阅币种每所每轮只做 `ws_rest_fallback_per_venue` 个轮换 REST 回退，避免为不可能形成 S1 的币种建立海量订阅或全量 REST 轮询。
 - 评估时点：S1 逐 base 取 `now`，并在 WS 模式下跳过前置 REST 预取，消除“先取完全部盘口再统一评估”导致的假 stale。

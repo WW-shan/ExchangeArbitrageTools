@@ -60,6 +60,7 @@ max_freeze_ms = 5000
 feed_mode = 'websocket'
 ws_max_book_age_ms = 2000
 ws_max_subscriptions = 1200
+# After this many consecutive failures, keep retrying at ws_reconnect_max_ms.
 ws_max_reconnect_attempts = 5
 ws_rest_fallback_per_venue = 8
 # Optional adaptive entry gate: admit only edges at/above a rolling percentile
