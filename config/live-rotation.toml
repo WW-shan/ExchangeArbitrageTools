@@ -100,10 +100,12 @@ enabled = true
 # longer blocks the execution loop for the whole refresh interval.
 poll_interval_ms = 250
 balance_refresh_ms = 30000
-# Measured read-only preflight at 5 RPS is ~350-450 ms after warmup. Keep a
-# 2 s hard window so the executor cannot place an order on a signal that has
-# already decayed while balances/books were being refreshed.
-max_signal_age_ms = 2000
+# Keep the signal window wider than the measured private-API preflight while
+# still bounding total decay. The executor re-fetches both books and evaluates
+# current profitability before submitting, and max_preflight_ms separately
+# rejects slow private-account checks.
+max_signal_age_ms = 3000
+max_preflight_ms = 2500
 cooldown_ms = 0
 max_consecutive_failures = 3
 heartbeat_file = 'data/rotation-executor.heartbeat.json'
@@ -134,6 +136,22 @@ max_hold_ms = 3600000
 enabled = true
 max_loss_usd = '0.05'
 max_baseline_age_ms = 60000
+
+# Seed only the missing side. When both sides lack useful inventory, buy the
+# cheaper ask. When one side already has inventory, top up the missing side
+# only if it is cheaper or within 30 bps of the other ask. Every seed is a
+# separate SEED execution, not arbitrage profit, and unknown/partial orders
+# stop the executor.
+[auto_rotation.inventory]
+enabled = true
+seed_notional_usd = '5'
+min_quote_reserve_usd = '5'
+min_useful_notional_usd = '3'
+min_stable_ms = 3000
+max_pair_deviation_bps = '30'
+max_price_drift_bps = '25'
+check_interval_ms = 1000
+retry_cooldown_ms = 60000
 
 [[auto_rotation.pairs]]
 base = 'WARD'

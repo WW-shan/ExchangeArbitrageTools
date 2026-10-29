@@ -61,6 +61,18 @@ export interface AutoResidualHedgeConfig {
   maxBaselineAgeMs: number;
 }
 
+export interface AutoInventoryConfig {
+  enabled: boolean;
+  seedNotionalUsd: Decimal;
+  minQuoteReserveUsd: Decimal;
+  minUsefulNotionalUsd: Decimal;
+  minStableMs: number;
+  maxPairDeviationBps: Decimal;
+  maxPriceDriftBps: Decimal;
+  checkIntervalMs: number;
+  retryCooldownMs: number;
+}
+
 export interface PreparationCalibrationEntry {
   pair: string;
   direction: 'gate->hotcoin' | 'hotcoin->gate';
@@ -81,10 +93,12 @@ export interface AutoRotationConfig {
   pairs: RotationPairConfig[];
   preparation: AutoRotationPreparationConfig;
   residualHedge: AutoResidualHedgeConfig;
+  inventory: AutoInventoryConfig;
   heartbeatFile: string;
   pollIntervalMs: number;
   balanceRefreshMs: number;
   maxSignalAgeMs: number;
+  maxPreflightMs: number;
   cooldownMs: number;
   maxConsecutiveFailures: number;
 }
@@ -470,9 +484,11 @@ function autoRotationConfig(value: unknown, handoffMaxAgeMs: number): AutoRotati
   const rotation = optionalTable(value, 'auto_rotation');
   const preparation = optionalTable(rotation.preparation, 'auto_rotation.preparation');
   const residualHedge = optionalTable(rotation.residual_hedge, 'auto_rotation.residual_hedge');
+  const inventory = optionalTable(rotation.inventory, 'auto_rotation.inventory');
   const pollIntervalMs = numberValue(rotation, 'poll_interval_ms', 1000);
   const balanceRefreshMs = numberValue(rotation, 'balance_refresh_ms', 10_000);
   const maxSignalAgeMs = numberValue(rotation, 'max_signal_age_ms', handoffMaxAgeMs);
+  const maxPreflightMs = numberValue(rotation, 'max_preflight_ms', 2_500);
   const cooldownMs = numberValue(rotation, 'cooldown_ms', 5000);
   const maxConsecutiveFailures = numberValue(rotation, 'max_consecutive_failures', 3);
   const preparationEnabled = booleanValue(preparation, 'enabled', false);
@@ -483,6 +499,7 @@ function autoRotationConfig(value: unknown, handoffMaxAgeMs: number): AutoRotati
     ['poll_interval_ms', pollIntervalMs],
     ['balance_refresh_ms', balanceRefreshMs],
     ['max_signal_age_ms', maxSignalAgeMs],
+    ['max_preflight_ms', maxPreflightMs],
     ['cooldown_ms', cooldownMs],
     ['max_consecutive_failures', maxConsecutiveFailures],
   ] as const) {
@@ -509,10 +526,22 @@ function autoRotationConfig(value: unknown, handoffMaxAgeMs: number): AutoRotati
       maxLossUsd: decimalValue(residualHedge, 'max_loss_usd', '0'),
       maxBaselineAgeMs: numberValue(residualHedge, 'max_baseline_age_ms', 60_000),
     },
+    inventory: {
+      enabled: booleanValue(inventory, 'enabled', false),
+      seedNotionalUsd: decimalValue(inventory, 'seed_notional_usd', '5'),
+      minQuoteReserveUsd: decimalValue(inventory, 'min_quote_reserve_usd', '5'),
+      minUsefulNotionalUsd: decimalValue(inventory, 'min_useful_notional_usd', '3'),
+      minStableMs: numberValue(inventory, 'min_stable_ms', 3_000),
+      maxPairDeviationBps: decimalValue(inventory, 'max_pair_deviation_bps', '15'),
+      maxPriceDriftBps: decimalValue(inventory, 'max_price_drift_bps', '25'),
+      checkIntervalMs: numberValue(inventory, 'check_interval_ms', 1_000),
+      retryCooldownMs: numberValue(inventory, 'retry_cooldown_ms', 60_000),
+    },
     heartbeatFile: stringValue(rotation, 'heartbeat_file', 'data/rotation-heartbeat.json'),
     pollIntervalMs,
     balanceRefreshMs,
     maxSignalAgeMs,
+    maxPreflightMs,
     cooldownMs,
     maxConsecutiveFailures,
   };
@@ -536,6 +565,13 @@ function validateSafetyBounds(config: ExecutorConfig): void {
     if (config.autoRotation.maxSignalAgeMs > 30_000) {
       throw new Error('auto_rotation.max_signal_age_ms cannot exceed 30000');
     }
+    if (
+      !Number.isInteger(config.autoRotation.maxPreflightMs) ||
+      config.autoRotation.maxPreflightMs < 500 ||
+      config.autoRotation.maxPreflightMs > 10_000
+    ) {
+      throw new Error('auto_rotation.max_preflight_ms must be between 500 and 10000');
+    }
     for (const pair of config.autoRotation.pairs) {
       if (pair.maxNotional.gt(config.riskLimits.maxOrderNotional)) {
         throw new Error(
@@ -545,6 +581,7 @@ function validateSafetyBounds(config: ExecutorConfig): void {
     }
     const preparation = config.autoRotation.preparation;
     const residualHedge = config.autoRotation.residualHedge;
+    const inventory = config.autoRotation.inventory;
     if (
       !residualHedge.maxLossUsd.isFinite() ||
       residualHedge.maxLossUsd.lt(0) ||
@@ -560,6 +597,48 @@ function validateSafetyBounds(config: ExecutorConfig): void {
       throw new Error(
         'auto_rotation.residual_hedge.max_baseline_age_ms must be between 1000 and 300000',
       );
+    }
+    if (
+      !inventory.seedNotionalUsd.isFinite() ||
+      inventory.seedNotionalUsd.lte(0) ||
+      inventory.seedNotionalUsd.gt(config.riskLimits.maxOrderNotional)
+    ) {
+      throw new Error('auto_rotation.inventory.seed_notional_usd is outside the order limit');
+    }
+    if (!inventory.minQuoteReserveUsd.isFinite() || inventory.minQuoteReserveUsd.lt(0)) {
+      throw new Error('auto_rotation.inventory.min_quote_reserve_usd must be non-negative');
+    }
+    if (
+      !inventory.minUsefulNotionalUsd.isFinite() ||
+      inventory.minUsefulNotionalUsd.lte(0) ||
+      inventory.minUsefulNotionalUsd.gt(inventory.seedNotionalUsd)
+    ) {
+      throw new Error(
+        'auto_rotation.inventory.min_useful_notional_usd must be within the seed notional',
+      );
+    }
+    if (!Number.isInteger(inventory.minStableMs) || inventory.minStableMs < 0) {
+      throw new Error('auto_rotation.inventory.min_stable_ms must be a non-negative integer');
+    }
+    if (
+      !inventory.maxPairDeviationBps.isFinite() ||
+      inventory.maxPairDeviationBps.lt(0) ||
+      inventory.maxPairDeviationBps.gt(100)
+    ) {
+      throw new Error('auto_rotation.inventory.max_pair_deviation_bps is outside the safety bound');
+    }
+    if (
+      !inventory.maxPriceDriftBps.isFinite() ||
+      inventory.maxPriceDriftBps.lt(0) ||
+      inventory.maxPriceDriftBps.gt(500)
+    ) {
+      throw new Error('auto_rotation.inventory.max_price_drift_bps is outside the safety bound');
+    }
+    if (!Number.isInteger(inventory.checkIntervalMs) || inventory.checkIntervalMs <= 0) {
+      throw new Error('auto_rotation.inventory.check_interval_ms must be a positive integer');
+    }
+    if (!Number.isInteger(inventory.retryCooldownMs) || inventory.retryCooldownMs < 0) {
+      throw new Error('auto_rotation.inventory.retry_cooldown_ms must be a non-negative integer');
     }
     if (preparation.enabled) {
       if (!Number.isInteger(preparation.minStableMs) || preparation.minStableMs < 0) {
@@ -739,6 +818,7 @@ export function loadExecutorConfig(
       maxOrderbookAgeMs,
       orderbookDepth,
       maxSignalAgeMs: autoRotation.maxSignalAgeMs,
+      maxPreflightMs: autoRotation.maxPreflightMs,
       minNetProfitBps,
       maxSlippageBps,
       minProfitUsd: decimalValue(scanner, 'min_profit_usd', '0.25'),

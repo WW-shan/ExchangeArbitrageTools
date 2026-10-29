@@ -443,6 +443,36 @@ describe('live executor safety gates', () => {
     repo.close();
   });
 
+  it('rejects preflight work that exceeds the configured latency budget', async () => {
+    let current = now;
+    const { repo, buy, sell } = setup({ onFetchBook: () => (current += 750) });
+    const executor = new CexLiveExecutor({
+      repository: repo,
+      gate: new ExecutionGate(limits),
+      limits,
+      liveEnabled: true,
+      settings: {
+        ...settings,
+        maxOrderbookAgeMs: 10_000,
+        maxSignalAgeMs: 10_000,
+        maxPreflightMs: 1000,
+      },
+      sleep: async () => {},
+      clock: () => current,
+    });
+    const result = await executor.execute(
+      request(
+        { adapter: buy.adapter, market: market('gateio'), credentials: keys, healthState: 'A' },
+        { adapter: sell.adapter, market: market('mexc'), credentials: keys, healthState: 'A' },
+      ),
+    );
+    expect(result.outcome).toBe('PREFLIGHT_FAILED');
+    expect(result.reasons).toContain('preflight_too_slow');
+    expect(buy.state.createCalls).toBe(0);
+    expect(sell.state.createCalls).toBe(0);
+    repo.close();
+  });
+
   it('requires execution_enabled for both venues before any venue request', async () => {
     const { repo, buy, sell } = setup();
     repo.upsertVenue({

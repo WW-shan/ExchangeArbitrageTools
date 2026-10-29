@@ -11,14 +11,14 @@ The automatic path consists of two processes sharing `data/rotation.sqlite`:
 
 1. `apps/scanner/src/main.ts` maintains WebSocket order books, evaluates both
    directions of the whitelisted pair on Gate.io, Hotcoin, WEEX and Bitget,
-   records venue health, and persists valid S1 opportunities. WEEX and Bitget
-   signals are explicitly marked `monitorOnly`; they have no private execution
+   records venue health, and persists valid S1 opportunities. WEEX signals are
+   explicitly marked `monitorOnly`; Gate.io and Bitget have private execution
    credentials in this profile.
 2. `apps/executor/src/main.ts --auto` reads only valid S1 rows for the
-   whitelist, rejects every route that is not Gate/Hotcoin, refreshes
-   Gate/Hotcoin private balances, derives the funded rotation direction, and
-   submits one serial FOK batch only when the direction is funded and the signal
-   is fresh. See `docs/s1-four-venue-monitoring.md`.
+   whitelist, rejects monitor-only routes, refreshes Gate/Bitget private
+   balances, derives the funded rotation direction, and submits one FOK batch
+   only when the direction is funded and the signal is fresh. See
+   `docs/s1-four-venue-monitoring.md`.
 
 `scripts/watch-rotation.ps1` is the sole lifecycle manager. It starts the
 executor first, waits for a fresh executor heartbeat, then starts the scanner.
@@ -68,6 +68,31 @@ Gate USDT + Hotcoin TBK -> ready for Gate buy / Hotcoin sell
 ```
 
 The LIGHT seed remains separate and is still ready for Gate buy / Hotcoin sell.
+
+## Automatic inventory seeding
+
+When neither direction is executable because one side lacks base inventory, the
+supervisor can create a small `SEED` execution. It does not pretend this is an
+arbitrage trade:
+
+- normal S1 and calibrated preparation always take priority;
+- only one pair is checked per `check_interval_ms`;
+- both books must be fresh and the candidate ask must remain stable for
+  `min_stable_ms`;
+- if both sides lack useful inventory, buy the cheaper ask;
+- if one side already has inventory, top up the missing side only when it is
+  cheaper or within `max_pair_deviation_bps` of the other ask;
+- spend at most `seed_notional_usd`, keep `min_quote_reserve_usd`, and require
+  the resulting base value to reach `min_useful_notional_usd`;
+- submit one FOK limit buy and record `strategy=SEED`, `side=buy`, inventory
+  delta, order events, audit and balance snapshots.
+
+The live profile uses 5 USDT per seed, keeps at least 5 USDT quote, requires 3
+USDT of useful base, and uses a 30 bps near-parity band. Unknown or partial seed
+fills open the kill switch and require manual reconciliation. A rejected FOK
+does not open the kill switch; it waits for the retry cooldown.
+
+Full design: `docs/s1-automatic-inventory-2026-10-30.md`.
 
 ## Reversion preparation
 

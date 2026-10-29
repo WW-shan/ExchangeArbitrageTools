@@ -64,6 +64,12 @@ describe('executor configuration', () => {
     expect(config.autoRotation.residualHedge.enabled).toBe(false);
     expect(config.autoRotation.residualHedge.maxLossUsd.toFixed()).toBe('0');
     expect(config.autoRotation.residualHedge.maxBaselineAgeMs).toBe(60_000);
+    expect(config.autoRotation.inventory.enabled).toBe(false);
+    expect(config.autoRotation.inventory.seedNotionalUsd.toFixed()).toBe('5');
+    expect(config.autoRotation.inventory.minQuoteReserveUsd.toFixed()).toBe('5');
+    expect(config.autoRotation.inventory.minUsefulNotionalUsd.toFixed()).toBe('3');
+    expect(config.autoRotation.inventory.maxPriceDriftBps.toFixed()).toBe('25');
+    expect(config.autoRotation.maxPreflightMs).toBe(2500);
     expect(config.transfers.allowlist).toEqual([]);
   });
 
@@ -220,6 +226,87 @@ max_notional = '20'
     expect(() => loadExecutorConfig(configWithAppendix(section('0.05', 500)), {})).toThrow(
       'max_baseline_age_ms',
     );
+  });
+
+  it('parses bounded automatic inventory seeding', () => {
+    const appendix = `
+[auto_rotation]
+enabled = true
+max_signal_age_ms = 5000
+max_preflight_ms = 2500
+[auto_rotation.inventory]
+enabled = true
+seed_notional_usd = '5'
+min_quote_reserve_usd = '5'
+min_useful_notional_usd = '3'
+min_stable_ms = 3000
+max_pair_deviation_bps = '15'
+max_price_drift_bps = '25'
+check_interval_ms = 1000
+retry_cooldown_ms = 60000
+[[auto_rotation.pairs]]
+base = 'KAT'
+quote = 'USDT'
+max_notional = '20'
+`;
+    const config = loadExecutorConfig(configWithAppendix(appendix), {});
+    expect(config.autoRotation.inventory.enabled).toBe(true);
+    expect(config.autoRotation.inventory.seedNotionalUsd.toFixed()).toBe('5');
+    expect(config.autoRotation.inventory.minQuoteReserveUsd.toFixed()).toBe('5');
+    expect(config.autoRotation.inventory.minUsefulNotionalUsd.toFixed()).toBe('3');
+    expect(config.autoRotation.inventory.minStableMs).toBe(3000);
+    expect(config.autoRotation.inventory.maxPairDeviationBps.toFixed()).toBe('15');
+    expect(config.autoRotation.inventory.maxPriceDriftBps.toFixed()).toBe('25');
+    expect(config.autoRotation.maxPreflightMs).toBe(2500);
+  });
+
+  it('rejects unsafe automatic inventory and preflight bounds', () => {
+    const inventory = (values: string): string => `
+[auto_rotation]
+enabled = true
+max_signal_age_ms = 5000
+max_preflight_ms = 2500
+[auto_rotation.inventory]
+enabled = true
+${values}
+[[auto_rotation.pairs]]
+base = 'KAT'
+quote = 'USDT'
+max_notional = '20'
+`;
+    expect(() =>
+      loadExecutorConfig(configWithAppendix(inventory(`seed_notional_usd = '31'`)), {}),
+    ).toThrow('seed_notional_usd');
+    expect(() =>
+      loadExecutorConfig(
+        configWithAppendix(
+          inventory(`seed_notional_usd = '5'
+min_useful_notional_usd = '6'`),
+        ),
+        {},
+      ),
+    ).toThrow('min_useful_notional_usd');
+    expect(() =>
+      loadExecutorConfig(configWithAppendix(inventory(`max_pair_deviation_bps = '101'`)), {}),
+    ).toThrow('max_pair_deviation_bps');
+    expect(() =>
+      loadExecutorConfig(configWithAppendix(inventory(`max_price_drift_bps = '501'`)), {}),
+    ).toThrow('max_price_drift_bps');
+    expect(() =>
+      loadExecutorConfig(
+        configWithAppendix(`
+[auto_rotation]
+enabled = true
+max_signal_age_ms = 5000
+max_preflight_ms = 400
+[[auto_rotation.pairs]]
+base = 'KAT'
+quote = 'USDT'
+max_notional = '20'
+`),
+        {},
+      ),
+    ).toThrow('max_preflight_ms');
   });
 
   it('fails closed when reversion preparation is enabled without calibration', () => {

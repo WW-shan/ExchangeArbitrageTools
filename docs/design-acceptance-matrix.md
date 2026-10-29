@@ -70,12 +70,15 @@ does not mean the system is live-ready.
 | S1-14 | Measure whether a spread persists long enough to be actionable.                | `spread-tracking.ts`; `track-spread.ts`; tracker tests; TBK smoke            | [x]    |
 | S1-15 | Offer an explicit concurrent-FOK mode with fail-closed inventory handling.     | `leg_mode=parallel_fok`; coordinator concurrency/partial/unknown tests       | [x]    |
 | S1-16 | Auto-flatten only confirmed same-venue long residual within a loss cap.        | `auto-residual-hedge.ts`; automatic/residual hedge tests                     | [x]    |
+| S1-17 | Seed missing base inventory on the cheaper or near-parity side with FOK.       | `auto-inventory.ts`; planner/execution tests; supervisor integration         | [x]    |
+| S1-18 | Separate signal-age and preflight latency budgets and fail closed on overrun.  | `max_preflight_ms`; coordinator latency test; live config                    | [x]    |
 | S1-E1 | Real API keys with no withdrawal permission and encrypted storage.             | requires user credentials and secret-store setup                             | [!]    |
 | S1-E2 | 24-hour read-only soak with all configured venues healthy.                     | requires time and live public endpoints                                      | [!]    |
 | S1-E3 | 10 manually confirmed live batches with 80% full reconciliation.               | requires real capital, operator, and opportunities                           | [!]    |
 | S1-E4 | Stage 3-4 automation limits and daily profit criteria.                         | requires live execution history                                              | [!]    |
 | S1-E5 | Verify real Gate/Hotcoin FOK semantics before enabling parallel mode.          | Gate/Hotcoin FOK no-fill verified; filled/sell-side pending                  | [~]    |
 | S1-E6 | Verify balance-aware capacity against real Gate/Hotcoin accounts.              | real balances fetched; capacity not exercised                                | [~]    |
+| S1-E7 | Verify first real SEED fill and the next opposite-side top-up on Gate/Bitget.  | requires live capital and an observed near-parity window                     | [!]    |
 
 ## S2: Intra-CEX triangular arbitrage
 

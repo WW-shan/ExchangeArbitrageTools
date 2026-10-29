@@ -200,6 +200,7 @@ export interface CexLiveExecutorOptions {
     maxOrderbookAgeMs: number;
     orderbookDepth?: number;
     maxSignalAgeMs?: number;
+    maxPreflightMs?: number;
     minNetProfitBps: Decimal;
     maxSlippageBps: Decimal;
     minProfitUsd: Decimal;
@@ -604,6 +605,15 @@ export class CexLiveExecutor {
     }
     const preflightAt = this.#clock();
     const signalAgeMs = Math.max(0, preflightAt - request.opportunity.sampledAt);
+    const preflightMs = Math.max(0, preflightAt - executeStartedAt);
+    if (
+      this.#settings.maxPreflightMs !== undefined &&
+      preflightMs > this.#settings.maxPreflightMs
+    ) {
+      reasons.push('preflight_too_slow');
+      transition('PREFLIGHT_FAILED');
+      return outcome('PREFLIGHT_FAILED');
+    }
     if (
       this.#settings.maxSignalAgeMs !== undefined &&
       signalAgeMs > this.#settings.maxSignalAgeMs

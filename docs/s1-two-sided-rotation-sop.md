@@ -137,6 +137,31 @@ repeat must pass a fresh calibration, expected-value, and per-trade cost check.
 If the reverse edge never appears, the supervisor logs `preparation_carrying`,
 keeps waiting, and does not force a losing exit.
 
+### 4.2 Automatic inventory seeding
+
+If neither direction is funded because one side lacks base, the supervisor can
+submit one small FOK buy as a `SEED` execution. This is inventory preparation,
+not arbitrage profit.
+
+Rules:
+
+- normal S1 and calibrated preparation are checked first;
+- both venue books must be fresh and valid;
+- the candidate ask must remain within `max_price_drift_bps` for
+  `min_stable_ms`;
+- both sides missing: buy the cheaper ask;
+- one side missing: buy the missing side only when it is cheaper or within
+  `max_pair_deviation_bps` of the other ask;
+- spend no more than `seed_notional_usd`, preserve `min_quote_reserve_usd`, and
+  require the resulting base value to reach `min_useful_notional_usd`;
+- use a FOK limit at the worst executable ask, never an unbounded market order.
+
+The live profile uses 5 USDT, a 5 USDT reserve, a 3 USDT useful floor and a 30
+bps near-parity band. A full fill closes the `SEED` execution and records the
+inventory delta. A definitive no-fill is `SEED_REJECTED`. A partial or unknown
+fill opens the kill switch and must be reconciled manually; unknown submissions
+are never retried. See `docs/s1-automatic-inventory-2026-10-30.md`.
+
 ## 5. Order execution
 
 Keep serial FOK as the default:

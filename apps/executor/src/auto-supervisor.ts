@@ -25,6 +25,10 @@ import { refreshBalances } from './balance-service.js';
 import type { RecoveryVenue } from './bootstrap.js';
 import type { ExecutorConfig, RotationPairConfig } from './config.js';
 import { attemptAutomaticResidualHedge } from './auto-residual-hedge.js';
+import {
+  attemptAutomaticInventorySeed,
+  type InventoryStabilityObservation,
+} from './auto-inventory.js';
 import { CexLiveExecutor, type ExecutionVenue } from './coordinator.js';
 import { writeHeartbeat } from './heartbeat.js';
 import { s1BatchId } from './handoff.js';
@@ -776,10 +780,15 @@ export async function runAutoRotationSupervisor(
   let lastWaitLogAt = 0;
   let lastTransferReconcileAt = 0;
   let lastRebalanceLogAt = 0;
+  let lastInventoryCheckAt = 0;
+  let inventoryPairIndex = 0;
+  let inventoryRetryAt = 0;
+  let lastInventoryLogAt = 0;
   let accountStateLogged = false;
   let heartbeatPhase = 'STARTING';
   let heartbeatWaitReasons: string[] | undefined;
   const failedOpportunityUntil = new Map<number, number>();
+  const inventoryObservations = new Map<string, InventoryStabilityObservation>();
   repository.setSetting('auto_execution_enabled', 'true');
   repository.recordAudit('executor', 'auto_rotation_started', {
     pairs: instruments,
@@ -1075,6 +1084,91 @@ export async function runAutoRotationSupervisor(
         }
       }
       if (!executionSelection) {
+        if (
+          config.autoRotation.inventory.enabled &&
+          now >= inventoryRetryAt &&
+          now - lastInventoryCheckAt >= config.autoRotation.inventory.checkIntervalMs &&
+          repository.countActiveTransferBatches() === 0
+        ) {
+          const inventoryPair =
+            config.autoRotation.pairs[inventoryPairIndex % config.autoRotation.pairs.length]!;
+          inventoryPairIndex += 1;
+          lastInventoryCheckAt = now;
+          const inventoryKey = `${inventoryPair.base}/${inventoryPair.quote}|${inventoryPair.venues.join('->')}`;
+          heartbeatPhase = 'SEEDING';
+          const inventoryAttempt = await attemptAutomaticInventorySeed({
+            repository,
+            config,
+            adapters,
+            markets,
+            pair: inventoryPair,
+            now,
+            ...(inventoryObservations.has(inventoryKey)
+              ? { previousObservation: inventoryObservations.get(inventoryKey)! }
+              : {}),
+          });
+          if (inventoryAttempt.observation) {
+            inventoryObservations.set(inventoryKey, inventoryAttempt.observation);
+          } else {
+            inventoryObservations.delete(inventoryKey);
+          }
+          if (inventoryAttempt.status === 'FILLED') {
+            lastBalanceAt = 0;
+            repository.recordAudit(
+              'executor',
+              'inventory_seed_supervisor_result',
+              {
+                batchId: inventoryAttempt.batchId ?? null,
+                executionId: inventoryAttempt.executionId ?? null,
+                pair: inventoryKey,
+                status: inventoryAttempt.status,
+                filled: inventoryAttempt.filled?.toFixed() ?? null,
+              },
+              clock(),
+            );
+            logEvent({
+              status: 'inventory_seed_filled',
+              batchId: inventoryAttempt.batchId ?? null,
+              executionId: inventoryAttempt.executionId ?? null,
+              pair: inventoryKey,
+              filled: inventoryAttempt.filled?.toFixed() ?? null,
+            });
+          } else if (
+            inventoryAttempt.status === 'UNKNOWN' ||
+            inventoryAttempt.status === 'PARTIAL'
+          ) {
+            inventoryRetryAt = clock() + config.autoRotation.inventory.retryCooldownMs;
+            recordHeartbeat(repository, config, 'stopped', [
+              `inventory_seed_${inventoryAttempt.status.toLowerCase()}`,
+            ]);
+            logEvent({
+              status: 'stopped',
+              reason: `inventory_seed_${inventoryAttempt.status.toLowerCase()}`,
+              pair: inventoryKey,
+              batchId: inventoryAttempt.batchId ?? null,
+              reasons: inventoryAttempt.reasons,
+            });
+            break;
+          } else {
+            if (inventoryAttempt.status === 'REJECTED') {
+              inventoryRetryAt = clock() + config.autoRotation.inventory.retryCooldownMs;
+            }
+            heartbeatWaitReasons = [
+              ...normalSelection.waitReasons,
+              ...inventoryAttempt.reasons.map((reason) => `inventory:${reason}`),
+            ];
+            if (now - lastInventoryLogAt >= 15_000) {
+              lastInventoryLogAt = now;
+              logEvent({
+                status: 'inventory_waiting',
+                pair: inventoryKey,
+                action: inventoryAttempt.status,
+                reasons: inventoryAttempt.reasons,
+              });
+            }
+            heartbeatPhase = 'WAIT';
+          }
+        }
         if (
           lastPreparationAt !== undefined &&
           (lastExecutionClosedAt === undefined || lastExecutionClosedAt <= lastPreparationAt) &&

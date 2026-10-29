@@ -881,6 +881,14 @@ export class ScannerService {
             ...(opportunity.metadata ?? {}),
             ...(monitorOnlyRoute ? { monitorOnly: 'true', balanceCapIgnored: 'true' } : {}),
             ...(cap.missing ? { balanceIncomplete: 'true' } : {}),
+            ...(input.buyBook.asks[0] ? { buyBestAsk: input.buyBook.asks[0].price.toFixed() } : {}),
+            ...(input.buyBook.bids[0] ? { buyBestBid: input.buyBook.bids[0].price.toFixed() } : {}),
+            ...(input.sellBook.asks[0]
+              ? { sellBestAsk: input.sellBook.asks[0].price.toFixed() }
+              : {}),
+            ...(input.sellBook.bids[0]
+              ? { sellBestBid: input.sellBook.bids[0].price.toFixed() }
+              : {}),
             depthCapNotional: sizedNotional.toFixed(),
             liquidityMultiple: this.#liquidityMultiple.toFixed(),
             ...(opportunity.buyDepth
