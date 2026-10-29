@@ -1,0 +1,12 @@
+{
+  "asOf": "2026-10-29",
+  "venues": ["gateio", "bitget"],
+  "notionalUsd": 20,
+  "bases": ["WARD", "KAT", "XCX", "DTEC"],
+  "roles": {
+    "WARD": "primary research pair; start at 5-10 USDT",
+    "KAT": "secondary; clean live edge and low fee dust",
+    "XCX": "speculative; historically strong but only 23% live eligible",
+    "DTEC": "reserve; strong stress history but no current live edge"
+  }
+}
