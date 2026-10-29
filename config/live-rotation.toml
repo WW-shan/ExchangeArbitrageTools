@@ -75,10 +75,10 @@ liquidity_top_levels = 5
 live_enabled = true
 kill_switch = false
 manual_confirmation = true
-# serial = buy leg, reconcile, then sell leg.
 # parallel_fok = submit both FOK legs concurrently. It is still NOT atomic
-# across venues. Keep serial until both private FOK paths are verified.
-leg_mode = 'serial'
+# across venues. Gate and Bitget private FOK no-fill paths were verified with
+# WARD on 2026-10-29 (zero fill, no resting order, unchanged balances).
+leg_mode = 'parallel_fok'
 max_open_batches = 1
 daily_max_loss_usd = "5"
 handoff_max_age_ms = 15000
