@@ -1,5 +1,6 @@
+import { existsSync } from 'node:fs';
 import { ExecutionGate } from '@arb/core';
-import { ArbitrageRepository, openDatabase } from '@arb/storage';
+import { ArbitrageRepository, openDatabase, writeHeartbeat } from '@arb/storage';
 import { applyFeeOverride, isCcxtShutdownError, mergeAccountFeeFile } from '@arb/venues-cex';
 import { loadExecutorConfig } from './config.js';
 import { CexLiveExecutor } from './coordinator.js';
@@ -13,6 +14,8 @@ import {
 import { loadEncryptedSecretStore, type StoredCredential } from './secret-store.js';
 import { adapterMap, executionVenue, healthStates, splitInstrument } from './runtime.js';
 import { runAutoRotationSupervisor } from './auto-supervisor.js';
+import { transferVenuesFromCredentials, type LoadedTransferVenues } from './transfer-runtime.js';
+import { TRANSFER_BATCH_STATUS, reconcileTransferBatch } from './transfer-service.js';
 
 interface CliOptions {
   execute: boolean;
@@ -20,6 +23,7 @@ interface CliOptions {
   confirmBatchId?: string;
   opportunityId?: number;
   help: boolean;
+  allowUnsupervised: boolean;
 }
 
 function usage(): string {
@@ -35,6 +39,7 @@ function usage(): string {
     '  --confirm-batch <id>     Exact manual confirmation for the prepared batch',
     '  --execute                Request submission when all live gates are open',
     '  --help                   Show this message',
+    '  --allow-unsupervised     Allow --auto outside the Windows watchdog (debug only)',
     '',
     'Manual live submission requires live_enabled=true, a released persisted kill',
     'switch, clean startup recovery, and a matching --confirm-batch value. The',
@@ -43,7 +48,12 @@ function usage(): string {
 }
 
 function parseArgs(argv: string[]): CliOptions {
-  const options: CliOptions = { execute: false, auto: false, help: false };
+  const options: CliOptions = {
+    execute: false,
+    auto: false,
+    help: false,
+    allowUnsupervised: false,
+  };
   for (let index = 0; index < argv.length; index += 1) {
     const value = argv[index];
     if (value === '--help' || value === '-h') {
@@ -56,6 +66,10 @@ function parseArgs(argv: string[]): CliOptions {
     }
     if (value === '--auto') {
       options.auto = true;
+      continue;
+    }
+    if (value === '--allow-unsupervised') {
+      options.allowUnsupervised = true;
       continue;
     }
     if (value === '--opportunity' || value === '--confirm-batch') {
@@ -121,6 +135,27 @@ async function main(): Promise<void> {
   }
   const config = loadExecutorConfig();
   const repository = new ArbitrageRepository(openDatabase(config.databasePath));
+  const heartbeatPath =
+    process.env.ARB_ROTATION_EXECUTOR_HEARTBEAT ?? config.autoRotation.heartbeatFile;
+  const writeTerminalHeartbeat = (reason: string): void => {
+    try {
+      writeHeartbeat(heartbeatPath, {
+        version: 1,
+        role: 'executor',
+        ...(process.env.ARB_ROTATION_RUN_ID ? { runId: process.env.ARB_ROTATION_RUN_ID } : {}),
+        pid: process.pid,
+        startedAt: Number(process.env.ARB_ROTATION_STARTED_AT ?? Date.now()),
+        updatedAt: Date.now(),
+        state: 'stopped',
+        phase: 'STOPPED',
+        lastWaitReasons: [reason],
+        details: { terminal: 'blocked', reason },
+      });
+    } catch {
+      // The watchdog still sees the process exit and will retry with backoff.
+    }
+  };
+  let transferRuntime: LoadedTransferVenues | undefined;
   try {
     const persistedKillSwitch = repository.getSetting('kill_switch');
     if (config.killSwitch || persistedKillSwitch === undefined) {
@@ -141,6 +176,7 @@ async function main(): Promise<void> {
         'ARB_SECRET_STORE_KEY is required before the executor can validate credentials',
       );
       console.error('executor locked: ARB_SECRET_STORE_KEY is not set');
+      writeTerminalHeartbeat('secret_store_key_missing');
       process.exitCode = 2;
       return;
     }
@@ -150,21 +186,68 @@ async function main(): Promise<void> {
     } catch (error) {
       repository.recordRiskEvent('critical', 'executor_secret_store_unavailable', String(error));
       console.error(`executor locked: encrypted credential store unavailable: ${String(error)}`);
+      writeTerminalHeartbeat('secret_store_unavailable');
       process.exitCode = 2;
       return;
     }
     const adapters = adapterMap(repository, config, credentials);
+    const activeTransfersAtStart = repository.activeTransferBatches();
+    if (config.transfers.enabled || activeTransfersAtStart.length > 0) {
+      transferRuntime = transferVenuesFromCredentials(credentials.values());
+    }
     const recovery = await recoverExecutorStartup({
       repository,
       venues: adapters,
       pairs: config.autoRotation.pairs,
+      accountStatus: {
+        config: config.accountStatus,
+        credentials: [...credentials.values()],
+      },
     });
     console.log(JSON.stringify({ mode: 'startup_recovery', ...recovery }, null, 2));
     if (recovery.decision.blockExecution) {
       repository.recordAudit('executor', 'execution_blocked_after_recovery', recovery.decision);
       console.error(`executor locked: ${recovery.decision.reasons.join(',')}`);
+      writeTerminalHeartbeat('startup_recovery_blocked');
       process.exitCode = 2;
       return;
+    }
+
+    if (activeTransfersAtStart.length > 0) {
+      if (!transferRuntime || Object.keys(transferRuntime.venues).length === 0) {
+        repository.recordRiskEvent(
+          'critical',
+          'startup_transfer_venues_unavailable',
+          'active transfer requires read and withdrawal credentials',
+        );
+        repository.setSetting('kill_switch', 'true');
+        console.error('executor locked: active transfer cannot be reconciled');
+        writeTerminalHeartbeat('active_transfer_unreconciled');
+        process.exitCode = 2;
+        return;
+      }
+      for (const batch of activeTransfersAtStart) {
+        const reconciled = await reconcileTransferBatch({
+          repository,
+          config: config.transfers,
+          venues: transferRuntime.venues,
+          batchId: batch.id,
+        });
+        repository.recordAudit('executor', 'startup_transfer_reconciled', reconciled);
+        if (reconciled.status === TRANSFER_BATCH_STATUS.SAFE_STOP) {
+          repository.setSetting('kill_switch', 'true');
+          console.error(`executor locked: transfer ${batch.id} is SAFE_STOP`);
+          writeTerminalHeartbeat('transfer_safe_stop');
+          process.exitCode = 2;
+          return;
+        }
+      }
+      if (repository.activeTransferBatches().length > 0 && !options.auto) {
+        console.error('executor locked: an inventory transfer is still in progress');
+        writeTerminalHeartbeat('transfer_in_progress');
+        process.exitCode = 2;
+        return;
+      }
     }
 
     const gate = new ExecutionGate(config.riskLimits);
@@ -184,6 +267,17 @@ async function main(): Promise<void> {
       if (!config.autoRotation.enabled) {
         throw new Error('--auto requires auto_rotation.enabled=true in the config');
       }
+      if (process.env.ARB_ROTATION_SUPERVISED !== '1' && !options.allowUnsupervised) {
+        repository.recordRiskEvent(
+          'critical',
+          'auto_execution_unsupervised',
+          '--auto must be started by scripts/watch-rotation.ps1',
+        );
+        console.error('executor locked: --auto requires ARB_ROTATION_SUPERVISED=1');
+        writeTerminalHeartbeat('unsupervised');
+        process.exitCode = 2;
+        return;
+      }
       let stopping = false;
       const stop = (): void => {
         stopping = true;
@@ -195,7 +289,10 @@ async function main(): Promise<void> {
         config,
         adapters,
         engine,
-        shouldStop: () => stopping,
+        accountStatusCredentials: [...credentials.values()],
+        ...(transferRuntime ? { transferVenues: transferRuntime.venues } : {}),
+        shouldStop: () =>
+          stopping || existsSync(process.env.ARB_ROTATION_STOP_FILE ?? 'data/rotation.stop'),
       });
       return;
     }
@@ -286,6 +383,11 @@ async function main(): Promise<void> {
       process.exitCode = 2;
     }
   } finally {
+    for (const adapter of transferRuntime?.adapters ?? []) {
+      try {
+        await adapter.close?.();
+      } catch {}
+    }
     repository.close();
   }
 }

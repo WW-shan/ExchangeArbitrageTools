@@ -7,6 +7,9 @@ import {
 import type { ArbitrageRepository, RecoveredOrder } from '@arb/storage';
 import type { ApiCredentials, CexAdapter, OrderQuery, OrderState } from '@arb/venues-cex';
 import { fetchOpenOrdersForSymbols } from './open-orders.js';
+import { evaluateAccountPermissions, type AccountPermissionReport } from './account-permissions.js';
+import type { AccountStatusConfig } from './config.js';
+import type { StoredCredential } from './secret-store.js';
 
 export interface RecoveryVenue {
   adapter: CexAdapter;
@@ -19,6 +22,10 @@ export interface StartupRecoveryOptions {
   venues: Readonly<Record<string, RecoveryVenue>>;
   confirmBalances?: boolean;
   pairs?: readonly { base: string; quote: string }[];
+  accountStatus?: {
+    config: AccountStatusConfig;
+    credentials: readonly StoredCredential[];
+  };
   now?: () => number;
 }
 
@@ -34,6 +41,7 @@ export interface StartupRecoveryResult {
   openOrderQueryFailures: number;
   backoffs: number;
   balancesConfirmed: boolean;
+  accountStatus?: AccountPermissionReport;
 }
 
 interface RecoveryCandidate {
@@ -143,6 +151,7 @@ export async function recoverExecutorStartup(
   let openOrdersQueried = 0;
   let openOrdersFound = 0;
   let openOrderQueryFailures = 0;
+  let accountStatus: AccountPermissionReport | undefined;
 
   for (const candidate of pending.values()) {
     const venue = options.venues[candidate.venueId];
@@ -348,10 +357,32 @@ export async function recoverExecutorStartup(
     }
   }
 
+  if (options.accountStatus?.config.enabled) {
+    const tradeCredentials = options.accountStatus.credentials.filter(
+      (credential) => credential.role === 'trade',
+    );
+    const byVenue = new Map(tradeCredentials.map((credential) => [credential.venueId, credential]));
+    const statusVenues: Record<string, { adapter: CexAdapter; credentials: StoredCredential }> = {};
+    for (const [venueId, venue] of Object.entries(options.venues)) {
+      const credential = byVenue.get(venueId);
+      if (credential) statusVenues[venueId] = { adapter: venue.adapter, credentials: credential };
+    }
+    accountStatus = await evaluateAccountPermissions({
+      repository,
+      credentials: options.accountStatus.credentials,
+      venues: statusVenues,
+      requiredPairs: (options.pairs ?? []).map(
+        (pair) => `${pair.base.trim().toUpperCase()}/${pair.quote.trim().toUpperCase()}`,
+      ),
+      config: options.accountStatus.config,
+      now: now(),
+    });
+  }
+
   const openExecutions = repository.countOpenExecutions();
   const unresolvedOrders = repository.countUnresolvedOrders();
   const persistedKillSwitch = repository.getSetting('kill_switch') !== 'false';
-  const decision = assessStartupRecovery({
+  const recoveryDecision = assessStartupRecovery({
     openExecutions,
     unresolvedLegs: unresolvedOrders,
     persistedKillSwitch,
@@ -359,6 +390,18 @@ export async function recoverExecutorStartup(
     openOrders: openOrdersFound,
     openOrderQueryFailures,
   });
+  const decision =
+    accountStatus?.health === 'BLOCK'
+      ? {
+          blockExecution: true,
+          killSwitch: true,
+          reasons: [
+            ...recoveryDecision.reasons,
+            'account_status_blocked',
+            ...accountStatus.reasons,
+          ],
+        }
+      : recoveryDecision;
   if (decision.killSwitch) {
     repository.setSetting('kill_switch', 'true', now());
   }
@@ -378,6 +421,7 @@ export async function recoverExecutorStartup(
       openOrderQueryFailures,
       backoffs,
       balancesConfirmed,
+      accountStatus,
       decision,
     },
     now(),
@@ -403,5 +447,6 @@ export async function recoverExecutorStartup(
     openOrderQueryFailures,
     backoffs,
     balancesConfirmed,
+    ...(accountStatus ? { accountStatus } : {}),
   };
 }

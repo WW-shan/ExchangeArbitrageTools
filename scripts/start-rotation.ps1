@@ -1,35 +1,39 @@
 [CmdletBinding()]
 param(
   [string]$Config = 'config/live-rotation.toml',
-  [switch]$NoScanner
+  [switch]$NoScanner,
+  [switch]$Foreground
 )
 
 $ErrorActionPreference = 'Stop'
-$root = Split-Path -Parent $PSScriptRoot
+$root = (Resolve-Path (Split-Path -Parent $PSScriptRoot)).Path
 $data = Join-Path $root 'data'
 New-Item -ItemType Directory -Force -Path $data | Out-Null
+$stopPath = Join-Path $data 'rotation.stop'
+Remove-Item -LiteralPath $stopPath -Force -ErrorAction SilentlyContinue
+$watch = Join-Path $PSScriptRoot 'watch-rotation.ps1'
+if (-not [IO.Path]::IsPathRooted($Config)) { $Config = Join-Path $root $Config }
 
-. (Join-Path $PSScriptRoot 'load-env.ps1')
-$env:ARB_CONFIG = $Config
+if ($Foreground) {
+  & $watch -Config $Config -NoScanner:$NoScanner
+  exit
+}
 
-$node = (Get-Command node -ErrorAction Stop).Source
-$tsx = Join-Path $root 'node_modules/tsx/dist/cli.mjs'
-$scanner = $null
-try {
-  if (-not $NoScanner) {
-    $scanner = Start-Process -FilePath $node `
-      -ArgumentList @($tsx, 'apps/scanner/src/main.ts') `
-      -WorkingDirectory $root `
-      -WindowStyle Hidden `
-      -RedirectStandardOutput (Join-Path $data 'rotation-scanner.stdout.log') `
-      -RedirectStandardError (Join-Path $data 'rotation-scanner.stderr.log') `
-      -PassThru
-    Write-Host ('Scanner started (pid {0}).' -f $scanner.Id)
-  }
-  & $node $tsx apps/executor/src/main.ts --auto
-} finally {
-  if ($scanner -and -not $scanner.HasExited) {
-    Stop-Process -Id $scanner.Id -Force
-    Write-Host ('Scanner stopped (pid {0}).' -f $scanner.Id)
-  }
+$statusPath = Join-Path $data 'rotation-watchdog.status.json'
+$arguments = @(
+  '-NoProfile',
+  '-ExecutionPolicy', 'Bypass',
+  '-File', $watch,
+  '-Config', $Config
+)
+if ($NoScanner) { $arguments += '-NoScanner' }
+$process = Start-Process -FilePath 'powershell.exe' `
+  -ArgumentList $arguments `
+  -WorkingDirectory $root `
+  -WindowStyle Hidden `
+  -PassThru
+Start-Sleep -Seconds 3
+Write-Host ('Watchdog launcher started (pid {0}).' -f $process.Id)
+if (Test-Path -LiteralPath $statusPath -PathType Leaf) {
+  Get-Content -LiteralPath $statusPath -Raw
 }

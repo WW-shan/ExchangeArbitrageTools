@@ -1,6 +1,16 @@
-import { Decimal, type RotationReadiness, type RotationRequirement } from '@arb/core';
+import {
+  Decimal,
+  type RotationBalances,
+  type RotationReadiness,
+  type RotationRequirement,
+} from '@arb/core';
+import type { RebalanceTarget } from '@arb/core';
 import type { LoadedOpportunity } from '@arb/storage';
-import type { PreparationCalibrationEntry, RotationPairConfig } from './config.js';
+import type {
+  PreparationCalibrationEntry,
+  RotationPairConfig,
+  TransferAllowlistEntry,
+} from './config.js';
 
 export type AutoRotationAction = 'EXECUTE' | 'WAIT' | 'BLOCKED';
 
@@ -29,6 +39,254 @@ export interface AutoRotationDecision {
   action: AutoRotationAction;
   reasons: string[];
   direction?: 'gate->hotcoin' | 'hotcoin->gate';
+}
+
+export interface RotationRebalanceTargetsInput {
+  direction: 'gate->hotcoin' | 'hotcoin->gate';
+  base: string;
+  quote: string;
+  balances: RotationBalances;
+  requirement: RotationRequirement;
+  withdrawFees?: Readonly<Record<string, Decimal>>;
+}
+
+export function rotationRebalanceTargets(input: RotationRebalanceTargetsInput): RebalanceTarget[] {
+  const base = input.base.trim().toUpperCase();
+  const quote = input.quote.trim().toUpperCase();
+  const targets: RebalanceTarget[] = [];
+  const move = (
+    asset: string,
+    fromVenue: string,
+    toVenue: string,
+    need: Decimal,
+    sourceBalance: Decimal,
+    destinationBalance: Decimal,
+  ): void => {
+    if (!need.isFinite() || need.lte(0)) return;
+    const fee = input.withdrawFees?.[`${fromVenue}:${asset}`] ?? new Decimal(0);
+    const gross = need.plus(fee);
+    targets.push(
+      {
+        venueId: fromVenue,
+        currency: asset,
+        targetFree: Decimal.max(0, sourceBalance.minus(gross)),
+      },
+      {
+        venueId: toVenue,
+        currency: asset,
+        targetFree: destinationBalance.plus(need),
+      },
+    );
+  };
+
+  if (input.direction === 'gate->hotcoin') {
+    move(
+      quote,
+      'hotcoin',
+      'gateio',
+      Decimal.max(0, input.requirement.buyQuote.minus(input.balances.gateQuote)),
+      input.balances.hotcoinQuote,
+      input.balances.gateQuote,
+    );
+    move(
+      base,
+      'gateio',
+      'hotcoin',
+      Decimal.max(0, input.requirement.sellBase.minus(input.balances.hotcoinBase)),
+      input.balances.gateBase,
+      input.balances.hotcoinBase,
+    );
+  } else {
+    move(
+      quote,
+      'gateio',
+      'hotcoin',
+      Decimal.max(0, input.requirement.buyQuote.minus(input.balances.hotcoinQuote)),
+      input.balances.gateQuote,
+      input.balances.hotcoinQuote,
+    );
+    move(
+      base,
+      'hotcoin',
+      'gateio',
+      Decimal.max(0, input.requirement.sellBase.minus(input.balances.gateBase)),
+      input.balances.hotcoinBase,
+      input.balances.gateBase,
+    );
+  }
+  return targets;
+}
+
+export type AutoRebalanceAction = 'PLAN_MANUAL' | 'EXECUTE_AUTOMATIC' | 'WAIT' | 'BLOCKED';
+
+export interface AutoRebalanceGateInput {
+  transfersEnabled: boolean;
+  releaseMode: 'manual' | 'automatic';
+  autoReleaseArmed: boolean;
+  openExecutions: number;
+  unresolvedOrders: number;
+  activeTransferBatches: number;
+  signalAgeMs: number;
+  maxSignalAgeMs: number;
+  expectedTransferCostUsd: Decimal | undefined;
+  maxCostUsd: Decimal;
+  minNetEdgeBps: Decimal;
+  conservativeNetProfit: Decimal;
+  requestedNotional: Decimal;
+  expectedArrivalMs: number | undefined;
+  maxArrivalMs: number;
+}
+
+export interface AutoRebalanceGateDecision {
+  action: AutoRebalanceAction;
+  reasons: string[];
+}
+
+export function decideAutoRebalance(input: AutoRebalanceGateInput): AutoRebalanceGateDecision {
+  if (!input.transfersEnabled) return { action: 'WAIT', reasons: ['transfers_disabled'] };
+  if (input.openExecutions > 0) return { action: 'WAIT', reasons: ['open_execution'] };
+  if (input.unresolvedOrders > 0) return { action: 'WAIT', reasons: ['unresolved_order'] };
+  if (input.activeTransferBatches > 0) {
+    return { action: 'WAIT', reasons: ['active_transfer'] };
+  }
+  if (input.signalAgeMs > input.maxSignalAgeMs) {
+    return { action: 'WAIT', reasons: ['stale_signal'] };
+  }
+  if (!input.expectedTransferCostUsd) {
+    return { action: 'WAIT', reasons: ['transfer_cost_unknown'] };
+  }
+  if (!input.expectedArrivalMs) {
+    return { action: 'WAIT', reasons: ['expected_arrival_unknown'] };
+  }
+  if (input.expectedArrivalMs > input.maxArrivalMs) {
+    return { action: 'WAIT', reasons: ['arrival_too_slow'] };
+  }
+  if (input.expectedTransferCostUsd.gt(input.maxCostUsd)) {
+    return { action: 'BLOCKED', reasons: ['transfer_cost_above_cap'] };
+  }
+  const minimumRemaining = input.requestedNotional.mul(input.minNetEdgeBps).div(10_000);
+  if (input.conservativeNetProfit.lt(input.expectedTransferCostUsd.plus(minimumRemaining))) {
+    return { action: 'WAIT', reasons: ['transfer_cost_above_expected_edge'] };
+  }
+  if (input.releaseMode === 'manual') return { action: 'PLAN_MANUAL', reasons: ['manual_release'] };
+  if (!input.autoReleaseArmed) {
+    return { action: 'BLOCKED', reasons: ['auto_release_not_armed'] };
+  }
+  return { action: 'EXECUTE_AUTOMATIC', reasons: [] };
+}
+
+export interface RotationRebalanceEstimateInput {
+  direction: 'gate->hotcoin' | 'hotcoin->gate';
+  base: string;
+  quote: string;
+  balances: RotationBalances;
+  requirement: RotationRequirement;
+  allowlist: readonly TransferAllowlistEntry[];
+  assetPricesUsd: Readonly<Record<string, Decimal>>;
+}
+
+export interface RotationRebalanceEstimateLeg {
+  asset: string;
+  fromVenue: string;
+  toVenue: string;
+  amount: Decimal;
+  fee?: Decimal;
+  feeMode?: 'deducted' | 'added' | 'unknown';
+  expectedArrivalMs?: number;
+  costUsd?: Decimal;
+}
+
+export interface RotationRebalanceEstimate {
+  legs: RotationRebalanceEstimateLeg[];
+  withdrawFees: Record<string, Decimal>;
+  totalCostUsd?: Decimal;
+  expectedArrivalMs?: number;
+  reasons: string[];
+}
+
+export function estimateRotationRebalance(
+  input: RotationRebalanceEstimateInput,
+): RotationRebalanceEstimate {
+  const base = input.base.trim().toUpperCase();
+  const quote = input.quote.trim().toUpperCase();
+  const moves: Array<{ asset: string; fromVenue: string; toVenue: string; amount: Decimal }> = [];
+  if (input.direction === 'gate->hotcoin') {
+    const quoteNeed = input.requirement.buyQuote.minus(input.balances.gateQuote);
+    if (quoteNeed.gt(0)) {
+      moves.push({ asset: quote, fromVenue: 'hotcoin', toVenue: 'gateio', amount: quoteNeed });
+    }
+    const baseNeed = input.requirement.sellBase.minus(input.balances.hotcoinBase);
+    if (baseNeed.gt(0)) {
+      moves.push({ asset: base, fromVenue: 'gateio', toVenue: 'hotcoin', amount: baseNeed });
+    }
+  } else {
+    const quoteNeed = input.requirement.buyQuote.minus(input.balances.hotcoinQuote);
+    if (quoteNeed.gt(0)) {
+      moves.push({ asset: quote, fromVenue: 'gateio', toVenue: 'hotcoin', amount: quoteNeed });
+    }
+    const baseNeed = input.requirement.sellBase.minus(input.balances.gateBase);
+    if (baseNeed.gt(0)) {
+      moves.push({ asset: base, fromVenue: 'hotcoin', toVenue: 'gateio', amount: baseNeed });
+    }
+  }
+
+  const reasons: string[] = [];
+  const withdrawFees: Record<string, Decimal> = {};
+  const legs: RotationRebalanceEstimateLeg[] = [];
+  let totalCostUsd = new Decimal(0);
+  let costKnown = true;
+  let expectedArrivalMs = 0;
+  let arrivalKnown = true;
+  for (const move of moves) {
+    const candidates = input.allowlist.filter(
+      (entry) =>
+        entry.fromVenue === move.fromVenue &&
+        entry.toVenue === move.toVenue &&
+        entry.asset === move.asset,
+    );
+    if (candidates.length !== 1) {
+      reasons.push(candidates.length === 0 ? 'allowlist_missing' : 'allowlist_network_ambiguous');
+      costKnown = false;
+      arrivalKnown = false;
+      legs.push({ ...move });
+      continue;
+    }
+    const entry = candidates[0]!;
+    const price = input.assetPricesUsd[move.asset];
+    let costUsd: Decimal | undefined;
+    if (entry.withdrawFee !== undefined && price) {
+      costUsd = entry.withdrawFee.mul(price);
+      totalCostUsd = totalCostUsd.plus(costUsd);
+      withdrawFees[`${move.fromVenue}:${move.asset}`] = entry.withdrawFee;
+    } else {
+      costKnown = false;
+      reasons.push(
+        entry.withdrawFee === undefined ? 'withdraw_fee_unknown' : 'asset_price_unknown',
+      );
+    }
+    if (entry.expectedArrivalMs === undefined) {
+      arrivalKnown = false;
+      reasons.push('expected_arrival_unknown');
+    } else {
+      expectedArrivalMs = Math.max(expectedArrivalMs, entry.expectedArrivalMs);
+    }
+    legs.push({
+      ...move,
+      ...(entry.withdrawFee !== undefined ? { fee: entry.withdrawFee } : {}),
+      ...(entry.feeMode ? { feeMode: entry.feeMode } : {}),
+      ...(entry.expectedArrivalMs !== undefined
+        ? { expectedArrivalMs: entry.expectedArrivalMs }
+        : {}),
+      ...(costUsd !== undefined ? { costUsd } : {}),
+    });
+  }
+  return {
+    legs,
+    withdrawFees,
+    ...(costKnown ? { totalCostUsd } : {}),
+    ...(arrivalKnown ? { expectedArrivalMs } : {}),
+    reasons: [...new Set(reasons)],
+  };
 }
 
 export interface PreparationGateInput {

@@ -145,6 +145,45 @@ export interface BalanceSnapshot {
   fetchedAt: number;
 }
 
+export type AccountCapabilityObservation =
+  'observed_allowed' | 'observed_denied' | 'unsupported' | 'unknown';
+
+export interface AccountStatusRequest {
+  requiredPairs?: readonly string[];
+}
+
+export interface AccountWhitelistObservation {
+  supported: boolean;
+  present?: boolean;
+  count?: number;
+  digest?: string;
+  currentIpAccepted?: boolean;
+}
+
+export interface AccountPairWhitelistObservation {
+  supported: boolean;
+  count?: number;
+  digest?: string;
+  requiredPairsAllowed?: boolean;
+}
+
+export interface AccountStatusSnapshot {
+  venueId: string;
+  observedAt: number;
+  authenticated: boolean;
+  accountIdHash?: string;
+  accountMode?: 'classic' | 'unified' | 'unknown';
+  ipWhitelist?: AccountWhitelistObservation;
+  pairWhitelist?: AccountPairWhitelistObservation;
+  capabilities: {
+    balancesRead: AccountCapabilityObservation;
+    openOrdersRead: AccountCapabilityObservation;
+    trading: AccountCapabilityObservation;
+    withdrawal: AccountCapabilityObservation;
+  };
+  errors: string[];
+}
+
 export interface CexAdapter {
   readonly venueId: string;
   readonly tier: VenueTier;
@@ -167,6 +206,10 @@ export interface CexAdapter {
   ): Promise<void>;
   fetchCurrencies?(): Promise<CurrencyMetadata[]>;
   fetchBalances?(keys: ApiCredentials): Promise<BalanceSnapshot[]>;
+  fetchAccountStatus?(
+    request: AccountStatusRequest,
+    keys: ApiCredentials,
+  ): Promise<AccountStatusSnapshot>;
   fetchDepositAddress?(
     currency: string,
     network: string,

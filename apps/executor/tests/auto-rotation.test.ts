@@ -3,9 +3,12 @@ import { Decimal } from 'decimal.js';
 import { assessRotationReadiness, type OpportunityResult } from '@arb/core';
 import type { LoadedOpportunity } from '@arb/storage';
 import {
+  decideAutoRebalance,
   decideAutoRotation,
+  estimateRotationRebalance,
   evaluatePreparationGate,
   rotationDirection,
+  rotationRebalanceTargets,
   rotationRequirementFromOpportunity,
   scannerDirectionForRotation,
 } from '../src/auto-rotation.js';
@@ -180,5 +183,117 @@ describe('reversion preparation gate', () => {
         gateInput({ calibration: { ...calibration, expectedValueBps: d('-10') } }),
       ).reasons,
     ).toContain('preparation_expected_value_too_low');
+  });
+});
+
+describe('automatic inventory rebalance', () => {
+  const balances = {
+    gateBase: d('6000'),
+    gateQuote: d('5'),
+    hotcoinBase: d('1000'),
+    hotcoinQuote: d('30'),
+  };
+  const requirement = { buyQuote: d('20'), sellBase: d('5000') };
+  const allowlist = [
+    {
+      fromVenue: 'hotcoin',
+      toVenue: 'gateio',
+      asset: 'USDT',
+      network: 'TRC20',
+      address: 'gate-usdt',
+      minAmount: d('1'),
+      maxAmount: d('1000'),
+      dailyMaxAmount: d('10000'),
+      withdrawFee: d('0.2'),
+      feeMode: 'deducted' as const,
+      expectedArrivalMs: 60_000,
+    },
+    {
+      fromVenue: 'gateio',
+      toVenue: 'hotcoin',
+      asset: 'KAT',
+      network: 'TRC20',
+      address: 'hot-kat',
+      minAmount: d('1'),
+      maxAmount: d('100000'),
+      dailyMaxAmount: d('1000000'),
+      withdrawFee: d('0.1'),
+      feeMode: 'deducted' as const,
+      expectedArrivalMs: 120_000,
+    },
+  ];
+
+  it('moves only the missing quote and base with withdrawal-fee gross-up', () => {
+    const targets = rotationRebalanceTargets({
+      direction: 'gate->hotcoin',
+      base: 'KAT',
+      quote: 'USDT',
+      balances,
+      requirement,
+      withdrawFees: { 'hotcoin:USDT': d('0.2'), 'gateio:KAT': d('0.1') },
+    });
+    expect(targets).toEqual([
+      { venueId: 'hotcoin', currency: 'USDT', targetFree: d('14.8') },
+      { venueId: 'gateio', currency: 'USDT', targetFree: d('20') },
+      { venueId: 'gateio', currency: 'KAT', targetFree: d('1999.9') },
+      { venueId: 'hotcoin', currency: 'KAT', targetFree: d('5000') },
+    ]);
+  });
+
+  it('prices the fixed withdrawal fees and arrival time before planning', () => {
+    const estimate = estimateRotationRebalance({
+      direction: 'gate->hotcoin',
+      base: 'KAT',
+      quote: 'USDT',
+      balances,
+      requirement,
+      allowlist,
+      assetPricesUsd: { KAT: d('0.004'), USDT: d('1') },
+    });
+    expect(estimate.legs).toHaveLength(2);
+    expect(estimate.totalCostUsd?.toFixed()).toBe('0.2004');
+    expect(estimate.expectedArrivalMs).toBe(120_000);
+    expect(estimate.reasons).toEqual([]);
+  });
+
+  it('requires a fresh signal, known economics and an explicit automatic arm', () => {
+    const base = {
+      transfersEnabled: true,
+      releaseMode: 'automatic' as const,
+      autoReleaseArmed: true,
+      openExecutions: 0,
+      unresolvedOrders: 0,
+      activeTransferBatches: 0,
+      signalAgeMs: 1000,
+      maxSignalAgeMs: 10_000,
+      expectedTransferCostUsd: d('0.1'),
+      maxCostUsd: d('0.5'),
+      minNetEdgeBps: d('5'),
+      conservativeNetProfit: d('1'),
+      requestedNotional: d('20'),
+      expectedArrivalMs: 60_000,
+      maxArrivalMs: 1_800_000,
+    };
+    expect(decideAutoRebalance(base)).toEqual({ action: 'EXECUTE_AUTOMATIC', reasons: [] });
+    expect(decideAutoRebalance({ ...base, autoReleaseArmed: false })).toMatchObject({
+      action: 'BLOCKED',
+      reasons: ['auto_release_not_armed'],
+    });
+    expect(decideAutoRebalance({ ...base, activeTransferBatches: 1 })).toMatchObject({
+      action: 'WAIT',
+      reasons: ['active_transfer'],
+    });
+    expect(decideAutoRebalance({ ...base, expectedTransferCostUsd: d('2') })).toMatchObject({
+      action: 'BLOCKED',
+      reasons: ['transfer_cost_above_cap'],
+    });
+    expect(
+      decideAutoRebalance({
+        ...base,
+        maxCostUsd: d('2'),
+        expectedTransferCostUsd: d('0.99'),
+        minNetEdgeBps: d('10'),
+      }),
+    ).toMatchObject({ action: 'WAIT', reasons: ['transfer_cost_above_expected_edge'] });
   });
 });

@@ -2,6 +2,7 @@ import { applyFeeOverride, mergeAccountFeeFile } from '@arb/venues-cex';
 import type { MarketMetadata } from '@arb/core';
 import { ArbitrageRepository, openDatabase } from '@arb/storage';
 import { refreshBalances } from './balance-service.js';
+import { evaluateAccountPermissions } from './account-permissions.js';
 import { pairBalances } from './auto-supervisor.js';
 import { loadExecutorConfig } from './config.js';
 import { fetchOpenOrdersForSymbols } from './open-orders.js';
@@ -75,6 +76,25 @@ async function main(): Promise<void> {
       }));
     }
 
+    const permissionVenues = Object.fromEntries(
+      [...credentials.values()]
+        .filter((credential) => credential.role === 'trade')
+        .flatMap((credential) => {
+          const bundle = adapters[credential.venueId];
+          return bundle
+            ? [[credential.venueId, { adapter: bundle.adapter, credentials: credential }]]
+            : [];
+        }),
+    );
+    const accountStatus = await evaluateAccountPermissions({
+      repository,
+      credentials: [...credentials.values()],
+      venues: permissionVenues,
+      requiredPairs: config.autoRotation.pairs.map((pair) => `${pair.base}/${pair.quote}`),
+      config: config.accountStatus,
+      now,
+    });
+
     const maxAgeMs = Math.max(config.autoRotation.balanceRefreshMs * 2, 30_000);
     const pairs = config.autoRotation.pairs.map((pair) => {
       const balances = pairBalances(repository, pair, markets, now, maxAgeMs);
@@ -122,17 +142,24 @@ async function main(): Promise<void> {
             killSwitch: repository.getSetting('kill_switch'),
             liveEnabled: repository.getSetting('live_enabled'),
             autoExecutionEnabled: repository.getSetting('auto_execution_enabled'),
+            transferAutoReleaseEnabled: repository.getSetting('transfer_auto_release_enabled'),
+            activeTransferBatches: repository.activeTransferBatches().map((batch) => ({
+              id: batch.id,
+              status: batch.status,
+              updatedAt: batch.updatedAt,
+            })),
           },
           pairs,
           balances,
           openOrders,
+          accountStatus,
           errors,
         },
         null,
         2,
       ),
     );
-    if (errors.length > 0) process.exitCode = 1;
+    if (errors.length > 0 || accountStatus.health === 'BLOCK') process.exitCode = 1;
   } finally {
     for (const bundle of Object.values(adapters)) {
       await bundle.adapter.close?.();

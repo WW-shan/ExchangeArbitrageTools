@@ -188,11 +188,18 @@ max_notional = '10'
 min_stable_ms = 30000
 ```
 
-Add only two operational values for the account-state layer:
+The implemented account-state layer uses this section:
 
 ```toml
-open_orders_refresh_ms = 10000
-account_state_stale_ms = 30000
+[account_status]
+enabled = true
+refresh_ms = 60000
+stale_ms = 180000
+require_ip_whitelist = false
+allow_shared_trade_withdrawal_key = true
+block_on_ip_whitelist_change = true
+block_on_account_id_change = true
+block_on_account_mode_change = true
 ```
 
 These are freshness checks, not opportunity caps. They do not reduce the
@@ -228,10 +235,10 @@ are a separate P1 item.
 2. [x] Add startup reconciliation for exchange open orders.
 3. [x] Add the pre-submission open-order check.
 4. [x] Add account-state logging and a read-only `account:state` diagnostic.
-5. [ ] Add the Windows watchdog/service and heartbeat.
-6. [ ] Add permission/account-status checks where the venues expose them.
-7. [ ] Keep automatic transfers deferred until the rebalance design is
-       separately approved.
+5. [x] Add the Windows watchdog and independent executor/scanner heartbeats.
+6. [x] Add permission/account-status checks where the venues expose them.
+7. [x] Add automatic-transfer planning/execution behind allowlist, fixed-fee,
+       arrival-time and explicit arm-switch gates.
 
 ## 12. Acceptance criteria
 
@@ -246,3 +253,30 @@ are a separate P1 item.
   `SAFE_STOP`; it never retries an unknown order.
 - No secret, API key, passphrase, or signed request appears in logs or audit
   records.
+
+## 13. Implemented observations (2026-10-29)
+
+The implementation deliberately separates declared credentials from what the
+exchange actually exposes:
+
+- Gate: `GET /account/detail` through CCXT provides account id, account mode,
+  IP whitelist and currency-pair whitelist. The current account has an empty IP
+  whitelist, so `require_ip_whitelist=false` records `ip_whitelist_empty` as a
+  WARN instead of blocking the otherwise working live profile.
+- Hotcoin: `/v3/balance` proves authentication and balance-read access. It does
+  not expose IP/pair whitelist or trade/withdrawal permission bits; those are
+  recorded as `unsupported` or `unknown`.
+- Trading and withdrawal permission bits are not available from either venue.
+  The report never labels them `observed_allowed`. A real rejected order or
+  withdrawal still triggers fail-closed handling.
+- The shared trade/withdrawal key is allowed by explicit configuration and is
+  audited as `shared_trade_withdrawal_key`.
+- A persisted hash baseline detects account-id, credential-fingerprint, mode,
+  IP-whitelist and pair-whitelist changes. Changing the baseline blocks startup
+  until the operator reviews the account.
+
+Startup checks run before the execution engine is constructed. The automatic
+supervisor refreshes the report every `refresh_ms`; a query failure stops new
+orders, and an expired snapshot (`stale_ms`) sets the kill switch. Gate 401/403
+errors are classified as permission failures, not rate limits, so they are not
+retried as transient errors.

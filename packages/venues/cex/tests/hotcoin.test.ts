@@ -917,3 +917,49 @@ describe('Hotcoin transfer adapter', () => {
     await expect(adapter.fetchDepositAddress('INC', 'BSC', keys)).rejects.toThrow(/ambiguous/);
   });
 });
+
+describe('Hotcoin account status', () => {
+  it('confirms authentication from the v3 balance read without inventing permissions', async () => {
+    const { client, requests } = clientWith(() => ({
+      code: 200,
+      msg: 'ok',
+      time: now,
+      data: {
+        wallet: [{ currency: 'USDT', free: '10', uid: 'hot-account-1' }],
+      },
+    }));
+    const adapter = new HotcoinAdapter({
+      httpClient: client,
+      credentials: keys,
+      readOnly: false,
+      clock: () => now,
+    });
+    const status = await adapter.fetchAccountStatus({ requiredPairs: ['TBK/USDT'] }, keys);
+    expect(requests).toHaveLength(1);
+    expect(new URL(requests[0]!.url).pathname).toBe('/v3/balance');
+    expect(status.authenticated).toBe(true);
+    expect(status.accountIdHash).toMatch(/^sha256:/);
+    expect(status.capabilities.balancesRead).toBe('observed_allowed');
+    expect(status.capabilities.trading).toBe('unknown');
+    expect(status.capabilities.withdrawal).toBe('unknown');
+    expect(status.ipWhitelist?.supported).toBe(false);
+    expect(JSON.stringify(status)).not.toContain('hot-account-1');
+  });
+
+  it('does not hide a 403 by falling back to the legacy balance endpoint', async () => {
+    const requests: HotcoinHttpRequest[] = [];
+    const client: HotcoinHttpClient = async (request) => {
+      requests.push(request);
+      return response({ code: 403, msg: 'permission denied' }, 403);
+    };
+    const adapter = new HotcoinAdapter({
+      httpClient: client,
+      credentials: keys,
+      readOnly: false,
+      clock: () => now,
+    });
+    await expect(adapter.fetchAccountStatus({}, keys)).rejects.toThrow(/403/);
+    expect(requests).toHaveLength(1);
+    expect(new URL(requests[0]!.url).pathname).toBe('/v3/balance');
+  });
+});

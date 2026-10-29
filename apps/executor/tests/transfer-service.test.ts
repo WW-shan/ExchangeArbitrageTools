@@ -40,12 +40,16 @@ function transferConfig(overrides: Partial<TransferConfig> = {}): TransferConfig
   return {
     enabled: true,
     requireManualConfirmation: true,
+    releaseMode: 'manual',
     maxInFlightBatches: 1,
     maxLegsPerBatch: 2,
     maxBalanceAgeMs: 300_000,
     pollIntervalMs: 1,
     withdrawalTimeoutMs: 60_000,
     depositTimeoutMs: 60_000,
+    minNetEdgeBps: new Decimal('5'),
+    maxCostUsd: new Decimal('0.5'),
+    maxArrivalMs: 1_800_000,
     allowlist: [
       allowlistEntry(),
       allowlistEntry({
@@ -300,6 +304,7 @@ describe('automated inventory transfer service', () => {
       const batch = planTransferBatch({
         repository,
         config,
+        assetPricesUsd: { INC: new Decimal('0.25'), USDT: new Decimal('1') },
         targets: [
           { venueId: 'gateio', currency: 'INC', targetFree: new Decimal('30') },
           { venueId: 'hotcoin', currency: 'INC', targetFree: new Decimal('30') },
@@ -419,6 +424,7 @@ describe('automated inventory transfer service', () => {
       expect(repository.getTransferBatch(batch.id)?.legs[0]?.status).toBe(
         TRANSFER_LEG_STATUS.UNKNOWN,
       );
+      expect(repository.getSetting('kill_switch')).toBe('true');
     } finally {
       repository.close();
     }
@@ -818,6 +824,62 @@ describe('automated inventory transfer service', () => {
       });
       expect(batch.status).toBe(TRANSFER_BATCH_STATUS.BLOCKED);
       expect(batch.safeModeReason).toContain('daily_allowlist_limit_exceeded');
+    } finally {
+      repository.close();
+    }
+  });
+
+  it('requires the automatic arm switch and audits an armed release', async () => {
+    const { repository, gate, venues } = setup();
+    try {
+      const edge = allowlistEntry({
+        feeMode: 'deducted',
+        expectedArrivalMs: 60_000,
+      });
+      const config = transferConfig({
+        releaseMode: 'automatic',
+        maxLegsPerBatch: 1,
+        allowlist: [edge],
+      });
+      const batch = planTransferBatch({
+        repository,
+        config,
+        assetPricesUsd: { INC: new Decimal('0.25'), USDT: new Decimal('1') },
+        targets: [
+          { venueId: 'gateio', currency: 'INC', targetFree: new Decimal('30') },
+          { venueId: 'hotcoin', currency: 'INC', targetFree: new Decimal('30') },
+        ],
+        now,
+      });
+      const blocked = await executeTransferBatch({
+        repository,
+        config,
+        venues,
+        batchId: batch.id,
+        liveEnabled: true,
+        killSwitch: false,
+        confirmBatchId: batch.id,
+        confirmationMode: 'automatic',
+        now: () => now,
+      });
+      expect(blocked.status).toBe(TRANSFER_BATCH_STATUS.BLOCKED);
+      expect(blocked.reasons).toContain('transfer_auto_release_not_armed');
+      expect(gate.attempts).toBe(0);
+
+      repository.setSetting('transfer_auto_release_enabled', 'true', now);
+      const released = await executeTransferBatch({
+        repository,
+        config,
+        venues,
+        batchId: batch.id,
+        liveEnabled: true,
+        killSwitch: false,
+        confirmBatchId: batch.id,
+        confirmationMode: 'automatic',
+        now: () => now,
+      });
+      expect(released.status).toBe(TRANSFER_BATCH_STATUS.COMPLETED);
+      expect(gate.attempts).toBe(1);
     } finally {
       repository.close();
     }

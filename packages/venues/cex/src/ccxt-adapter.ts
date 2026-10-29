@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import {
   Decimal,
   TokenBucketRateLimiter,
@@ -15,6 +16,8 @@ import {
 import ccxt, { type Exchange, type Market, type Order, type OrderBook } from 'ccxt';
 import type {
   AdapterRuntime,
+  AccountStatusRequest,
+  AccountStatusSnapshot,
   ApiCredentials,
   BalanceSnapshot,
   CexAdapter,
@@ -227,6 +230,7 @@ function isNetworkFailure(message: string): boolean {
 export interface CcxtFailureClassification {
   status: number | undefined;
   rateLimited: boolean;
+  permissionDenied: boolean;
   transient: boolean;
   message: string;
 }
@@ -234,17 +238,57 @@ export interface CcxtFailureClassification {
 export function classifyCcxtFailure(error: unknown): CcxtFailureClassification {
   const message = error instanceof Error ? error.message : String(error);
   const status = responseStatus(error);
-  const rateLimited =
+  const permissionDenied =
+    status === 401 ||
     status === 403 ||
+    /permission|forbidden|unauthori[sz]ed|invalid.*(?:key|signature|passphrase)|authentication/i.test(
+      message,
+    );
+  const rateLimited =
     status === 418 ||
     status === 429 ||
-    /rate.?limit|too many|429|418/i.test(message);
+    (!permissionDenied && /rate.?limit|too many|429|418/i.test(message));
   return {
     status,
     rateLimited,
+    permissionDenied,
     transient: rateLimited || isNetworkFailure(message) || (status ?? 0) >= 500,
     message,
   };
+}
+
+function statusDigest(value: string): string {
+  return `sha256:${createHash('sha256').update(value, 'utf8').digest('hex').slice(0, 16)}`;
+}
+
+function gateAccountDetailRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
+}
+
+function gateRequiredPairsAllowed(
+  raw: unknown,
+  requiredPairs: readonly string[],
+): boolean | undefined {
+  if (!Array.isArray(raw)) return undefined;
+  const allowed = new Set(
+    raw
+      .map((item) => {
+        if (typeof item === 'string') return item;
+        if (item && typeof item === 'object' && !Array.isArray(item)) {
+          const row = item as Record<string, unknown>;
+          return row.currency_pair ?? row.pair ?? row.symbol;
+        }
+        return undefined;
+      })
+      .filter((item): item is string => typeof item === 'string' && item.trim() !== '')
+      .map((item) => item.trim().toUpperCase().replaceAll('/', '_').replaceAll('-', '_')),
+  );
+  if (allowed.size === 0 || requiredPairs.length === 0) return true;
+  return requiredPairs.every((pair) =>
+    allowed.has(pair.trim().toUpperCase().replaceAll('/', '_').replaceAll('-', '_')),
+  );
 }
 
 export function stepFromCcxt(precision: unknown): Decimal | undefined {
@@ -766,6 +810,87 @@ export class CcxtCexAdapter implements CexAdapter {
         fetchedAt,
       };
     });
+  }
+
+  async fetchAccountStatus(
+    request: AccountStatusRequest,
+    keys: ApiCredentials,
+  ): Promise<AccountStatusSnapshot> {
+    const observedAt = this.#runtime.clock?.now() ?? Date.now();
+    if (this.#exchangeId !== 'gate') {
+      return {
+        venueId: this.venueId,
+        observedAt,
+        authenticated: false,
+        capabilities: {
+          balancesRead: 'unsupported',
+          openOrdersRead: 'unsupported',
+          trading: 'unknown',
+          withdrawal: 'unknown',
+        },
+        errors: ['account_status_unsupported'],
+      };
+    }
+    const exchange = this.#exchange as unknown as {
+      privateAccountGetDetail?: () => Promise<unknown>;
+    };
+    if (typeof exchange.privateAccountGetDetail !== 'function') {
+      throw new Error('Gate account-detail API is unavailable in this CCXT build');
+    }
+    this.setCredentials(keys);
+    const response = await this.call(true, () => exchange.privateAccountGetDetail!(), 'execution');
+    const row = gateAccountDetailRecord(response);
+    const errors: string[] = [];
+    const userId = stringOrUndefined(row.user_id);
+    if (!userId) errors.push('gate_account_id_missing');
+
+    const rawIpWhitelist = row.ip_whitelist;
+    const ipList = Array.isArray(rawIpWhitelist)
+      ? rawIpWhitelist
+          .map((value) => stringOrUndefined(value))
+          .filter((value): value is string => Boolean(value))
+          .sort()
+      : undefined;
+    if (!Array.isArray(rawIpWhitelist)) errors.push('gate_ip_whitelist_missing');
+
+    const rawPairs = row.currency_pairs;
+    if (!Array.isArray(rawPairs)) errors.push('gate_currency_pairs_missing');
+    const requiredPairsAllowed = gateRequiredPairsAllowed(rawPairs, request.requiredPairs ?? []);
+    const pairCount = Array.isArray(rawPairs) ? rawPairs.length : undefined;
+
+    const key = gateAccountDetailRecord(row.key);
+    const mode = numberOrUndefined(key.mode);
+    const accountMode = mode === 2 ? 'unified' : mode === 1 ? 'classic' : 'unknown';
+
+    return {
+      venueId: this.venueId,
+      observedAt,
+      authenticated: true,
+      ...(userId ? { accountIdHash: statusDigest(userId) } : {}),
+      accountMode,
+      ipWhitelist: {
+        supported: true,
+        present: Array.isArray(rawIpWhitelist),
+        count: ipList?.length ?? 0,
+        ...(ipList ? { digest: statusDigest(JSON.stringify(ipList)) } : {}),
+        currentIpAccepted: (ipList?.length ?? 0) > 0,
+      },
+      pairWhitelist: {
+        supported: true,
+        ...(pairCount !== undefined ? { count: pairCount } : {}),
+        ...(Array.isArray(rawPairs)
+          ? { digest: statusDigest(JSON.stringify(rawPairs.map(String).sort())) }
+          : {}),
+        ...(requiredPairsAllowed !== undefined ? { requiredPairsAllowed } : {}),
+      },
+      capabilities: {
+        balancesRead: 'unknown',
+        openOrdersRead: 'unknown',
+        trading: 'unknown',
+        withdrawal: 'unknown',
+      },
+      errors,
+    };
   }
 
   async fetchDepositAddress(

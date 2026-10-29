@@ -17,8 +17,11 @@ The automatic path consists of two processes sharing `data/rotation.sqlite`:
    rotation direction, and submits one serial FOK batch only when the direction
    is funded and the signal is fresh.
 
-The helper `scripts/start-rotation.ps1` starts both and stops the scanner when
-the supervisor exits.
+`scripts/watch-rotation.ps1` is the sole lifecycle manager. It starts the
+executor first, waits for a fresh executor heartbeat, then starts the scanner.
+It owns a process lock, independent heartbeats, restart/backoff, duplicate
+detection and structured status files. `scripts/start-rotation.ps1` is only a
+thin launcher.
 
 ## Automatic account-state check
 
@@ -38,7 +41,8 @@ npm run account:state
 
 The command prints the funded pair amounts, non-zero pair balances, exchange
 open orders, local open executions/unresolved orders, and any query errors. It
-does not submit or cancel orders.
+also prints declared versus observed account permissions, transfer state, and
+the account-status baseline decision. It does not submit or cancel orders.
 
 ## Inventory state
 
@@ -92,6 +96,31 @@ TBK/USDT hotcoin->gate, 12 bps band:
 
 LIGHT is rejected in both bands because its conditional reverse probability
 and expected value are negative.
+
+## Automatic inventory rebalance
+
+When a fresh valid signal exists in the unfunded direction, the supervisor can
+now plan the missing base/quote transfers from the opposite venue. The path is
+still protected by all of the following:
+
+- `transfers.enabled=true` and a complete `[[transfers.allowlist]]` route;
+- exact withdrawal fee and `fee_mode=deducted` for automatic release;
+- expected arrival time within `max_arrival_ms`;
+- transfer cost below `max_cost_usd` and below the opportunity edge minus
+  `min_net_edge_bps`;
+- no open execution, unresolved order or active transfer;
+- `release_mode='automatic'` plus the persisted
+  `transfer_auto_release_enabled=true` arm switch;
+- the existing preflight, source-balance, address, tag, network, daily-limit,
+  arrival-evidence and unknown-withdrawal checks.
+
+`release_mode='manual'` only creates a `PLANNED` batch and prints its id. The
+operator must run `rebalance:execute --execute --confirm-batch <id>`.
+
+The live profile currently keeps transfers disabled because real destination
+addresses and measured withdrawal fees are not committed to Git. Do not arm
+automatic release until a one-leg manual transfer has been reconciled on both
+venues.
 
 The live profile sets `prefilter_floor_bps = -12` so both calibrated bands
 reach the full evaluator. This does not lower the normal S1 entry threshold;
@@ -273,6 +302,7 @@ unhedged rows. Full evidence is in
 - The two venue legs are not atomic. A fast reversal or a venue rejection can
   leave inventory unhedged.
 - The first seed is a deliberate inventory purchase, not an arbitrage trade.
-- Automatic withdrawals and balance transfers remain disabled.
+- Automatic withdrawal/balance-transfer execution is implemented but disabled
+  in the live profile until allowlist addresses and measured fees are supplied.
 - Reversion preparation is calibrated on OHLCV and is not a guarantee. The
   live executor still re-fetches both books, checks balances, and uses FOK.

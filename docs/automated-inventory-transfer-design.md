@@ -464,3 +464,38 @@ before live use.
 - A small funded test balance.
 
 Until these are supplied, the implementation remains in mock/preflight mode.
+
+## 14. Implemented automatic-release layer (2026-10-29)
+
+The transfer service now has two release modes:
+
+- `manual` (default): a plan can be created, but execution requires the exact
+  batch id on the command line; `require_manual_confirmation=true` remains.
+- `automatic`: the supervisor may execute only when all of these are true:
+  `release_mode='automatic'`, the persisted
+  `transfer_auto_release_enabled=true` arm switch, a complete allowlist route,
+  `fee_mode='deducted'`, a configured withdrawal fee, an expected arrival time
+  within `max_arrival_ms`, transfer cost within `max_cost_usd`, no open
+  execution/unresolved order/active transfer, and a fresh S1 signal whose
+  remaining edge covers the transfer cost plus `min_net_edge_bps`.
+
+Additional safety changes:
+
+- transfer planning/preflight refuse to run while a trade execution or
+  unresolved order exists;
+- the supervisor reconciles active transfers before trading and does not trade
+  while a transfer is active;
+- transfer `SAFE_STOP` sets the kill switch and disarms automatic release;
+- actual/estimated transfer cost is written to the existing daily rebalance
+  cost ledger;
+- arrival metadata records requested/source/destination timestamps and elapsed
+  time;
+- source withdrawal amount must equal the planned amount;
+- automatic release never retries an unknown withdrawal.
+
+The live profile still has `transfers.enabled=false` and `release_mode='manual'`
+because no destination addresses or measured fees are committed. This is an
+external-data blocker, not a missing code path. The current operator policy
+allows the same key for trade and withdrawal; that is recorded as a WARN, not
+silently treated as a separate low-risk key. Gate currently has no IP whitelist,
+so strict `require_ip_whitelist=true` would block automatic startup.

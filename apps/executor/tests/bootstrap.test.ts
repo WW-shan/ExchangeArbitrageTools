@@ -4,6 +4,7 @@ import type { MarketMetadata } from '@arb/core';
 import { ArbitrageRepository, openDatabase } from '@arb/storage';
 import type { ApiCredentials, CexAdapter, OrderState } from '@arb/venues-cex';
 import { recoverExecutorStartup, type RecoveryVenue } from '../src/bootstrap.js';
+import type { StoredCredential } from '../src/secret-store.js';
 
 const now = 1_700_000_000_000;
 const keys: ApiCredentials = { apiKey: 'test', secret: 'test' };
@@ -345,6 +346,63 @@ describe('executor startup recovery', () => {
     expect(result.decision.reasons).toContain('open_orders_query_failed');
     expect(result.decision.blockExecution).toBe(true);
     expect(result.decision.killSwitch).toBe(true);
+    repository.close();
+  });
+
+  it('blocks startup when the exchange account-status check fails closed', async () => {
+    const db = openDatabase(':memory:');
+    const repository = new ArbitrageRepository(db);
+    repository.upsertVenue({ id: 'gateio', type: 'cex', name: 'Gate.io', tier: 'S', now });
+    repository.setSetting('kill_switch', 'false', now);
+    const gate = adapter('gateio', async () => {
+      throw new Error('not used');
+    });
+    gate.fetchAccountStatus = async () => ({
+      venueId: 'gateio',
+      observedAt: now,
+      authenticated: true,
+      accountIdHash: 'sha256:aaaaaaaaaaaaaaaa',
+      accountMode: 'classic',
+      ipWhitelist: { supported: true, present: false, count: 0 },
+      pairWhitelist: { supported: true, count: 0, requiredPairsAllowed: true },
+      capabilities: {
+        balancesRead: 'unknown',
+        openOrdersRead: 'unknown',
+        trading: 'unknown',
+        withdrawal: 'unknown',
+      },
+      errors: ['gate_ip_whitelist_missing'],
+    });
+    const credential: StoredCredential = {
+      venueId: 'gateio',
+      role: 'trade',
+      apiKey: 'key',
+      secret: 'secret',
+      withdrawalPermission: false,
+      ipWhitelistVerified: true,
+    };
+    const result = await recoverExecutorStartup({
+      repository,
+      venues: { gateio: { adapter: gate, credentials: credential } },
+      accountStatus: {
+        credentials: [credential],
+        config: {
+          enabled: true,
+          refreshMs: 60_000,
+          staleMs: 180_000,
+          requireIpWhitelist: true,
+          allowSharedTradeWithdrawalKey: true,
+          blockOnIpWhitelistChange: true,
+          blockOnAccountIdChange: true,
+          blockOnAccountModeChange: true,
+        },
+      },
+      now: () => now,
+    });
+    expect(result.accountStatus?.health).toBe('BLOCK');
+    expect(result.decision.blockExecution).toBe(true);
+    expect(result.decision.killSwitch).toBe(true);
+    expect(repository.getSetting('kill_switch')).toBe('true');
     repository.close();
   });
 });

@@ -16,6 +16,8 @@ export interface TransferAllowlistEntry {
   maxAmount: Decimal;
   dailyMaxAmount: Decimal;
   withdrawFee?: Decimal;
+  feeMode?: 'deducted' | 'added' | 'unknown';
+  expectedArrivalMs?: number;
 }
 
 export interface TransferConfig {
@@ -27,6 +29,10 @@ export interface TransferConfig {
   pollIntervalMs: number;
   withdrawalTimeoutMs: number;
   depositTimeoutMs: number;
+  releaseMode: 'manual' | 'automatic';
+  minNetEdgeBps: Decimal;
+  maxCostUsd: Decimal;
+  maxArrivalMs: number;
   allowlist: TransferAllowlistEntry[];
 }
 
@@ -67,11 +73,23 @@ export interface AutoRotationConfig {
   enabled: boolean;
   pairs: RotationPairConfig[];
   preparation: AutoRotationPreparationConfig;
+  heartbeatFile: string;
   pollIntervalMs: number;
   balanceRefreshMs: number;
   maxSignalAgeMs: number;
   cooldownMs: number;
   maxConsecutiveFailures: number;
+}
+
+export interface AccountStatusConfig {
+  enabled: boolean;
+  refreshMs: number;
+  staleMs: number;
+  requireIpWhitelist: boolean;
+  allowSharedTradeWithdrawalKey: boolean;
+  blockOnIpWhitelistChange: boolean;
+  blockOnAccountIdChange: boolean;
+  blockOnAccountModeChange: boolean;
 }
 
 export interface ExecutorConfig {
@@ -91,6 +109,7 @@ export interface ExecutorConfig {
   feeOverrides: Record<string, VenueFeeOverride>;
   transfers: TransferConfig;
   autoRotation: AutoRotationConfig;
+  accountStatus: AccountStatusConfig;
   riskLimits: RiskLimits;
   settings: CexLiveExecutorOptions['settings'];
 }
@@ -231,6 +250,12 @@ function transferAllowlist(value: unknown): TransferAllowlistEntry[] {
     const dailyMaxAmount = decimalValue(row, 'daily_max_amount');
     const withdrawFee =
       row.withdraw_fee === undefined ? undefined : decimalValue(row, 'withdraw_fee');
+    const feeModeRaw = row.fee_mode === undefined ? 'unknown' : row.fee_mode;
+    if (feeModeRaw !== 'deducted' && feeModeRaw !== 'added' && feeModeRaw !== 'unknown') {
+      throw new Error('transfers.allowlist fee_mode must be deducted, added or unknown');
+    }
+    const expectedArrivalMs =
+      row.expected_arrival_ms === undefined ? undefined : numberValue(row, 'expected_arrival_ms');
     if (minAmount.lt(0)) throw new Error('transfers.allowlist min_amount cannot be negative');
     if (maxAmount.lte(0)) throw new Error('transfers.allowlist max_amount must be positive');
     if (dailyMaxAmount.lte(0)) {
@@ -241,6 +266,12 @@ function transferAllowlist(value: unknown): TransferAllowlistEntry[] {
     }
     if (withdrawFee !== undefined && withdrawFee.lt(0)) {
       throw new Error('transfers.allowlist withdraw_fee cannot be negative');
+    }
+    if (
+      expectedArrivalMs !== undefined &&
+      (!Number.isInteger(expectedArrivalMs) || expectedArrivalMs <= 0)
+    ) {
+      throw new Error('transfers.allowlist expected_arrival_ms must be a positive integer');
     }
     const key = `${fromVenue}->${toVenue}:${asset}:${normalizeCurrencyNetwork(network)}`;
     if (seen.has(key)) throw new Error(`duplicate transfer allowlist entry: ${key}`);
@@ -257,12 +288,18 @@ function transferAllowlist(value: unknown): TransferAllowlistEntry[] {
       maxAmount,
       dailyMaxAmount,
       ...(withdrawFee !== undefined ? { withdrawFee } : {}),
+      feeMode: feeModeRaw,
+      ...(expectedArrivalMs !== undefined ? { expectedArrivalMs } : {}),
     };
   });
 }
 
 function transferConfig(value: unknown): TransferConfig {
   const transfers = optionalTable(value, 'transfers');
+  const releaseMode = transfers.release_mode ?? 'manual';
+  if (releaseMode !== 'manual' && releaseMode !== 'automatic') {
+    throw new Error('transfers.release_mode must be manual or automatic');
+  }
   return {
     enabled: booleanValue(transfers, 'enabled', false),
     requireManualConfirmation: booleanValue(transfers, 'require_manual_confirmation', true),
@@ -272,7 +309,29 @@ function transferConfig(value: unknown): TransferConfig {
     pollIntervalMs: numberValue(transfers, 'poll_interval_ms', 15_000),
     withdrawalTimeoutMs: numberValue(transfers, 'withdrawal_timeout_ms', 900_000),
     depositTimeoutMs: numberValue(transfers, 'deposit_timeout_ms', 1_800_000),
+    releaseMode,
+    minNetEdgeBps: decimalValue(transfers, 'min_net_edge_bps', '5'),
+    maxCostUsd: decimalValue(transfers, 'max_cost_usd', '0.5'),
+    maxArrivalMs: numberValue(transfers, 'max_arrival_ms', 1_800_000),
     allowlist: transferAllowlist(transfers.allowlist),
+  };
+}
+
+function accountStatusConfig(value: unknown): AccountStatusConfig {
+  const accountStatus = optionalTable(value, 'account_status');
+  return {
+    enabled: booleanValue(accountStatus, 'enabled', false),
+    refreshMs: numberValue(accountStatus, 'refresh_ms', 60_000),
+    staleMs: numberValue(accountStatus, 'stale_ms', 180_000),
+    requireIpWhitelist: booleanValue(accountStatus, 'require_ip_whitelist', false),
+    allowSharedTradeWithdrawalKey: booleanValue(
+      accountStatus,
+      'allow_shared_trade_withdrawal_key',
+      true,
+    ),
+    blockOnIpWhitelistChange: booleanValue(accountStatus, 'block_on_ip_whitelist_change', true),
+    blockOnAccountIdChange: booleanValue(accountStatus, 'block_on_account_id_change', true),
+    blockOnAccountModeChange: booleanValue(accountStatus, 'block_on_account_mode_change', true),
   };
 }
 
@@ -421,6 +480,7 @@ function autoRotationConfig(value: unknown, handoffMaxAgeMs: number): AutoRotati
       maxHoldMs: numberValue(preparation, 'max_hold_ms', 3_600_000),
       calibration,
     },
+    heartbeatFile: stringValue(rotation, 'heartbeat_file', 'data/rotation-heartbeat.json'),
     pollIntervalMs,
     balanceRefreshMs,
     maxSignalAgeMs,
@@ -518,6 +578,15 @@ function validateSafetyBounds(config: ExecutorConfig): void {
   if (transfers.pollIntervalMs >= transfers.withdrawalTimeoutMs) {
     throw new Error('transfers.poll_interval_ms must be below withdrawal_timeout_ms');
   }
+  if (!transfers.minNetEdgeBps.isFinite() || transfers.minNetEdgeBps.lt(0)) {
+    throw new Error('transfers.min_net_edge_bps must be non-negative');
+  }
+  if (!transfers.maxCostUsd.isFinite() || transfers.maxCostUsd.lte(0)) {
+    throw new Error('transfers.max_cost_usd must be positive');
+  }
+  if (!Number.isInteger(transfers.maxArrivalMs) || transfers.maxArrivalMs <= 0) {
+    throw new Error('transfers.max_arrival_ms must be a positive integer');
+  }
   if (transfers.enabled) {
     if (!config.liveEnabled) {
       throw new Error('transfers.enabled requires execution.live_enabled=true');
@@ -528,6 +597,43 @@ function validateSafetyBounds(config: ExecutorConfig): void {
     if (transfers.allowlist.length === 0) {
       throw new Error('transfers.enabled requires at least one allowlist entry');
     }
+    for (const entry of transfers.allowlist) {
+      if (
+        entry.expectedArrivalMs !== undefined &&
+        entry.expectedArrivalMs > transfers.maxArrivalMs
+      ) {
+        throw new Error(
+          `transfers.allowlist ${entry.fromVenue}->${entry.toVenue}/${entry.asset} expected arrival exceeds max_arrival_ms`,
+        );
+      }
+      if (transfers.releaseMode === 'automatic') {
+        if (entry.withdrawFee === undefined) {
+          throw new Error(
+            `transfers.allowlist ${entry.fromVenue}->${entry.toVenue}/${entry.asset} requires withdraw_fee for automatic release`,
+          );
+        }
+        if (entry.feeMode !== 'deducted') {
+          throw new Error(
+            `transfers.allowlist ${entry.fromVenue}->${entry.toVenue}/${entry.asset} requires fee_mode=deducted for automatic release`,
+          );
+        }
+        if (entry.expectedArrivalMs === undefined) {
+          throw new Error(
+            `transfers.allowlist ${entry.fromVenue}->${entry.toVenue}/${entry.asset} requires expected_arrival_ms for automatic release`,
+          );
+        }
+      }
+    }
+  }
+  const accountStatus = config.accountStatus;
+  if (!Number.isInteger(accountStatus.refreshMs) || accountStatus.refreshMs <= 0) {
+    throw new Error('account_status.refresh_ms must be a positive integer');
+  }
+  if (!Number.isInteger(accountStatus.staleMs) || accountStatus.staleMs <= 0) {
+    throw new Error('account_status.stale_ms must be a positive integer');
+  }
+  if (accountStatus.staleMs < accountStatus.refreshMs) {
+    throw new Error('account_status.stale_ms cannot be below refresh_ms');
   }
 }
 
@@ -568,6 +674,7 @@ export function loadExecutorConfig(
     feeOverrides: feeOverrides(document.fees),
     transfers: transferConfig(document.transfers),
     autoRotation: autoRotationConfig(document.auto_rotation, handoffMaxAgeMs),
+    accountStatus: accountStatusConfig(document.account_status),
     riskLimits: {
       maxOrderNotional,
       dailyMaxLoss: decimalValue(execution, 'daily_max_loss_usd', '20'),

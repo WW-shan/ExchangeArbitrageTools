@@ -56,6 +56,10 @@ describe('executor configuration', () => {
     expect(config.transfers.requireManualConfirmation).toBe(true);
     expect(config.transfers.maxInFlightBatches).toBe(1);
     expect(config.transfers.maxLegsPerBatch).toBe(2);
+    expect(config.transfers.releaseMode).toBe('manual');
+    expect(config.transfers.minNetEdgeBps.toFixed()).toBe('5');
+    expect(config.transfers.maxCostUsd.toFixed()).toBe('0.5');
+    expect(config.accountStatus.enabled).toBe(false);
     expect(config.transfers.allowlist).toEqual([]);
   });
 

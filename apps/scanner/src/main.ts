@@ -1,3 +1,4 @@
+import { existsSync } from 'node:fs';
 import { loadConfig, costSettings } from './config.js';
 import { scanBscToken } from './bsc-scanner.js';
 import { bscMappings, persistBscToken } from './bsc-mappings.js';
@@ -5,7 +6,7 @@ import { persistSimulatedOpportunity } from './persistence.js';
 import { ScannerService, type ScannerVenue } from './scanner-service.js';
 import { mergeAccountFeeFile } from './fee-file.js';
 import { VenueHealthTracker } from '@arb/core';
-import { ArbitrageRepository, openDatabase } from '@arb/storage';
+import { ArbitrageRepository, openDatabase, writeHeartbeat } from '@arb/storage';
 import { dirname, join, resolve } from 'node:path';
 import {
   CEX_TIERS,
@@ -20,6 +21,8 @@ import {
   type QuoteProvider,
   type TokenMappingCandidate,
 } from '@arb/venues-bsc';
+
+const SCANNER_STARTED_AT = Date.now();
 
 function quoteProvider(
   kind: '0x' | '1inch',
@@ -67,6 +70,32 @@ async function main(): Promise<void> {
   const config = loadConfig(process.env.ARB_CONFIG ?? 'config/default.toml');
   const db = openDatabase(config.database.path);
   const repository = new ArbitrageRepository(db);
+  const heartbeatFile =
+    process.env.ARB_ROTATION_SCANNER_HEARTBEAT ?? 'data/rotation-scanner.heartbeat.json';
+  const stopFile = process.env.ARB_ROTATION_STOP_FILE ?? 'data/rotation.stop';
+  let scannerPhase = 'STARTING';
+  const recordScannerHeartbeat = (state: 'running' | 'stopped', phase: string): void => {
+    try {
+      writeHeartbeat(heartbeatFile, {
+        version: 1,
+        role: 'scanner',
+        ...(process.env.ARB_ROTATION_RUN_ID ? { runId: process.env.ARB_ROTATION_RUN_ID } : {}),
+        pid: process.pid,
+        startedAt: SCANNER_STARTED_AT,
+        updatedAt: Date.now(),
+        state,
+        phase,
+        lastProgressAt: Date.now(),
+      });
+    } catch (error) {
+      console.error('failed to write scanner heartbeat', error);
+    }
+  };
+  recordScannerHeartbeat('running', scannerPhase);
+  const heartbeatTimer = setInterval(() => {
+    recordScannerHeartbeat('running', scannerPhase);
+  }, 5000);
+  heartbeatTimer.unref?.();
   const bscRegistry = new BscTokenRegistry();
   const persistedKillSwitch = repository.getSetting('kill_switch');
   if (config.execution.killSwitch || persistedKillSwitch === undefined) {
@@ -242,6 +271,12 @@ async function main(): Promise<void> {
   });
   let nextFullScanAt = 0;
   while (!stopping) {
+    if (existsSync(stopFile)) {
+      stopping = true;
+      break;
+    }
+    scannerPhase = 'SCANNING';
+    recordScannerHeartbeat('running', 'SCANNING');
     const now = Date.now();
     const didFullScan = now >= nextFullScanAt;
     if (didFullScan) {
@@ -253,6 +288,8 @@ async function main(): Promise<void> {
         repository.recordRiskEvent('warning', 'scanner_cycle_failure', String(error));
       }
       nextFullScanAt = Date.now() + config.scanner.scanIntervalMs;
+      scannerPhase = 'WAIT';
+      recordScannerHeartbeat('running', 'WAIT');
     } else if (config.scanner.feedMode === 'websocket') {
       try {
         const waitMs = Math.max(
@@ -270,10 +307,14 @@ async function main(): Promise<void> {
         console.error('hot scan failed', error);
         repository.recordRiskEvent('warning', 'scanner_hot_cycle_failure', String(error));
       }
+      scannerPhase = 'WAIT';
+      recordScannerHeartbeat('running', 'WAIT');
     } else {
       await new Promise((resolve) =>
         setTimeout(resolve, Math.max(25, nextFullScanAt - Date.now())),
       );
+      scannerPhase = 'WAIT';
+      recordScannerHeartbeat('running', 'WAIT');
     }
 
     if (didFullScan && config.bsc.enabled && primary) {
@@ -346,6 +387,8 @@ async function main(): Promise<void> {
     }
   }
   await scanner.close();
+  clearInterval(heartbeatTimer);
+  recordScannerHeartbeat('stopped', 'STOPPED');
   repository.recordAudit('scanner', 'shutdown');
   repository.close();
 }

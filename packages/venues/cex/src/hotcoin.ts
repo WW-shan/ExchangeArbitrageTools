@@ -1,4 +1,4 @@
-import { createHmac } from 'node:crypto';
+import { createHash, createHmac } from 'node:crypto';
 import { request as httpsRequest } from 'node:https';
 import type { Agent } from 'node:http';
 import { gunzipSync } from 'node:zlib';
@@ -16,6 +16,8 @@ import { SocksProxyAgent } from 'socks-proxy-agent';
 import WebSocket, { type RawData } from 'ws';
 import type {
   AdapterRuntime,
+  AccountStatusRequest,
+  AccountStatusSnapshot,
   ApiCredentials,
   BalanceSnapshot,
   CexAdapter,
@@ -1024,7 +1026,12 @@ export class HotcoinAdapter implements CexAdapter {
     let data: unknown;
     try {
       data = (await this.request<unknown>('/v3/balance', {}, keys)).data;
-    } catch {
+    } catch (error) {
+      const status = numberOrUndefined((error as { status?: unknown }).status);
+      const code = numberOrUndefined((error as { code?: unknown }).code);
+      const legacyEndpointMissing =
+        status === 404 || code === 404 || /\b404\b|not found/i.test(String(error));
+      if (!legacyEndpointMissing) throw error;
       data = (await this.request<unknown>('/v1/balance', {}, keys)).data;
     }
     const rows = asRecords(recordOrUndefined(data)?.wallet ?? data);
@@ -1058,6 +1065,53 @@ export class HotcoinAdapter implements CexAdapter {
         };
       })
       .filter((row): row is BalanceSnapshot => Boolean(row));
+  }
+
+  async fetchAccountStatus(
+    _request: AccountStatusRequest,
+    keys: ApiCredentials,
+  ): Promise<AccountStatusSnapshot> {
+    if (!this.capabilities.privateBalances) {
+      throw new Error('Hotcoin adapter has no private credentials');
+    }
+    let data: unknown;
+    try {
+      data = (await this.request<unknown>('/v3/balance', {}, keys)).data;
+    } catch (error) {
+      const status = numberOrUndefined((error as { status?: unknown }).status);
+      const code = numberOrUndefined((error as { code?: unknown }).code);
+      const legacyEndpointMissing =
+        status === 404 || code === 404 || /\b404\b|not found/i.test(String(error));
+      if (!legacyEndpointMissing) throw error;
+      data = (await this.request<unknown>('/v1/balance', {}, keys)).data;
+    }
+    const rows = asRecords(recordOrUndefined(data)?.wallet ?? data);
+    const accountId = rows
+      .map((row) => firstString(row, ['uid', 'accountId', 'account_id']))
+      .find((value) => value !== undefined);
+    return {
+      venueId: this.venueId,
+      observedAt: this.#clock(),
+      authenticated: true,
+      ...(accountId
+        ? {
+            accountIdHash: `sha256:${createHash('sha256')
+              .update(accountId, 'utf8')
+              .digest('hex')
+              .slice(0, 16)}`,
+          }
+        : {}),
+      accountMode: 'unknown',
+      ipWhitelist: { supported: false },
+      pairWhitelist: { supported: false },
+      capabilities: {
+        balancesRead: 'observed_allowed',
+        openOrdersRead: 'unknown',
+        trading: 'unknown',
+        withdrawal: 'unknown',
+      },
+      errors: [],
+    };
   }
 
   async fetchDepositAddress(

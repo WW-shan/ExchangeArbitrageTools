@@ -78,6 +78,7 @@ export interface PlanTransferBatchOptions {
   targets: readonly RebalanceTarget[];
   network?: string;
   batchId?: string;
+  assetPricesUsd?: Readonly<Record<string, Decimal>>;
   now?: number;
 }
 
@@ -98,6 +99,7 @@ export interface ExecuteTransferBatchOptions {
   killSwitch: boolean;
   confirmBatchId?: string;
   operator?: string;
+  confirmationMode?: 'manual' | 'automatic';
   dryRun?: boolean;
   now?: () => number;
   sleep?: (ms: number) => Promise<void>;
@@ -170,6 +172,36 @@ function metadataObject(value: unknown): Record<string, unknown> {
     : {};
 }
 
+function recordTransferCost(
+  repository: ArbitrageRepository,
+  batch: TransferBatchRecord,
+  now: number,
+): void {
+  let totalUsd = new Decimal(0);
+  for (const leg of batch.legs) {
+    const metadata = metadataObject(leg.metadata);
+    const priceRaw = metadata.assetPriceUsd;
+    const price = typeof priceRaw === 'string' ? new Decimal(priceRaw) : undefined;
+    if (leg.fee && price) {
+      totalUsd = totalUsd.plus(leg.fee.mul(price));
+    } else if (typeof metadata.estimatedCostUsd === 'string') {
+      totalUsd = totalUsd.plus(new Decimal(metadata.estimatedCostUsd));
+    }
+  }
+  if (totalUsd.gt(0)) {
+    repository.addRebalanceCost(totalUsd, now);
+    repository.recordAudit(
+      'system',
+      'transfer_cost_recorded',
+      {
+        batchId: batch.id,
+        costUsd: totalUsd.toFixed(),
+      },
+      now,
+    );
+  }
+}
+
 function sourceRecordIdentityReasons(
   record: TransferRecord,
   leg: TransferLegRecord,
@@ -191,6 +223,8 @@ function sourceRecordIdentityReasons(
   }
   if (!record.amount.isFinite() || !record.amount.gt(0)) {
     reasons.push('source_record_amount_invalid');
+  } else if (!record.amount.eq(leg.amount)) {
+    reasons.push('source_record_amount_mismatch');
   }
   return reasons;
 }
@@ -246,6 +280,9 @@ export function planTransferBatch(options: PlanTransferBatchOptions): TransferBa
   if (repository.countActiveTransferBatches() > 0) {
     throw new Error('another transfer batch is already active');
   }
+  if (repository.countOpenExecutions() > 0 || repository.countUnresolvedOrders() > 0) {
+    throw new Error('cannot plan transfers while a trade execution or unresolved order exists');
+  }
   if (options.targets.length === 0) throw new Error('at least one transfer target is required');
   const balances = repository.latestBalances({ maxAgeMs: config.maxBalanceAgeMs, now });
   const allBalances = repository.latestBalances({ now });
@@ -297,6 +334,9 @@ export function planTransferBatch(options: PlanTransferBatchOptions): TransferBa
     );
   }
   const plannedDaily = new Map<string, Decimal>();
+  let estimatedTransferCostUsd = new Decimal(0);
+  let estimatedArrivalMs = 0;
+  let transferCostKnown = true;
   const legs = plan.transfers.map((transfer, index) => {
     const candidates = config.allowlist.filter(
       (entry) =>
@@ -323,6 +363,33 @@ export function planTransferBatch(options: PlanTransferBatchOptions): TransferBa
       if (spent.plus(batchAmount).gt(entry.dailyMaxAmount)) {
         reasons.push('daily_allowlist_limit_exceeded');
       }
+      if (config.releaseMode === 'automatic') {
+        if (entry.withdrawFee === undefined) reasons.push('withdraw_fee_unknown');
+        if (entry.feeMode === 'unknown' || entry.feeMode === undefined) {
+          reasons.push('withdraw_fee_mode_unknown');
+        }
+        if (entry.expectedArrivalMs === undefined) reasons.push('expected_arrival_unknown');
+        if (
+          entry.expectedArrivalMs !== undefined &&
+          entry.expectedArrivalMs > config.maxArrivalMs
+        ) {
+          reasons.push('expected_arrival_too_slow');
+        }
+      }
+    }
+    const asset = transfer.currency.toUpperCase();
+    const price =
+      options.assetPricesUsd?.[asset] ?? (asset === 'USDT' ? new Decimal(1) : undefined);
+    let legCostUsd: Decimal | undefined;
+    if (entry?.withdrawFee && price) {
+      legCostUsd = entry.withdrawFee.mul(price);
+      estimatedTransferCostUsd = estimatedTransferCostUsd.plus(legCostUsd);
+    } else if (config.releaseMode === 'automatic') {
+      transferCostKnown = false;
+      reasons.push('transfer_cost_unknown');
+    }
+    if (entry?.expectedArrivalMs) {
+      estimatedArrivalMs = Math.max(estimatedArrivalMs, entry.expectedArrivalMs);
     }
     if (reasons.length > 0) blockers.push(`leg${index + 1}:${reasons.join(',')}`);
     return {
@@ -340,9 +407,21 @@ export function planTransferBatch(options: PlanTransferBatchOptions): TransferBa
         plannedAt: now,
         allowlistAddress: entry?.address,
         allowlistTag: entry?.addressTag ?? '',
+        ...(entry?.withdrawFee ? { estimatedWithdrawFee: entry.withdrawFee.toFixed() } : {}),
+        ...(entry?.feeMode ? { feeMode: entry.feeMode } : {}),
+        ...(entry?.expectedArrivalMs ? { expectedArrivalMs: entry.expectedArrivalMs } : {}),
+        ...(legCostUsd ? { estimatedCostUsd: legCostUsd.toFixed() } : {}),
+        ...(price ? { assetPriceUsd: price.toFixed() } : {}),
       },
     };
   });
+  if (
+    config.releaseMode === 'automatic' &&
+    transferCostKnown &&
+    estimatedTransferCostUsd.gt(config.maxCostUsd)
+  ) {
+    blockers.push('transfer_cost_above_max_cost_usd');
+  }
 
   const batchId = options.batchId ?? `xfer-${now}-${randomUUID().slice(0, 8)}`;
   repository.createTransferBatch({
@@ -367,6 +446,11 @@ export function planTransferBatch(options: PlanTransferBatchOptions): TransferBa
         currency: shortfall.currency,
         missing: shortfall.missing.toFixed(),
       })),
+      ...(transferCostKnown
+        ? { estimatedTransferCostUsd: estimatedTransferCostUsd.toFixed() }
+        : {}),
+      estimatedArrivalMs,
+      releaseMode: config.releaseMode,
       blockers,
     },
     dryRun: false,
@@ -587,6 +671,18 @@ export async function preflightTransferBatch(
   const now = options.now ?? Date.now();
   const batch = repository.getTransferBatch(batchId);
   if (!batch) throw new Error(`transfer batch not found: ${batchId}`);
+  if (repository.countOpenExecutions() > 0 || repository.countUnresolvedOrders() > 0) {
+    return {
+      batchId,
+      status: TRANSFER_BATCH_STATUS.BLOCKED,
+      reasons: ['open_execution_or_unresolved_order'],
+      legs: batch.legs.map((leg) => ({
+        legNumber: leg.legNumber,
+        status: leg.status,
+        reasons: ['open_execution_or_unresolved_order'],
+      })),
+    };
+  }
   if (FINAL_BATCH_STATUSES.has(batch.status) || batch.status === TRANSFER_BATCH_STATUS.SAFE_STOP) {
     return {
       batchId,
@@ -987,6 +1083,10 @@ async function settleLegOnce(input: {
         fee: deposit.fee?.toFixed() ?? null,
         txId: deposit.txId ?? null,
         recordId: deposit.id,
+        requestedAt: leg.requestedAt,
+        sourceObservedAt: leg.sourceObservedAt,
+        destinationObservedAt: now,
+        elapsedMs: leg.requestedAt === null ? null : Math.max(0, now - leg.requestedAt),
       },
     },
     updatedAt: now,
@@ -1007,6 +1107,8 @@ function markSafeStop(
   });
   repository.recordRiskEvent('critical', 'transfer_safe_stop', reason, { batchId }, now);
   repository.recordAudit('system', 'transfer_safe_stop', { batchId, reason }, now);
+  repository.setSetting('kill_switch', 'true', now);
+  repository.setSetting('transfer_auto_release_enabled', 'false', now);
 }
 
 async function waitForLeg(input: {
@@ -1121,6 +1223,7 @@ export async function executeTransferBatch(
         legs: executionLegs(repository.getTransferBatch(batchId)!),
       };
     }
+    recordTransferCost(repository, repository.getTransferBatch(batchId)!, now());
     repository.updateTransferBatch(batchId, {
       status: TRANSFER_BATCH_STATUS.DRY_RUN,
       dryRun: true,
@@ -1165,23 +1268,60 @@ export async function executeTransferBatch(
       legs: executionLegs(batch),
     };
   }
-  if (!config.requireManualConfirmation) {
-    return {
-      batchId,
-      status: TRANSFER_BATCH_STATUS.BLOCKED,
-      reasons: ['transfers.require_manual_confirmation=false'],
-      withdrawalsSubmitted: 0,
-      legs: executionLegs(batch),
-    };
-  }
-  if (options.confirmBatchId !== batchId) {
-    return {
-      batchId,
-      status: TRANSFER_BATCH_STATUS.BLOCKED,
-      reasons: ['confirmation_batch_id_mismatch'],
-      withdrawalsSubmitted: 0,
-      legs: executionLegs(batch),
-    };
+  const confirmationMode = options.confirmationMode ?? 'manual';
+  if (confirmationMode === 'automatic') {
+    if (config.releaseMode !== 'automatic') {
+      return {
+        batchId,
+        status: TRANSFER_BATCH_STATUS.BLOCKED,
+        reasons: ['transfers.release_mode_not_automatic'],
+        withdrawalsSubmitted: 0,
+        legs: executionLegs(batch),
+      };
+    }
+    if (repository.getSetting('transfer_auto_release_enabled') !== 'true') {
+      return {
+        batchId,
+        status: TRANSFER_BATCH_STATUS.BLOCKED,
+        reasons: ['transfer_auto_release_not_armed'],
+        withdrawalsSubmitted: 0,
+        legs: executionLegs(batch),
+      };
+    }
+    if (options.confirmBatchId !== batchId) {
+      return {
+        batchId,
+        status: TRANSFER_BATCH_STATUS.BLOCKED,
+        reasons: ['automatic_confirmation_batch_id_mismatch'],
+        withdrawalsSubmitted: 0,
+        legs: executionLegs(batch),
+      };
+    }
+    repository.recordAudit(
+      'system',
+      'transfer_auto_release',
+      { batchId, releaseMode: config.releaseMode },
+      now(),
+    );
+  } else {
+    if (!config.requireManualConfirmation) {
+      return {
+        batchId,
+        status: TRANSFER_BATCH_STATUS.BLOCKED,
+        reasons: ['transfers.require_manual_confirmation=false'],
+        withdrawalsSubmitted: 0,
+        legs: executionLegs(batch),
+      };
+    }
+    if (options.confirmBatchId !== batchId) {
+      return {
+        batchId,
+        status: TRANSFER_BATCH_STATUS.BLOCKED,
+        reasons: ['confirmation_batch_id_mismatch'],
+        withdrawalsSubmitted: 0,
+        legs: executionLegs(batch),
+      };
+    }
   }
 
   if (
@@ -1477,6 +1617,18 @@ export async function reconcileTransferBatch(
   else if (failed) status = TRANSFER_BATCH_STATUS.SAFE_STOP;
   else if (current.legs.some((leg) => leg.status === TRANSFER_LEG_STATUS.WAITING_DEPOSIT)) {
     status = TRANSFER_BATCH_STATUS.WAITING_DEPOSIT;
+  }
+  if (allArrived) recordTransferCost(repository, current, now);
+  if (failed) {
+    repository.setSetting('kill_switch', 'true', now);
+    repository.setSetting('transfer_auto_release_enabled', 'false', now);
+    repository.recordRiskEvent(
+      'critical',
+      'transfer_reconcile_safe_stop',
+      failedReasons.join('; ') || 'transfer leg failed',
+      { batchId, status },
+      now,
+    );
   }
   repository.updateTransferBatch(batchId, {
     status,

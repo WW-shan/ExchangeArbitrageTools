@@ -139,6 +139,74 @@ describe('CCXT adapter construction', () => {
     expect(parseRetryAfterMs(new Error('please retry after 3 seconds'))).toBe(3000);
   });
 
+  it('classifies 403 permission failures as non-retryable', () => {
+    const failure = classifyCcxtFailure(
+      Object.assign(new Error('Forbidden'), { response: { status: 403 } }),
+    );
+    expect(failure.permissionDenied).toBe(true);
+    expect(failure.rateLimited).toBe(false);
+    expect(failure.transient).toBe(false);
+  });
+
+  it('reads Gate account identity and whitelists without exposing raw values', async () => {
+    const credentials = { apiKey: 'key', secret: 'secret' };
+    const prototype = (ccxt.gate as unknown as { prototype: Record<string, unknown> }).prototype;
+    const original = prototype.privateAccountGetDetail;
+    prototype.privateAccountGetDetail = async () => ({
+      user_id: 10406147,
+      ip_whitelist: ['203.0.113.7', '198.51.100.9'],
+      currency_pairs: ['LIGHT_USDT', 'TBK_USDT'],
+      key: { mode: 1 },
+    });
+    try {
+      const adapter = createCcxtAdapter('gateio', createPublicRuntime(1), {
+        credentials,
+        readOnly: true,
+      });
+      const status = await adapter.fetchAccountStatus!(
+        { requiredPairs: ['LIGHT/USDT', 'TBK/USDT'] },
+        credentials,
+      );
+      expect(status.authenticated).toBe(true);
+      expect(status.accountMode).toBe('classic');
+      expect(status.accountIdHash).toMatch(/^sha256:/);
+      expect(status.ipWhitelist).toMatchObject({
+        supported: true,
+        present: true,
+        count: 2,
+        currentIpAccepted: true,
+      });
+      expect(status.pairWhitelist?.requiredPairsAllowed).toBe(true);
+      expect(status.capabilities.trading).toBe('unknown');
+      expect(status.capabilities.withdrawal).toBe('unknown');
+      expect(JSON.stringify(status)).not.toContain('203.0.113.7');
+    } finally {
+      prototype.privateAccountGetDetail = original;
+    }
+  });
+
+  it('does not treat a missing Gate IP whitelist field as an empty list', async () => {
+    const credentials = { apiKey: 'key', secret: 'secret' };
+    const prototype = (ccxt.gate as unknown as { prototype: Record<string, unknown> }).prototype;
+    const original = prototype.privateAccountGetDetail;
+    prototype.privateAccountGetDetail = async () => ({
+      user_id: 10406147,
+      currency_pairs: [],
+      key: { mode: 1 },
+    });
+    try {
+      const adapter = createCcxtAdapter('gateio', createPublicRuntime(1), {
+        credentials,
+        readOnly: true,
+      });
+      const status = await adapter.fetchAccountStatus!({ requiredPairs: [] }, credentials);
+      expect(status.ipWhitelist?.present).toBe(false);
+      expect(status.errors).toContain('gate_ip_whitelist_missing');
+    } finally {
+      prototype.privateAccountGetDetail = original;
+    }
+  });
+
   it('classifies rate limits, network errors and server errors as transient', () => {
     expect(classifyCcxtFailure({ response: { status: 429 }, message: 'too many' })).toMatchObject({
       status: 429,
@@ -146,8 +214,9 @@ describe('CCXT adapter construction', () => {
       transient: true,
     });
     expect(classifyCcxtFailure({ response: { status: 403 } })).toMatchObject({
-      rateLimited: true,
-      transient: true,
+      rateLimited: false,
+      permissionDenied: true,
+      transient: false,
     });
     expect(classifyCcxtFailure(new Error('socket hang up'))).toMatchObject({
       rateLimited: false,

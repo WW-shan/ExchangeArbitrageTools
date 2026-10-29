@@ -91,6 +91,7 @@ balance_refresh_ms = 5000
 max_signal_age_ms = 10000
 cooldown_ms = 0
 max_consecutive_failures = 3
+heartbeat_file = 'data/rotation-executor.heartbeat.json'
 
 # When the funded direction converges to near breakeven, a small preparation
 # trade may shift inventory to the other side. It is a bounded inventory shift,
@@ -126,12 +127,16 @@ max_notional = '20'
 [transfers]
 enabled = false
 require_manual_confirmation = true
+release_mode = 'manual'
 max_in_flight_batches = 1
 max_legs_per_batch = 2
 max_balance_age_ms = 300000
 poll_interval_ms = 15000
 withdrawal_timeout_ms = 900000
 deposit_timeout_ms = 1800000
+min_net_edge_bps = '5'
+max_cost_usd = '0.5'
+max_arrival_ms = 1800000
 # Keep this section closed until both venues expose the exact asset/network
 # and explicit withdrawal credentials. The withdrawal key may reuse the trade
 # key, but that increases the blast radius; IP whitelist attestation is still
@@ -150,6 +155,23 @@ deposit_timeout_ms = 1800000
 # max_amount = '200'
 # daily_max_amount = '400'
 # withdraw_fee = '1'
+
+[account_status]
+# Verify authentication, Gate account identity/IP/pair whitelists and the
+# Hotcoin balance read every minute. Gate/Hotcoin do not expose the current
+# key's trade/withdraw permission bits, so those are reported as UNKNOWN.
+# A shared trade/withdrawal key is allowed per operator policy and audited.
+enabled = true
+refresh_ms = 60000
+stale_ms = 180000
+# Gate currently has no IP whitelist on this account. Keep this false after the
+# operator explicitly accepted the shared-key blast radius; set true after an
+# IP whitelist is configured in both exchange backends.
+require_ip_whitelist = false
+allow_shared_trade_withdrawal_key = true
+block_on_ip_whitelist_change = true
+block_on_account_id_change = true
+block_on_account_mode_change = true
 
 [database]
 path = "data/rotation.sqlite"
