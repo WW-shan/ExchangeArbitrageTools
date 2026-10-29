@@ -2203,6 +2203,7 @@ export class CexLiveExecutor {
       filledAmount: order.filled,
       ...(order.averagePrice ? { averagePrice: order.averagePrice } : {}),
       ...(order.fee ? { fee: order.fee } : {}),
+      ...(order.feeCurrency ? { feeCurrency: order.feeCurrency } : {}),
       status: order.status,
       now,
     });

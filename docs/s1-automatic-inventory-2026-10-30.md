@@ -126,6 +126,39 @@ npm run seed:reconcile -- --batch <batchId> --confirm <batchId>
 
 该命令只关闭确认零成交的 seed，不会重新下单，也不会自动清除 kill switch。
 
+### 6.1 手续费与净库存
+
+成交量和库存增量不是同一个数。交易所可能用 base 收费，也可能用 quote 收费：
+
+```text
+base 收费：net_base = filled - fee_base
+quote 收费：net_base = filled，quote_out = filled x price + fee_quote
+```
+
+当前处理顺序：
+
+1. 在 CCXT adapter 边界统一解析 `order.fee`、`order.fees` 和原始回包
+   `info.fee/fee_currency`、Bitget `feeDetail`；
+2. 把 `feeCurrency` 持久化到 `orders.fee_currency`；
+3. 用手续费资产计算净 base / quote delta；
+4. 同时读取建仓前后 free 余额作为交叉校验；
+5. 手续费资产缺失或不属于 base/quote 时，优先使用可验证的余额差；
+6. 两者都无法解释时进入 `SEED_ACCOUNTING_UNKNOWN`，打开 kill switch，不关闭
+   execution，绝不猜测入账。
+
+`inventory_delta_json` 记录的是净库存，不是 `order.filled`。例如 Gate WARD 的
+真实成交为 1127 WARD、手续费 1.11573 WARD，则净 base delta 是 1125.88427 WARD。
+
+历史已关闭 SEED 如果出现同类错账，使用受控修正命令：
+
+```powershell
+npm run seed:repair-accounting -- --batch <batchId> --confirm <batchId>
+```
+
+该命令只允许修复已关闭、订单终态且全成交的 SEED；不会下单、撤单、重试或修改
+kill switch。修复会写入 `inventory_seed_accounting_repaired` 审计和 warning 风险事件，
+并在 metadata 中保留 `accountingRepair.previousInventoryDelta`。
+
 ## 7. 审计字段
 
 `executions.metadata_json` 包含：
@@ -138,6 +171,8 @@ npm run seed:reconcile -- --batch <batchId> --confirm <batchId>
 - 计划 spend、数量、限价、预期 base value；
 - 稳定窗口 first seen、盘口 fetchedAt；
 - 成交后的 filled、average price、quote spent。
+- 手续费金额、资产、计价价值、收费方式和入账来源；
+- `netBaseCanonical`、`balanceBaseDeltaCanonical`、`balanceQuoteDelta`。
 
 审计事件：
 
@@ -152,6 +187,8 @@ npm run seed:reconcile -- --batch <batchId> --confirm <batchId>
 - `inventory_seed_partial_fill`（critical）
 - `inventory_seed_unknown`（critical）
 - `inventory_seed_post_balance_failed`（warning）
+- `inventory_seed_accounting_unknown`（critical）
+- `inventory_seed_accounting_repaired`（warning）
 
 ## 8. 延迟与门槛
 
@@ -209,6 +246,51 @@ retry_cooldown_ms = 60000
 5. 观察另一边是否在价格进入 band 后自动补仓。若长期不进入 band，程序应继续等待，不能追价。
 6. 只有在两边都有可用库存后，才允许正常 S1 双腿执行。
 7. 任意 `SEED_UNKNOWN` / `SEED_PARTIAL` 都必须人工核对交易所后台后，再决定是否 release kill switch。
+
+### 10.1 实盘验收记录（2026-10-30）
+
+第一笔 Gate SEED：
+
+```text
+executionId        15
+batchId            SEED-WARD-1793298805018-gateio-1d77e431
+orderId            1157692006205
+filled             1127 WARD
+averagePrice       0.004423
+fee                1.11573 WARD
+netBaseDelta       1125.88427 WARD
+quoteDelta         -4.984721 USDT
+```
+
+这笔最初把 `filled` 直接当作 base delta。已通过
+`seed:repair-accounting` 修正，并保留修复前 delta、审计和 warning 风险事件。
+
+第二笔 Bitget SEED（新代码首次实盘）：
+
+```text
+executionId        16
+batchId            SEED-WARD-1793300022571-bitget-aa366aca
+orderId            1499774490238173186
+filled             1164.26 WARD
+averagePrice       0.00420749104152
+fee                1.16426 WARD
+netBaseDelta       1163.09574 WARD
+quoteDelta         -4.89861352 USDT
+accountingSource   order_fee
+```
+
+Bitget 余额变化：
+
+```text
+before             WARD 24.5369      USDT 16.65597384
+after              WARD 1187.63264   USDT 11.75736032
+base increase      1163.09574 WARD
+quote decrease     4.89861352 USDT
+```
+
+订单回包里的 `feeDetail`、`orders.fee/fee_currency`、`execution_legs.fee_paid`、
+`inventory_delta_json` 和余额变化一致。两边 WARD 库存都已达到可用阈值，
+S1-E7 验收完成。
 
 ## 11. 当前限制
 

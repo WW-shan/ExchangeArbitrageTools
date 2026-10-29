@@ -9,13 +9,17 @@ import type {
   OrderState,
 } from '@arb/venues-cex';
 import {
+  accountSeedFill,
   attemptAutomaticInventorySeed,
   planAutomaticInventorySeed,
   reconcileAutomaticInventoryNoFill,
+  resolveSeedAccounting,
+  usableSeedAccounting,
   type InventoryVenueSnapshot,
 } from '../src/auto-inventory.js';
 import type { RecoveryVenue } from '../src/bootstrap.js';
 import type { ExecutorConfig } from '../src/config.js';
+import { repairClosedSeedAccounting } from '../src/seed-accounting-repair.js';
 
 const credentials: ApiCredentials = { apiKey: 'test', secret: 'test' };
 
@@ -149,11 +153,15 @@ function fakeVenue(input: {
   fetchOrderError?: Error;
   partial?: boolean;
   exchangeTimestamp?: number;
+  feeCurrency?: string | null;
+  orderFee?: string;
 }) {
   const requests: OrderRequest[] = [];
   let currentBalances = input.before;
   const orderFor = (request: OrderRequest): OrderState => {
     const filled = input.partial ? request.amount.div(2) : request.amount;
+    const fee = input.orderFee ? new Decimal(input.orderFee) : filled.mul('0.001');
+    const feeCurrency = input.feeCurrency === null ? undefined : (input.feeCurrency ?? 'WARD');
     return {
       venueOrderId: `${input.venueId}-1`,
       clientOrderId: request.clientOrderId,
@@ -165,7 +173,7 @@ function fakeVenue(input: {
       filled,
       remaining: request.amount.minus(filled),
       ...(request.price ? { averagePrice: request.price } : {}),
-      ...(request.price ? { fee: request.price.mul(filled).mul('0.001') } : {}),
+      ...(request.price ? { fee, ...(feeCurrency ? { feeCurrency } : {}) } : {}),
       status: input.partial ? 'canceled' : 'closed',
       raw: { fake: true },
     };
@@ -225,6 +233,10 @@ function setup(
     fetchOrderError?: Error;
     partial?: boolean;
     exchangeTimestamp?: number;
+    feeCurrency?: string | null;
+    orderFee?: string;
+    gateAfterWard?: string;
+    gateAfterUsdt?: string;
     inventory?: Partial<ExecutorConfig['autoRotation']['inventory']>;
   } = {},
 ) {
@@ -246,7 +258,12 @@ function setup(
   const gateBefore = balances('gateio', options.gateWard ?? '0', options.gateUsdt ?? '20');
   const bitgetBefore = balances('bitget', options.bitgetWard ?? '0', options.bitgetUsdt ?? '20');
   for (const row of [...gateBefore, ...bitgetBefore]) repository.recordBalance(row);
-  const gateAfter = balances('gateio', '1000', '14.995', Date.now());
+  const gateAfter = balances(
+    'gateio',
+    options.gateAfterWard ?? '999',
+    options.gateAfterUsdt ?? '15',
+    Date.now(),
+  );
   const bitgetAfter = balances('bitget', options.bitgetWard ?? '0', options.bitgetUsdt ?? '20');
   const gate = fakeVenue({
     venueId: 'gateio',
@@ -258,6 +275,8 @@ function setup(
     ...(options.fetchOrderError ? { fetchOrderError: options.fetchOrderError } : {}),
     ...(options.partial ? { partial: true } : {}),
     ...(options.exchangeTimestamp ? { exchangeTimestamp: options.exchangeTimestamp } : {}),
+    ...(options.feeCurrency !== undefined ? { feeCurrency: options.feeCurrency } : {}),
+    ...(options.orderFee ? { orderFee: options.orderFee } : {}),
   });
   const bitget = fakeVenue({
     venueId: 'bitget',
@@ -395,6 +414,89 @@ describe('automatic inventory planning', () => {
   });
 });
 
+describe('automatic inventory fee accounting', () => {
+  it('deducts a base-asset fee from the net base received', () => {
+    const accounting = accountSeedFill({
+      base: 'WARD',
+      exchangeBase: 'WARD',
+      quote: 'USDT',
+      baseMultiplier: new Decimal(1),
+      filled: new Decimal('1127'),
+      averagePrice: new Decimal('0.004423'),
+      limitPrice: new Decimal('0.00443'),
+      fee: new Decimal('1.11573'),
+      feeCurrency: 'WARD',
+    });
+    expect(accounting).toMatchObject({
+      known: true,
+      feeTreatment: 'base',
+      feeCurrency: 'WARD',
+    });
+    expect(accounting.baseDeltaCanonical.toFixed()).toBe('1125.88427');
+    expect(accounting.quoteDelta.toFixed()).toBe('-4.984721');
+  });
+
+  it('adds a quote-asset fee to the quote outflow', () => {
+    const accounting = accountSeedFill({
+      base: 'WARD',
+      exchangeBase: 'WARD',
+      quote: 'USDT',
+      baseMultiplier: new Decimal(1),
+      filled: new Decimal('1000'),
+      averagePrice: new Decimal('0.005'),
+      limitPrice: new Decimal('0.005'),
+      fee: new Decimal('0.005'),
+      feeCurrency: 'USDT',
+    });
+    expect(accounting).toMatchObject({ known: true, feeTreatment: 'quote' });
+    expect(accounting.baseDeltaCanonical.toFixed()).toBe('1000');
+    expect(accounting.quoteDelta.toFixed()).toBe('-5.005');
+  });
+
+  it('falls back to actual balance deltas when the fee asset is missing', () => {
+    const order = accountSeedFill({
+      base: 'WARD',
+      exchangeBase: 'WARD',
+      quote: 'USDT',
+      baseMultiplier: new Decimal(1),
+      filled: new Decimal('1000'),
+      averagePrice: new Decimal('0.005'),
+      limitPrice: new Decimal('0.005'),
+      fee: new Decimal('1'),
+    });
+    expect(order).toMatchObject({ known: false, feeTreatment: 'missing_currency' });
+    const resolved = resolveSeedAccounting({
+      order,
+      filledCanonical: new Decimal('1000'),
+      balanceDelta: {
+        baseDeltaCanonical: new Decimal('999'),
+        quoteDelta: new Decimal('-5'),
+      },
+    });
+    expect(resolved).toMatchObject({ source: 'balance_delta' });
+    expect(resolved.accounting.known).toBe(true);
+    expect(resolved.accounting.baseDeltaCanonical.toFixed()).toBe('999');
+    expect(resolved.accounting.quoteDelta.toFixed()).toBe('-5');
+  });
+
+  it('rejects a net base delta that is zero or negative', () => {
+    const accounting = accountSeedFill({
+      base: 'WARD',
+      exchangeBase: 'WARD',
+      quote: 'USDT',
+      baseMultiplier: new Decimal(1),
+      filled: new Decimal('1000'),
+      averagePrice: new Decimal('0.005'),
+      limitPrice: new Decimal('0.005'),
+      fee: new Decimal('1000'),
+      feeCurrency: 'WARD',
+    });
+    expect(accounting.known).toBe(true);
+    expect(accounting.baseDeltaCanonical.toFixed()).toBe('0');
+    expect(usableSeedAccounting(accounting)).toBe(false);
+  });
+});
+
 describe('automatic inventory execution', () => {
   it('submits one FOK buy and records a SEED execution', async () => {
     const { repository, adapters, markets, config: executorConfig, gate, now } = setup();
@@ -420,6 +522,67 @@ describe('automatic inventory execution', () => {
       .prepare(`SELECT action FROM audit_logs WHERE action = 'inventory_seed_filled' LIMIT 1`)
       .get() as { action: string };
     expect(audit.action).toBe('inventory_seed_filled');
+    const recorded = repository.db
+      .prepare(
+        `SELECT o.fee, o.fee_currency, e.inventory_delta_json, e.metadata_json
+         FROM orders o JOIN executions e ON e.id = o.execution_id
+         WHERE e.batch_id = ?`,
+      )
+      .get(result.batchId!) as {
+      fee: string;
+      fee_currency: string;
+      inventory_delta_json: string;
+      metadata_json: string;
+    };
+    expect(recorded.fee).toBe('1');
+    expect(recorded.fee_currency).toBe('WARD');
+    expect(JSON.parse(recorded.inventory_delta_json)).toMatchObject({
+      baseAsset: 'WARD',
+      baseDelta: '999',
+      quoteAsset: 'USDT',
+      quoteDelta: '-5',
+    });
+    expect(JSON.parse(recorded.metadata_json)).toMatchObject({
+      feeAmount: '1',
+      feeCurrency: 'WARD',
+      feeTreatment: 'base',
+      netBaseCanonical: '999',
+    });
+  });
+
+  it('uses actual balances when the venue omits the fee asset', async () => {
+    const {
+      repository,
+      adapters,
+      markets,
+      config: executorConfig,
+      now,
+    } = setup({
+      feeCurrency: null,
+      orderFee: '1',
+      gateAfterWard: '999',
+      gateAfterUsdt: '15',
+    });
+    const result = await attemptAutomaticInventorySeed({
+      repository,
+      config: executorConfig,
+      adapters,
+      markets,
+      pair: executorConfig.autoRotation.pairs[0]!,
+      now,
+    });
+    expect(result.status).toBe('FILLED');
+    const execution = repository.db
+      .prepare('SELECT inventory_delta_json, metadata_json FROM executions WHERE batch_id = ?')
+      .get(result.batchId!) as { inventory_delta_json: string; metadata_json: string };
+    expect(JSON.parse(execution.inventory_delta_json)).toMatchObject({
+      baseDelta: '999',
+      quoteDelta: '-5',
+    });
+    expect(JSON.parse(execution.metadata_json)).toMatchObject({
+      accountingSource: 'balance_delta',
+      feeTreatment: 'missing_currency',
+    });
   });
 
   it('accepts a fresh REST book when the exchange timestamp is old on a thin market', async () => {
@@ -629,5 +792,52 @@ describe('automatic inventory execution', () => {
       .prepare('SELECT status FROM executions WHERE batch_id = ?')
       .get(result.batchId!) as { status: string };
     expect(execution.status).toBe('SEED_PARTIAL');
+  });
+
+  it('repairs a closed seed fee attribution without changing the order or kill switch', async () => {
+    const { repository, adapters, markets, config: executorConfig, now } = setup();
+    const result = await attemptAutomaticInventorySeed({
+      repository,
+      config: executorConfig,
+      adapters,
+      markets,
+      pair: executorConfig.autoRotation.pairs[0]!,
+      now,
+    });
+    expect(result.status).toBe('FILLED');
+    const execution = repository.db
+      .prepare('SELECT id FROM executions WHERE batch_id = ?')
+      .get(result.batchId!) as { id: number };
+    repository.updateExecutionStatus(execution.id, 'CLOSED', {
+      inventoryDelta: {
+        baseAsset: 'WARD',
+        baseDelta: '1000',
+        quoteAsset: 'USDT',
+        quoteDelta: '-5',
+      },
+    });
+    const repaired = repairClosedSeedAccounting({
+      repository,
+      batchId: result.batchId!,
+      now: now + 1,
+    });
+    expect(repaired.status).toBe('REPAIRED');
+    expect(repaired.inventoryDelta).toEqual({
+      baseAsset: 'WARD',
+      baseDelta: '999',
+      quoteAsset: 'USDT',
+      quoteDelta: '-5',
+    });
+    expect(repository.getSetting('kill_switch')).toBe('false');
+    const audit = repository.db
+      .prepare("SELECT action FROM audit_logs WHERE action = 'inventory_seed_accounting_repaired'")
+      .get() as { action: string };
+    expect(audit.action).toBe('inventory_seed_accounting_repaired');
+    const second = repairClosedSeedAccounting({
+      repository,
+      batchId: result.batchId!,
+      now: now + 2,
+    });
+    expect(second.status).toBe('ALREADY_CORRECT');
   });
 });

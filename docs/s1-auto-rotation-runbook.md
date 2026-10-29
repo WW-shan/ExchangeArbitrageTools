@@ -98,10 +98,20 @@ has no open order and the free balances still match the recorded pre-seed
 snapshot, then run:
 
 ```powershell
-npm run seed:reconcile -- --batch <batchId> --confirm <batchId>
+npm run seed:reconcile -- --batch <batchId> --confirm <batchId> --config config/live-rotation.toml
 ```
 
 The command never submits an order and never clears the kill switch.
+
+Fees are attributed to the asset that paid them. If a closed SEED was recorded
+with gross rather than net base inventory, repair only its accounting:
+
+```powershell
+npm run seed:repair-accounting -- --batch <batchId> --confirm <batchId> --config config/live-rotation.toml
+```
+
+This never submits, cancels, retries, or clears the kill switch, and writes an
+audit plus warning risk event.
 
 Full design: `docs/s1-automatic-inventory-2026-10-30.md`.
 

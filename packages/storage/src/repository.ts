@@ -314,6 +314,7 @@ export interface RecoveredOrder {
   filledAmount: string;
   averagePrice: string | null;
   fee: string | null;
+  feeCurrency: string | null;
   status: string;
   createdAt: number;
   updatedAt: number;
@@ -2101,6 +2102,7 @@ export class ArbitrageRepository {
     filledAmount: Decimal;
     averagePrice?: Decimal;
     fee?: Decimal;
+    feeCurrency?: string;
     status: string;
     now?: number;
   }): void {
@@ -2109,14 +2111,15 @@ export class ArbitrageRepository {
       .prepare(
         `INSERT INTO orders(
           venue_id, venue_order_id, client_order_id, execution_id, symbol, side, type, price, amount,
-          filled_amount, average_price, fee, status, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          filled_amount, average_price, fee, fee_currency, status, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(client_order_id) DO UPDATE SET
           venue_order_id = COALESCE(excluded.venue_order_id, venue_order_id),
           execution_id = COALESCE(excluded.execution_id, execution_id),
           filled_amount = excluded.filled_amount,
           average_price = excluded.average_price,
           fee = excluded.fee,
+          fee_currency = excluded.fee_currency,
           status = excluded.status,
           updated_at = excluded.updated_at`,
       )
@@ -2133,6 +2136,7 @@ export class ArbitrageRepository {
         input.filledAmount.toFixed(),
         input.averagePrice?.toFixed() ?? null,
         input.fee?.toFixed() ?? null,
+        input.feeCurrency?.trim().toUpperCase() || null,
         input.status,
         now,
         now,
@@ -2182,7 +2186,7 @@ export class ArbitrageRepository {
     const row = this.db
       .prepare(
         `SELECT id, execution_id, venue_id, venue_order_id, client_order_id, symbol,
-                side, type, price, amount, filled_amount, average_price, fee, status,
+                side, type, price, amount, filled_amount, average_price, fee, fee_currency, status,
                 created_at, updated_at
          FROM orders WHERE client_order_id = ?`,
       )
@@ -2201,6 +2205,7 @@ export class ArbitrageRepository {
           filled_amount: string;
           average_price: string | null;
           fee: string | null;
+          fee_currency: string | null;
           status: string;
           created_at: number;
           updated_at: number;
@@ -2221,6 +2226,7 @@ export class ArbitrageRepository {
       filledAmount: row.filled_amount,
       averagePrice: row.average_price,
       fee: row.fee,
+      feeCurrency: row.fee_currency,
       status: row.status,
       createdAt: row.created_at,
       updatedAt: row.updated_at,
@@ -2232,7 +2238,7 @@ export class ArbitrageRepository {
       .prepare(
         `SELECT o.id, o.execution_id, o.venue_id, o.venue_order_id, o.client_order_id,
                 o.symbol, o.side, o.type, o.price, o.amount, o.filled_amount,
-                o.average_price, o.fee, o.status, o.created_at, o.updated_at
+                o.average_price, o.fee, o.fee_currency, o.status, o.created_at, o.updated_at
          FROM orders o
          WHERE o.status IN ('submitted', 'open', 'unknown', 'pending')
             OR EXISTS (
@@ -2256,6 +2262,7 @@ export class ArbitrageRepository {
       filled_amount: string;
       average_price: string | null;
       fee: string | null;
+      fee_currency: string | null;
       status: string;
       created_at: number;
       updated_at: number;
@@ -2274,6 +2281,7 @@ export class ArbitrageRepository {
       filledAmount: row.filled_amount,
       averagePrice: row.average_price,
       fee: row.fee,
+      feeCurrency: row.fee_currency,
       status: row.status,
       createdAt: row.created_at,
       updatedAt: row.updated_at,

@@ -659,6 +659,7 @@ export async function reconcileResidualHedgeFill(input: {
     filledAmount: order.filled,
     ...(order.averagePrice ? { averagePrice: order.averagePrice } : {}),
     ...(order.fee ? { fee: order.fee } : {}),
+    ...(order.feeCurrency ? { feeCurrency: order.feeCurrency } : {}),
     status: order.status,
     now: responseAt,
   });
@@ -875,6 +876,7 @@ export async function executeResidualHedge(input: {
     filledAmount: order.filled,
     ...(order.averagePrice ? { averagePrice: order.averagePrice } : {}),
     ...(order.fee ? { fee: order.fee } : {}),
+    ...(order.feeCurrency ? { feeCurrency: order.feeCurrency } : {}),
     status: order.status,
     now: responseAt,
   });

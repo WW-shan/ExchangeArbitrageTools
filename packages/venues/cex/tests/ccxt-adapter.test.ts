@@ -5,6 +5,7 @@ import {
   classifyCcxtFailure,
   createCcxtAdapter,
   createPublicRuntime,
+  extractOrderFee,
   isCcxtShutdownError,
   normalizeCurrencyNetwork,
   normalizeExchangeTimestamp,
@@ -28,6 +29,30 @@ describe('CCXT adapter construction', () => {
     expect(() => createCcxtAdapter('not_an_exchange', createPublicRuntime(1))).toThrow(
       /unknown CCXT/,
     );
+  });
+
+  it('extracts a Gate fee and its asset from raw order info', () => {
+    const fee = extractOrderFee({
+      info: {
+        fee: '1.11573',
+        fee_currency: 'WARD',
+      },
+    });
+    expect(fee).toMatchObject({ currency: 'WARD', source: 'info.fee' });
+    expect(fee?.cost.toFixed()).toBe('1.11573');
+  });
+
+  it('extracts a Bitget feeDetail without double counting newFees', () => {
+    const fee = extractOrderFee({
+      info: {
+        feeDetail: JSON.stringify({
+          newFees: { r: -0.00833986614, t: -0.00833986614 },
+          USDT: { feeCoinCode: 'USDT', totalFee: -0.00833986614 },
+        }),
+      },
+    });
+    expect(fee).toMatchObject({ currency: 'USDT', source: 'info.feeDetail' });
+    expect(fee?.cost.toFixed()).toBe('0.00833986614');
   });
 
   it('accepts tick sizes as well as decimal precision digit counts', () => {
@@ -187,6 +212,8 @@ describe('CCXT adapter construction', () => {
       expect(order.amount.toFixed()).toBe('1211.79');
       expect(order.filled.toFixed()).toBe('1211.79');
       expect(order.averagePrice?.toFixed()).toBe('0.0053295157');
+      expect(order.fee?.toFixed()).toBe('0.00645825386');
+      expect(order.feeCurrency).toBe('USDT');
       expect(order.raw).toMatchObject({ info: { orderId: 'bitget-order-1', status: 'filled' } });
     } finally {
       prototype.createOrder = originalCreate;

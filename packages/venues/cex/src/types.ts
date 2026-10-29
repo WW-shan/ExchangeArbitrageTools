@@ -121,6 +121,7 @@ export interface OrderState {
   remaining: Decimal;
   averagePrice?: Decimal;
   fee?: Decimal;
+  feeCurrency?: string;
   status: 'open' | 'closed' | 'canceled' | 'rejected' | 'unknown';
   raw: unknown;
 }

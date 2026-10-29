@@ -55,6 +55,7 @@ export interface AutomaticInventoryPlan {
   venueId: string;
   otherVenueId: string;
   base: string;
+  exchangeBase: string;
   quote: string;
   exchangeSymbol: string;
   baseMultiplier: Decimal;
@@ -85,7 +86,14 @@ export type AutomaticInventoryDecision =
     };
 
 export type AutomaticInventoryStatus =
-  'NOOP' | 'WAIT' | 'BLOCKED' | 'REJECTED' | 'UNKNOWN' | 'PARTIAL' | 'FILLED';
+  | 'NOOP'
+  | 'WAIT'
+  | 'BLOCKED'
+  | 'REJECTED'
+  | 'UNKNOWN'
+  | 'PARTIAL'
+  | 'ACCOUNTING_UNKNOWN'
+  | 'FILLED';
 
 export interface AutomaticInventoryResult {
   status: AutomaticInventoryStatus;
@@ -120,6 +128,193 @@ function findBalance(
       row.venueId.trim().toLowerCase() === venueId.trim().toLowerCase() &&
       row.currency.trim().toUpperCase() === currency.trim().toUpperCase(),
   );
+}
+
+export interface SeedFillAccountingInput {
+  base: string;
+  exchangeBase: string;
+  quote: string;
+  baseMultiplier: Decimal;
+  filled: Decimal;
+  averagePrice?: Decimal | undefined;
+  limitPrice: Decimal;
+  fee?: Decimal | undefined;
+  feeCurrency?: string | undefined;
+}
+
+export interface SeedFillAccounting {
+  known: boolean;
+  feeTreatment: 'no_fee' | 'base' | 'quote' | 'missing_currency' | 'unmapped_asset';
+  feeAmount: Decimal;
+  feeCurrency?: string;
+  grossQuote: Decimal;
+  feeValueQuote: Decimal;
+  baseDeltaCanonical: Decimal;
+  quoteDelta: Decimal;
+}
+
+export function usableSeedAccounting(accounting: SeedFillAccounting): boolean {
+  return accounting.known && accounting.baseDeltaCanonical.gt(0) && accounting.quoteDelta.lt(0);
+}
+
+/**
+ * Attribute an order fill to inventory using the fee asset. A buy charges the
+ * quote asset for the fill; a fee charged in base reduces the received base,
+ * while a fee charged in quote increases the quote outflow. If the venue does
+ * not expose the fee asset, callers must fall back to actual balance deltas.
+ */
+export function accountSeedFill(input: SeedFillAccountingInput): SeedFillAccounting {
+  const grossQuote = (input.averagePrice ?? input.limitPrice).mul(input.filled);
+  const feeAmount = input.fee?.abs() ?? ZERO;
+  if (!feeAmount.gt(0)) {
+    return {
+      known: true,
+      feeTreatment: 'no_fee',
+      feeAmount: ZERO,
+      grossQuote,
+      feeValueQuote: ZERO,
+      baseDeltaCanonical: input.filled,
+      quoteDelta: grossQuote.negated(),
+    };
+  }
+
+  const feeCurrency = input.feeCurrency?.trim().toUpperCase();
+  if (!feeCurrency) {
+    return {
+      known: false,
+      feeTreatment: 'missing_currency',
+      feeAmount,
+      grossQuote,
+      feeValueQuote: ZERO,
+      baseDeltaCanonical: input.filled,
+      quoteDelta: grossQuote.negated(),
+    };
+  }
+  if (
+    feeCurrency === input.exchangeBase.trim().toUpperCase() ||
+    feeCurrency === input.base.trim().toUpperCase()
+  ) {
+    const feeCanonical = feeAmount.mul(input.baseMultiplier);
+    return {
+      known: true,
+      feeTreatment: 'base',
+      feeAmount,
+      feeCurrency,
+      grossQuote,
+      feeValueQuote: feeCanonical.mul(input.averagePrice ?? input.limitPrice),
+      baseDeltaCanonical: input.filled.minus(feeCanonical),
+      quoteDelta: grossQuote.negated(),
+    };
+  }
+  if (feeCurrency === input.quote.trim().toUpperCase()) {
+    return {
+      known: true,
+      feeTreatment: 'quote',
+      feeAmount,
+      feeCurrency,
+      grossQuote,
+      feeValueQuote: feeAmount,
+      baseDeltaCanonical: input.filled,
+      quoteDelta: grossQuote.plus(feeAmount).negated(),
+    };
+  }
+  return {
+    known: false,
+    feeTreatment: 'unmapped_asset',
+    feeAmount,
+    feeCurrency,
+    grossQuote,
+    feeValueQuote: ZERO,
+    baseDeltaCanonical: input.filled,
+    quoteDelta: grossQuote.negated(),
+  };
+}
+
+export interface SeedBalanceDelta {
+  baseDeltaCanonical: Decimal;
+  quoteDelta: Decimal;
+}
+
+export function seedBalanceDelta(input: {
+  baseBeforeExchange: Decimal;
+  quoteBefore: Decimal;
+  baseAfterExchange: Decimal;
+  quoteAfter: Decimal;
+  baseMultiplier: Decimal;
+}): SeedBalanceDelta {
+  return {
+    baseDeltaCanonical: input.baseAfterExchange
+      .minus(input.baseBeforeExchange)
+      .mul(input.baseMultiplier),
+    quoteDelta: input.quoteAfter.minus(input.quoteBefore),
+  };
+}
+
+export interface ResolvedSeedAccounting {
+  accounting: SeedFillAccounting;
+  source: 'order_fee' | 'balance_delta';
+  balanceDelta?: SeedBalanceDelta;
+  balanceMismatch?: string;
+}
+
+function plausibleSeedBalanceDelta(
+  actual: SeedBalanceDelta,
+  order: SeedFillAccounting,
+  filledCanonical: Decimal,
+): boolean {
+  if (!actual.baseDeltaCanonical.gt(0)) return false;
+  if (actual.baseDeltaCanonical.gt(filledCanonical.mul('1.01'))) return false;
+  if (actual.baseDeltaCanonical.lt(filledCanonical.mul('0.95'))) return false;
+  if (actual.quoteDelta.gt('0.01')) return false;
+  const gross = order.grossQuote.abs();
+  if (actual.quoteDelta.abs().gt(gross.mul('1.05').plus('0.01'))) return false;
+  if (actual.quoteDelta.abs().lt(gross.mul('0.95'))) return false;
+  return true;
+}
+
+export function resolveSeedAccounting(input: {
+  order: SeedFillAccounting;
+  filledCanonical: Decimal;
+  balanceDelta?: SeedBalanceDelta | undefined;
+}): ResolvedSeedAccounting {
+  const actual = input.balanceDelta;
+  if (input.order.known) {
+    if (!actual) return { accounting: input.order, source: 'order_fee' };
+    const baseTolerance = Decimal.max(input.filledCanonical.mul('0.005'), '0.00000001');
+    const quoteTolerance = Decimal.max(input.order.grossQuote.abs().mul('0.005'), '0.01');
+    const mismatch =
+      actual.baseDeltaCanonical.minus(input.order.baseDeltaCanonical).abs().gt(baseTolerance) ||
+      actual.quoteDelta.minus(input.order.quoteDelta).abs().gt(quoteTolerance);
+    return {
+      accounting: input.order,
+      source: 'order_fee',
+      balanceDelta: actual,
+      ...(mismatch ? { balanceMismatch: 'balance_delta_differs_from_order_fee' } : {}),
+    };
+  }
+  if (actual && plausibleSeedBalanceDelta(actual, input.order, input.filledCanonical)) {
+    const price = input.order.grossQuote.div(input.filledCanonical);
+    const baseFeeValue = input.filledCanonical.minus(actual.baseDeltaCanonical).mul(price);
+    const quoteFeeValue = actual.quoteDelta.abs().minus(input.order.grossQuote);
+    return {
+      accounting: {
+        ...input.order,
+        known: true,
+        feeTreatment:
+          input.order.feeTreatment === 'no_fee' ? 'unmapped_asset' : input.order.feeTreatment,
+        baseDeltaCanonical: actual.baseDeltaCanonical,
+        quoteDelta: actual.quoteDelta,
+        feeValueQuote: baseFeeValue.plus(quoteFeeValue),
+      },
+      source: 'balance_delta',
+      balanceDelta: actual,
+    };
+  }
+  return {
+    accounting: input.order,
+    source: 'order_fee',
+    ...(actual ? { balanceDelta: actual } : {}),
+  };
 }
 
 function balanceView(
@@ -321,7 +516,8 @@ export function planAutomaticInventorySeed(input: {
   if (!seedBestBid) {
     return { action: 'WAIT', reasons: ['inventory_book_incomplete'], observation };
   }
-  const expectedBaseValueUsd = amount.mul(seedBestBid.price);
+  const expectedNetBase = amount.mul(new Decimal(1).minus(feeBps.div(10_000)));
+  const expectedBaseValueUsd = expectedNetBase.mul(seedBestBid.price);
   if (seedBaseUsd.plus(expectedBaseValueUsd).lt(config.minUsefulNotionalUsd)) {
     return { action: 'WAIT', reasons: ['inventory_seed_below_useful_notional'], observation };
   }
@@ -333,6 +529,7 @@ export function planAutomaticInventorySeed(input: {
       venueId: seed.venueId,
       otherVenueId: other.venueId,
       base: pair.base.trim().toUpperCase(),
+      exchangeBase: marketExchangeBase(seed.market),
       quote,
       exchangeSymbol: seed.market.exchangeSymbol,
       baseMultiplier: marketBaseMultiplier(seed.market),
@@ -423,6 +620,8 @@ function seedMetadata(plan: AutomaticInventoryPlan, extra: Record<string, unknow
     seed: true,
     origin: 'automatic',
     base: plan.base,
+    exchangeBase: plan.exchangeBase,
+    baseMultiplier: plan.baseMultiplier.toFixed(),
     quote: plan.quote,
     venueId: plan.venueId,
     otherVenueId: plan.otherVenueId,
@@ -476,6 +675,7 @@ async function reconcileSeedOrder(input: {
         filledAmount: order.filled,
         ...(order.averagePrice ? { averagePrice: order.averagePrice } : {}),
         ...(order.fee ? { fee: order.fee } : {}),
+        ...(order.feeCurrency ? { feeCurrency: order.feeCurrency } : {}),
         status: order.status,
         now: Date.now(),
       });
@@ -533,19 +733,53 @@ function markUnknown(input: {
   };
 }
 
-function markPartial(input: {
+async function markPartial(input: {
   repository: ArbitrageRepository;
+  bundle: RecoveryVenue;
   executionId: number;
   batchId: string;
   clientOrderId: string;
   plan: AutomaticInventoryPlan;
   order: OrderState;
   now: number;
-}): AutomaticInventoryResult {
+}): Promise<AutomaticInventoryResult> {
   const filledCanonical = canonicalAmountFromExchange(
     input.order.filled,
     input.plan.baseMultiplier,
   );
+  const orderAccounting = accountSeedFill({
+    base: input.plan.base,
+    exchangeBase: input.plan.exchangeBase,
+    quote: input.plan.quote,
+    baseMultiplier: input.plan.baseMultiplier,
+    filled: filledCanonical,
+    averagePrice: input.order.averagePrice,
+    limitPrice: input.plan.limitPrice,
+    fee: input.order.fee,
+    feeCurrency: input.order.feeCurrency,
+  });
+  let balanceDelta: SeedBalanceDelta | undefined;
+  try {
+    const rows = await freshBalances(input.repository, input.bundle, input.now);
+    const base = findBalance(rows, input.plan.venueId, input.plan.exchangeBase);
+    const quote = findBalance(rows, input.plan.venueId, input.plan.quote);
+    if (base && quote) {
+      balanceDelta = seedBalanceDelta({
+        baseBeforeExchange: input.plan.venueBalance.baseFree,
+        quoteBefore: input.plan.venueBalance.quoteFree,
+        baseAfterExchange: base.free,
+        quoteAfter: quote.free,
+        baseMultiplier: input.plan.baseMultiplier,
+      });
+    }
+  } catch {
+    // The partial-fill execution remains open for manual review either way.
+  }
+  const resolved = resolveSeedAccounting({
+    order: orderAccounting,
+    filledCanonical,
+    balanceDelta,
+  });
   input.repository.updateExecutionLeg(input.clientOrderId, {
     status: 'partial',
     filledAmount: input.order.filled,
@@ -555,20 +789,33 @@ function markPartial(input: {
   });
   input.repository.updateExecutionStatus(input.executionId, 'SEED_PARTIAL', {
     safeModeReason: 'inventory_seed_partial_fill',
-    inventoryDelta: {
-      baseAsset: input.plan.base,
-      baseDelta: filledCanonical.toFixed(),
-      quoteAsset: input.plan.quote,
-      quoteDelta: ZERO.minus(
-        (input.order.averagePrice ?? input.plan.limitPrice)
-          .mul(input.order.filled)
-          .plus(input.order.fee ?? ZERO),
-      ).toFixed(),
-    },
+    fees: resolved.accounting.feeValueQuote,
+    ...(usableSeedAccounting(resolved.accounting)
+      ? {
+          inventoryDelta: {
+            baseAsset: input.plan.base,
+            baseDelta: resolved.accounting.baseDeltaCanonical.toFixed(),
+            quoteAsset: input.plan.quote,
+            quoteDelta: resolved.accounting.quoteDelta.toFixed(),
+          },
+        }
+      : {}),
     metadata: seedMetadata(input.plan, {
       orderStatus: input.order.status,
       filled: input.order.filled.toFixed(),
       remaining: input.order.remaining.toFixed(),
+      feeAmount: input.order.fee?.toFixed() ?? null,
+      feeCurrency: input.order.feeCurrency ?? null,
+      feeAccounting: resolved.accounting.feeTreatment,
+      feeAccountingSource: resolved.source,
+      feeValueQuote: resolved.accounting.feeValueQuote.toFixed(),
+      ...(resolved.balanceDelta
+        ? {
+            balanceBaseDeltaCanonical: resolved.balanceDelta.baseDeltaCanonical.toFixed(),
+            balanceQuoteDelta: resolved.balanceDelta.quoteDelta.toFixed(),
+          }
+        : {}),
+      ...(resolved.balanceMismatch ? { balanceMismatch: resolved.balanceMismatch } : {}),
     }),
   });
   input.repository.setSetting('kill_switch', 'true', input.now);
@@ -582,6 +829,9 @@ function markPartial(input: {
       venueId: input.plan.venueId,
       filled: input.order.filled.toFixed(),
       remaining: input.order.remaining.toFixed(),
+      feeAmount: input.order.fee?.toFixed() ?? null,
+      feeCurrency: input.order.feeCurrency ?? null,
+      feeAccounting: resolved.accounting.feeTreatment,
     },
     input.now,
   );
@@ -632,6 +882,61 @@ function markRejected(input: {
   };
 }
 
+function markAccountingUnknown(input: {
+  repository: ArbitrageRepository;
+  executionId: number;
+  batchId: string;
+  clientOrderId: string;
+  plan: AutomaticInventoryPlan;
+  order: OrderState;
+  reason: string;
+  now: number;
+}): AutomaticInventoryResult {
+  input.repository.updateExecutionLeg(input.clientOrderId, {
+    status: 'filled',
+    filledAmount: input.order.filled,
+    averageFillPrice: input.order.averagePrice,
+    feePaid: input.order.fee,
+    orderId: input.order.venueOrderId,
+  });
+  input.repository.updateExecutionStatus(input.executionId, 'SEED_ACCOUNTING_UNKNOWN', {
+    safeModeReason: input.reason,
+    metadata: seedMetadata(input.plan, {
+      orderStatus: input.order.status,
+      orderId: input.order.venueOrderId,
+      filled: input.order.filled.toFixed(),
+      averagePrice: input.order.averagePrice?.toFixed() ?? null,
+      feeAmount: input.order.fee?.toFixed() ?? null,
+      feeCurrency: input.order.feeCurrency ?? null,
+      accountingStatus: 'unknown',
+    }),
+  });
+  input.repository.setSetting('kill_switch', 'true', input.now);
+  input.repository.recordRiskEvent(
+    'critical',
+    'inventory_seed_accounting_unknown',
+    'automatic inventory seed filled but net inventory could not be attributed safely',
+    {
+      batchId: input.batchId,
+      clientOrderId: input.clientOrderId,
+      venueId: input.plan.venueId,
+      reason: input.reason,
+      feeAmount: input.order.fee?.toFixed() ?? null,
+      feeCurrency: input.order.feeCurrency ?? null,
+    },
+    input.now,
+  );
+  return {
+    status: 'ACCOUNTING_UNKNOWN',
+    reasons: [input.reason],
+    batchId: input.batchId,
+    executionId: input.executionId,
+    order: input.order,
+    filled: input.order.filled,
+    killSwitch: true,
+  };
+}
+
 async function finalizeSeed(input: {
   repository: ArbitrageRepository;
   bundle: RecoveryVenue;
@@ -643,22 +948,111 @@ async function finalizeSeed(input: {
   now: number;
 }): Promise<AutomaticInventoryResult> {
   const { repository, bundle, plan, order } = input;
-  try {
-    await freshBalances(repository, bundle, input.now);
-  } catch (error) {
+  const filledCanonical = canonicalAmountFromExchange(order.filled, plan.baseMultiplier);
+  const orderAccounting = accountSeedFill({
+    base: plan.base,
+    exchangeBase: plan.exchangeBase,
+    quote: plan.quote,
+    baseMultiplier: plan.baseMultiplier,
+    filled: filledCanonical,
+    averagePrice: order.averagePrice,
+    limitPrice: plan.limitPrice,
+    fee: order.fee,
+    feeCurrency: order.feeCurrency,
+  });
+  let balanceDelta: SeedBalanceDelta | undefined;
+  let balanceError: string | undefined;
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    try {
+      const rows = await freshBalances(repository, bundle, Date.now());
+      const base = findBalance(rows, plan.venueId, plan.exchangeBase);
+      const quote = findBalance(rows, plan.venueId, plan.quote);
+      if (!base || !quote) throw new Error('post-seed base/quote balance missing');
+      balanceDelta = seedBalanceDelta({
+        baseBeforeExchange: plan.venueBalance.baseFree,
+        quoteBefore: plan.venueBalance.quoteFree,
+        baseAfterExchange: base.free,
+        quoteAfter: quote.free,
+        baseMultiplier: plan.baseMultiplier,
+      });
+      if (
+        orderAccounting.known ||
+        plausibleSeedBalanceDelta(balanceDelta, orderAccounting, filledCanonical)
+      ) {
+        break;
+      }
+    } catch (error) {
+      balanceError = String(error);
+    }
+    if (attempt < 2) await new Promise((resolve) => setTimeout(resolve, 250 * (attempt + 1)));
+  }
+  if (balanceError) {
     repository.recordRiskEvent(
       'warning',
       'inventory_seed_post_balance_failed',
-      String(error),
+      balanceError,
       { batchId: input.batchId, venueId: plan.venueId },
       input.now,
     );
   }
-  const filledCanonical = canonicalAmountFromExchange(order.filled, plan.baseMultiplier);
-  const quoteSpent = (order.averagePrice ?? plan.limitPrice)
-    .mul(order.filled)
-    .plus(order.fee ?? ZERO);
+  const resolved = resolveSeedAccounting({
+    order: orderAccounting,
+    filledCanonical,
+    balanceDelta,
+  });
+  if (!usableSeedAccounting(resolved.accounting)) {
+    return markAccountingUnknown({
+      repository,
+      executionId: input.executionId,
+      batchId: input.batchId,
+      clientOrderId: input.clientOrderId,
+      plan,
+      order,
+      reason: resolved.accounting.known
+        ? 'inventory_seed_net_delta_invalid'
+        : `inventory_seed_fee_${resolved.accounting.feeTreatment}`,
+      now: Date.now(),
+    });
+  }
+  if (resolved.balanceMismatch) {
+    repository.recordRiskEvent(
+      'warning',
+      resolved.balanceMismatch,
+      'post-seed balance delta differs from order/fee attribution; order attribution retained',
+      {
+        batchId: input.batchId,
+        venueId: plan.venueId,
+        expectedBaseDelta: resolved.accounting.baseDeltaCanonical.toFixed(),
+        expectedQuoteDelta: resolved.accounting.quoteDelta.toFixed(),
+        ...(resolved.balanceDelta
+          ? {
+              actualBaseDelta: resolved.balanceDelta.baseDeltaCanonical.toFixed(),
+              actualQuoteDelta: resolved.balanceDelta.quoteDelta.toFixed(),
+            }
+          : {}),
+      },
+      input.now,
+    );
+  }
+  const quoteSpent = resolved.accounting.quoteDelta.negated();
   const closedAt = input.now;
+  repository.recordOrder({
+    venueId: plan.venueId,
+    venueOrderId: order.venueOrderId,
+    clientOrderId: input.clientOrderId,
+    executionId: input.executionId,
+    symbol: order.symbol,
+    side: order.side,
+    type: order.type,
+    price: order.price ?? plan.limitPrice,
+    amount: order.amount,
+    filledAmount: order.filled,
+    ...(order.averagePrice ? { averagePrice: order.averagePrice } : {}),
+    ...(order.fee ? { fee: order.fee } : {}),
+    ...(order.feeCurrency ? { feeCurrency: order.feeCurrency } : {}),
+    status: order.status,
+    now: closedAt,
+  });
   repository.updateExecutionLeg(input.clientOrderId, {
     status: 'filled',
     filledAmount: order.filled,
@@ -670,11 +1064,11 @@ async function finalizeSeed(input: {
     realizedProfit: ZERO,
     closedAt,
     grossSpread: ZERO,
-    fees: order.fee ?? ZERO,
+    fees: resolved.accounting.feeValueQuote,
     latencyMs: Math.max(0, closedAt - plan.observation.firstSeenAt),
     inventoryDelta: {
       baseAsset: plan.base,
-      baseDelta: filledCanonical.toFixed(),
+      baseDelta: resolved.accounting.baseDeltaCanonical.toFixed(),
       quoteAsset: plan.quote,
       quoteDelta: quoteSpent.negated().toFixed(),
     },
@@ -683,8 +1077,21 @@ async function finalizeSeed(input: {
       orderId: order.venueOrderId,
       filled: order.filled.toFixed(),
       filledCanonical: filledCanonical.toFixed(),
+      netBaseCanonical: resolved.accounting.baseDeltaCanonical.toFixed(),
       averagePrice: order.averagePrice?.toFixed() ?? null,
       quoteSpent: quoteSpent.toFixed(),
+      grossQuote: resolved.accounting.grossQuote.toFixed(),
+      feeAmount: order.fee?.toFixed() ?? null,
+      feeCurrency: order.feeCurrency ?? null,
+      feeTreatment: resolved.accounting.feeTreatment,
+      feeValueQuote: resolved.accounting.feeValueQuote.toFixed(),
+      accountingSource: resolved.source,
+      ...(resolved.balanceDelta
+        ? {
+            balanceBaseDeltaCanonical: resolved.balanceDelta.baseDeltaCanonical.toFixed(),
+            balanceQuoteDelta: resolved.balanceDelta.quoteDelta.toFixed(),
+          }
+        : {}),
     }),
   });
   repository.recordAudit(
@@ -697,8 +1104,12 @@ async function finalizeSeed(input: {
       base: plan.base,
       amount: order.filled.toFixed(),
       filledCanonical: filledCanonical.toFixed(),
+      netBaseCanonical: resolved.accounting.baseDeltaCanonical.toFixed(),
       averagePrice: order.averagePrice?.toFixed() ?? null,
       quoteSpent: quoteSpent.toFixed(),
+      feeAmount: order.fee?.toFixed() ?? null,
+      feeCurrency: order.feeCurrency ?? null,
+      feeTreatment: resolved.accounting.feeTreatment,
       reason: plan.reason,
     },
     closedAt,
@@ -713,6 +1124,10 @@ async function finalizeSeed(input: {
       venueId: plan.venueId,
       base: plan.base,
       amount: order.filled.toFixed(),
+      netBaseCanonical: resolved.accounting.baseDeltaCanonical.toFixed(),
+      feeAmount: order.fee?.toFixed() ?? null,
+      feeCurrency: order.feeCurrency ?? null,
+      feeTreatment: resolved.accounting.feeTreatment,
       reason: plan.reason,
     },
     closedAt,
@@ -842,6 +1257,7 @@ export async function reconcileAutomaticInventoryNoFill(input: {
       filledAmount: exchangeOrder.filled,
       ...(exchangeOrder.averagePrice ? { averagePrice: exchangeOrder.averagePrice } : {}),
       ...(exchangeOrder.fee ? { fee: exchangeOrder.fee } : {}),
+      ...(exchangeOrder.feeCurrency ? { feeCurrency: exchangeOrder.feeCurrency } : {}),
       status: exchangeOrder.status,
       now,
     });
@@ -1269,6 +1685,7 @@ export async function attemptAutomaticInventorySeed(input: {
       if (reconciled.filled.lt(reconciled.amount)) {
         return markPartial({
           repository,
+          bundle,
           executionId,
           batchId,
           clientOrderId,
@@ -1321,6 +1738,7 @@ export async function attemptAutomaticInventorySeed(input: {
     filledAmount: order.filled,
     ...(order.averagePrice ? { averagePrice: order.averagePrice } : {}),
     ...(order.fee ? { fee: order.fee } : {}),
+    ...(order.feeCurrency ? { feeCurrency: order.feeCurrency } : {}),
     status: order.status,
     now: responseAt,
   });
@@ -1367,6 +1785,7 @@ export async function attemptAutomaticInventorySeed(input: {
         filledAmount: canceled.filled,
         ...(canceled.averagePrice ? { averagePrice: canceled.averagePrice } : {}),
         ...(canceled.fee ? { fee: canceled.fee } : {}),
+        ...(canceled.feeCurrency ? { feeCurrency: canceled.feeCurrency } : {}),
         status: canceled.status,
         now: Date.now(),
       });
@@ -1438,6 +1857,7 @@ export async function attemptAutomaticInventorySeed(input: {
   if (order.filled.lt(order.amount)) {
     return markPartial({
       repository,
+      bundle,
       executionId,
       batchId,
       clientOrderId,

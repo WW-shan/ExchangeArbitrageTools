@@ -114,6 +114,150 @@ function stringOrUndefined(value: unknown): string | undefined {
   return undefined;
 }
 
+function recordOrUndefined(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : undefined;
+}
+
+function feeCurrency(value: unknown): string | undefined {
+  return stringOrUndefined(value)?.trim().toUpperCase() || undefined;
+}
+
+interface ExtractedOrderFee {
+  cost: Decimal;
+  currency?: string;
+  source: string;
+}
+
+function feeDetailEntries(value: unknown): ExtractedOrderFee[] {
+  let detail = value;
+  if (typeof detail === 'string') {
+    try {
+      detail = JSON.parse(detail) as unknown;
+    } catch {
+      return [];
+    }
+  }
+  const record = recordOrUndefined(detail);
+  if (!record) return [];
+
+  const entries: ExtractedOrderFee[] = [];
+  for (const [key, rawEntry] of Object.entries(record)) {
+    if (key === 'newFees') continue;
+    const entry = recordOrUndefined(rawEntry);
+    if (!entry) continue;
+    const cost = decimalOrUndefined(entry.totalFee ?? entry.fee ?? entry.feeAmount ?? entry.amount);
+    if (cost === undefined || cost.eq(0)) continue;
+    const currency = feeCurrency(entry.feeCoinCode ?? entry.feeCurrency ?? entry.currency ?? key);
+    entries.push({
+      cost: cost.abs(),
+      ...(currency ? { currency } : {}),
+      source: 'info.feeDetail',
+    });
+  }
+  if (entries.length > 0) return entries;
+
+  const newFees = recordOrUndefined(record.newFees);
+  const fallbackCost = decimalOrUndefined(newFees?.t ?? newFees?.r ?? newFees?.totalFee);
+  if (fallbackCost !== undefined && !fallbackCost.eq(0)) {
+    return [{ cost: fallbackCost.abs(), source: 'info.feeDetail.newFees' }];
+  }
+  return [];
+}
+
+function singleFee(entries: readonly ExtractedOrderFee[]): ExtractedOrderFee | undefined {
+  if (entries.length === 0) return undefined;
+  const currencies = new Set(entries.map((entry) => entry.currency ?? ''));
+  if (currencies.size !== 1) return undefined;
+  return {
+    cost: entries.reduce((total, entry) => total.plus(entry.cost), ZERO),
+    ...(entries[0]?.currency ? { currency: entries[0].currency } : {}),
+    source: entries[0]?.source ?? 'unknown',
+  };
+}
+
+/**
+ * CCXT does not consistently populate `order.fee` for every venue/endpoint.
+ * Gate, for example, returns fee fields only inside `order.info`. Extract the
+ * fee and its asset once at the adapter boundary so downstream inventory
+ * accounting never has to guess whether a fee is denominated in base or quote.
+ */
+export function extractOrderFee(order: {
+  fee?: { cost?: unknown; currency?: unknown } | null | undefined;
+  fees?:
+    ReadonlyArray<{ cost?: unknown; currency?: unknown } | null | undefined> | null | undefined;
+  info?: unknown;
+}): ExtractedOrderFee | undefined {
+  const unified = decimalOrUndefined(order.fee?.cost);
+  if (unified !== undefined && !unified.eq(0)) {
+    return {
+      cost: unified.abs(),
+      ...(feeCurrency(order.fee?.currency) ? { currency: feeCurrency(order.fee?.currency)! } : {}),
+      source: 'order.fee',
+    };
+  }
+
+  if (Array.isArray(order.fees) && order.fees.length > 0) {
+    const components = order.fees
+      .map((fee) => {
+        if (!fee) return undefined;
+        const cost = decimalOrUndefined(fee.cost);
+        if (cost === undefined || cost.eq(0)) return undefined;
+        const currency = feeCurrency(fee.currency);
+        return {
+          cost: cost.abs(),
+          ...(currency ? { currency } : {}),
+          source: 'order.fees',
+        } satisfies ExtractedOrderFee;
+      })
+      .filter((fee): fee is ExtractedOrderFee => fee !== undefined);
+    const combined = singleFee(components);
+    if (combined) return combined;
+  }
+
+  const info = recordOrUndefined(order.info);
+  if (!info) return undefined;
+
+  const detail = singleFee(feeDetailEntries(info.feeDetail));
+  if (detail) return detail;
+
+  const candidates: Array<{
+    costKey: string;
+    currencyKeys: string[];
+    source: string;
+  }> = [
+    {
+      costKey: 'fee',
+      currencyKeys: ['fee_currency', 'feeCurrency', 'feeCoin', 'feeCoinCode', 'feeAsset'],
+      source: 'info.fee',
+    },
+    {
+      costKey: 'commission',
+      currencyKeys: ['commissionAsset', 'commission_asset', 'feeCurrency', 'feeCoin'],
+      source: 'info.commission',
+    },
+    {
+      costKey: 'fillFee',
+      currencyKeys: ['fillFeeCoin', 'feeCurrency', 'feeCoin'],
+      source: 'info.fillFee',
+    },
+  ];
+  for (const candidate of candidates) {
+    const cost = decimalOrUndefined(info[candidate.costKey]);
+    if (cost === undefined || cost.eq(0)) continue;
+    const currency = candidate.currencyKeys
+      .map((key) => feeCurrency(info[key]))
+      .find((value): value is string => value !== undefined);
+    return {
+      cost: cost.abs(),
+      ...(currency ? { currency } : {}),
+      source: candidate.source,
+    };
+  }
+  return undefined;
+}
+
 export function normalizeTransferStatus(value: unknown): TransferStatus {
   const status = String(value ?? '')
     .trim()
@@ -376,6 +520,7 @@ function normalizeOrder(
       : rawStatus === 'open' || rawStatus === 'pending' || rawStatus === 'new'
         ? 'open'
         : 'unknown';
+  const fee = extractOrderFee(order);
   return {
     venueOrderId: String(order.id),
     ...(order.clientOrderId ? { clientOrderId: String(order.clientOrderId) } : {}),
@@ -389,7 +534,8 @@ function normalizeOrder(
     ...(decimalOrUndefined(order.average)
       ? { averagePrice: decimalOrUndefined(order.average)! }
       : {}),
-    ...(decimalOrUndefined(order.fee?.cost) ? { fee: decimalOrUndefined(order.fee?.cost)! } : {}),
+    ...(fee ? { fee: fee.cost } : {}),
+    ...(fee?.currency ? { feeCurrency: fee.currency } : {}),
     status,
     raw: {
       venueId,
@@ -400,6 +546,15 @@ function normalizeOrder(
       remaining: order.remaining ?? null,
       timestamp: order.timestamp ?? null,
       info: order.info ?? null,
+      ...(fee
+        ? {
+            normalizedFee: {
+              cost: fee.cost.toFixed(),
+              currency: fee.currency ?? null,
+              source: fee.source,
+            },
+          }
+        : {}),
     },
   };
 }

@@ -11,7 +11,7 @@ function arg(name: string): string | undefined {
 
 function usage(): string {
   return [
-    'Usage: npm run seed:reconcile -- --batch <batchId> --confirm <batchId>',
+    'Usage: npm run seed:reconcile -- --batch <batchId> --confirm <batchId> [--config <path>]',
     '',
     'Closes a SEED_UNKNOWN execution only after the exchange order is absent or',
     'terminal with zero fill, no open orders exist, and both base and quote free',
@@ -26,7 +26,9 @@ async function main(): Promise<void> {
   if (!batchId || confirm !== batchId) throw new Error(usage());
   const masterKey = process.env.ARB_SECRET_STORE_KEY;
   if (!masterKey) throw new Error('ARB_SECRET_STORE_KEY is required');
-  const config = loadExecutorConfig();
+  const config = loadExecutorConfig(
+    arg('--config') ?? process.env.ARB_CONFIG ?? 'config/live-rotation.toml',
+  );
   const credentials = await loadEncryptedSecretStore(config.secretStorePath, masterKey);
   const repository = new ArbitrageRepository(openDatabase(config.databasePath));
   try {

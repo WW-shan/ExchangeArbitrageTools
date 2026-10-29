@@ -475,4 +475,11 @@
         ON transfer_batches(execution_token, execution_lease_until);
     `,
   },
+  {
+    version: 10,
+    name: 'order_fee_currency',
+    sql: `
+      ALTER TABLE orders ADD COLUMN fee_currency TEXT;
+    `,
+  },
 ] as const;

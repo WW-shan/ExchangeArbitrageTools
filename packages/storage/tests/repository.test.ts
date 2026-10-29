@@ -638,7 +638,7 @@ describe('SQLite storage', () => {
       .all() as Array<{
       version: number;
     }>;
-    expect(versions.map((row) => row.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9]);
+    expect(versions.map((row) => row.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
     const columns = db.prepare('PRAGMA table_info(unhedged_inventory)').all() as Array<{
       name: string;
     }>;
@@ -649,6 +649,10 @@ describe('SQLite storage', () => {
     expect(transferColumns.map((column) => column.name)).toEqual(
       expect.arrayContaining(['execution_token', 'execution_lease_until']),
     );
+    const orderColumns = db.prepare('PRAGMA table_info(orders)').all() as Array<{
+      name: string;
+    }>;
+    expect(orderColumns.map((column) => column.name)).toContain('fee_currency');
     db.close();
     rmSync(directory, { recursive: true, force: true });
   });
