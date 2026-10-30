@@ -207,6 +207,7 @@ export interface CexLiveExecutorOptions {
     safetyBufferBps: Decimal;
     maxGasCostUsd: Decimal;
     maxTransferTaxBps: Decimal;
+    minBuyQuoteReserveUsd?: Decimal;
   };
   sleep?: (ms: number) => Promise<void>;
   clock?: () => number;
@@ -1707,6 +1708,14 @@ export class CexLiveExecutor {
     const reasons: string[] = [];
     if (!quoteBalance || quoteBalance.free.lt(requiredQuote))
       reasons.push('buy_quote_balance_insufficient');
+    const quoteReserve = this.#settings.minBuyQuoteReserveUsd ?? ZERO;
+    if (
+      quoteBalance &&
+      quoteBalance.free.gte(requiredQuote) &&
+      quoteBalance.free.minus(requiredQuote).lt(quoteReserve)
+    ) {
+      reasons.push('buy_quote_reserve_insufficient');
+    }
     const baseFreeCanonical = baseBalance
       ? baseBalance.free.mul(marketBaseMultiplier(request.sell.market))
       : ZERO;

@@ -67,6 +67,7 @@ function buildScanner(
   requireBalancesForS1: boolean,
   monitorOnlyVenues: string[] = [],
   balanceSafetyBufferBps = new Decimal('100'),
+  minBuyQuoteReserveUsd = new Decimal('0'),
 ): ScannerService {
   const venues: ScannerVenue[] = [
     { adapter: adapter('gateio', '2.500', '2.490'), health: new VenueHealthTracker(), markets: [] },
@@ -93,6 +94,7 @@ function buildScanner(
     paperSimulation: false,
     requireBalancesForS1,
     balanceSafetyBufferBps,
+    minBuyQuoteReserveUsd,
     monitorOnlyVenues,
     clock: () => now,
   });
@@ -150,6 +152,46 @@ describe('scanner balance-aware S1 sizing', () => {
     expect(requested.gte('19.7')).toBe(true);
     const metadata = JSON.parse(row.metadata_json) as Record<string, string>;
     expect(new Decimal(metadata.maxExecutableNotional!).lt(20)).toBe(true);
+    repo.close();
+  });
+
+  it('keeps the configured USDT reserve on the buy venue', async () => {
+    const db = openDatabase(':memory:');
+    const repo = new ArbitrageRepository(db);
+    const scanner = buildScanner(repo, false, [], new Decimal('100'), new Decimal('5'));
+    await scanner.initialize();
+    recordBalance(repo, 'gateio', 'USDT', '21');
+    recordBalance(repo, 'mexc', 'CAKE', '100');
+    const summary = await scanner.scanOnce();
+    expect(summary.validOpportunities).toBeGreaterThanOrEqual(1);
+    const row = db
+      .prepare(
+        `SELECT requested_notional, metadata_json FROM opportunities WHERE strategy = 'S1' AND valid = 1`,
+      )
+      .get() as { requested_notional: string; metadata_json: string };
+    const requested = new Decimal(row.requested_notional);
+    expect(requested.lte('16')).toBe(true);
+    expect(requested.gte('15.5')).toBe(true);
+    const metadata = JSON.parse(row.metadata_json) as Record<string, string>;
+    expect(new Decimal(metadata.maxExecutableNotional!).lte('16')).toBe(true);
+    repo.close();
+  });
+
+  it('rejects S1 when the buy venue has no spendable quote above the reserve', async () => {
+    const db = openDatabase(':memory:');
+    const repo = new ArbitrageRepository(db);
+    const scanner = buildScanner(repo, false, [], new Decimal('100'), new Decimal('5'));
+    await scanner.initialize();
+    recordBalance(repo, 'gateio', 'USDT', '5');
+    recordBalance(repo, 'mexc', 'CAKE', '100');
+    const summary = await scanner.scanOnce();
+    expect(summary.validOpportunities).toBe(0);
+    const rows = db
+      .prepare(`SELECT rejection_reasons FROM opportunities WHERE strategy = 'S1'`)
+      .all() as Array<{ rejection_reasons: string }>;
+    expect(
+      rows.some((row) => JSON.parse(row.rejection_reasons).includes('insufficient_balance')),
+    ).toBe(true);
     repo.close();
   });
 

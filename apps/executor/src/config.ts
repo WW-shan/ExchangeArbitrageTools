@@ -65,7 +65,13 @@ export interface AutoInventoryConfig {
   enabled: boolean;
   seedNotionalUsd: Decimal;
   minQuoteReserveUsd: Decimal;
+  minExecutableBuyUsd: Decimal;
   minUsefulNotionalUsd: Decimal;
+  rebalanceEnabled: boolean;
+  maxRebalanceLossUsd: Decimal;
+  minRebalanceEdgeBps: Decimal;
+  rebalanceSignalMaxAgeMs: number;
+  requireSignalForSeed: boolean;
   minStableMs: number;
   maxPairDeviationBps: Decimal;
   maxPriceDriftBps: Decimal;
@@ -530,7 +536,13 @@ function autoRotationConfig(value: unknown, handoffMaxAgeMs: number): AutoRotati
       enabled: booleanValue(inventory, 'enabled', false),
       seedNotionalUsd: decimalValue(inventory, 'seed_notional_usd', '5'),
       minQuoteReserveUsd: decimalValue(inventory, 'min_quote_reserve_usd', '5'),
+      minExecutableBuyUsd: decimalValue(inventory, 'min_executable_buy_usd', '3'),
       minUsefulNotionalUsd: decimalValue(inventory, 'min_useful_notional_usd', '3'),
+      rebalanceEnabled: booleanValue(inventory, 'rebalance_enabled', false),
+      maxRebalanceLossUsd: decimalValue(inventory, 'max_rebalance_loss_usd', '0.25'),
+      minRebalanceEdgeBps: decimalValue(inventory, 'min_rebalance_edge_bps', '50'),
+      rebalanceSignalMaxAgeMs: numberValue(inventory, 'rebalance_signal_max_age_ms', 15_000),
+      requireSignalForSeed: booleanValue(inventory, 'require_signal_for_seed', true),
       minStableMs: numberValue(inventory, 'min_stable_ms', 3_000),
       maxPairDeviationBps: decimalValue(inventory, 'max_pair_deviation_bps', '15'),
       maxPriceDriftBps: decimalValue(inventory, 'max_price_drift_bps', '25'),
@@ -607,6 +619,40 @@ function validateSafetyBounds(config: ExecutorConfig): void {
     }
     if (!inventory.minQuoteReserveUsd.isFinite() || inventory.minQuoteReserveUsd.lt(0)) {
       throw new Error('auto_rotation.inventory.min_quote_reserve_usd must be non-negative');
+    }
+    if (
+      !inventory.minExecutableBuyUsd.isFinite() ||
+      inventory.minExecutableBuyUsd.lte(0) ||
+      inventory.minExecutableBuyUsd.gt(inventory.seedNotionalUsd)
+    ) {
+      throw new Error(
+        'auto_rotation.inventory.min_executable_buy_usd must be within the seed notional',
+      );
+    }
+    if (
+      !inventory.maxRebalanceLossUsd.isFinite() ||
+      inventory.maxRebalanceLossUsd.lt(0) ||
+      inventory.maxRebalanceLossUsd.gt(config.riskLimits.dailyMaxLoss)
+    ) {
+      throw new Error(
+        'auto_rotation.inventory.max_rebalance_loss_usd is outside the daily loss limit',
+      );
+    }
+    if (
+      !inventory.minRebalanceEdgeBps.isFinite() ||
+      inventory.minRebalanceEdgeBps.lt(0) ||
+      inventory.minRebalanceEdgeBps.gt(1_000)
+    ) {
+      throw new Error('auto_rotation.inventory.min_rebalance_edge_bps is outside the safety bound');
+    }
+    if (
+      !Number.isInteger(inventory.rebalanceSignalMaxAgeMs) ||
+      inventory.rebalanceSignalMaxAgeMs < 1_000 ||
+      inventory.rebalanceSignalMaxAgeMs > 300_000
+    ) {
+      throw new Error(
+        'auto_rotation.inventory.rebalance_signal_max_age_ms must be between 1000 and 300000',
+      );
     }
     if (
       !inventory.minUsefulNotionalUsd.isFinite() ||
@@ -825,6 +871,7 @@ export function loadExecutorConfig(
       safetyBufferBps: decimalValue(scanner, 'safety_buffer_bps', '15'),
       maxGasCostUsd: decimalValue(scanner, 'max_gas_cost_usd', '0.50'),
       maxTransferTaxBps: decimalValue(scanner, 'max_transfer_tax_bps', '0'),
+      minBuyQuoteReserveUsd: autoRotation.inventory.minQuoteReserveUsd,
     },
   };
   if (maxOpenBatches !== 1) throw new Error('execution.max_open_batches must be 1');

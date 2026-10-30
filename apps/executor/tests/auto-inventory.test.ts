@@ -125,7 +125,13 @@ function config(overrides: Partial<ExecutorConfig['autoRotation']['inventory']> 
         enabled: true,
         seedNotionalUsd: new Decimal(5),
         minQuoteReserveUsd: new Decimal(5),
+        minExecutableBuyUsd: new Decimal(3),
         minUsefulNotionalUsd: new Decimal(3),
+        rebalanceEnabled: true,
+        maxRebalanceLossUsd: new Decimal('0.25'),
+        minRebalanceEdgeBps: new Decimal(50),
+        rebalanceSignalMaxAgeMs: 15_000,
+        requireSignalForSeed: true,
         minStableMs: 0,
         maxPairDeviationBps: new Decimal(15),
         maxPriceDriftBps: new Decimal(25),
@@ -418,6 +424,57 @@ describe('automatic inventory planning', () => {
     expect(decision.plan.reason).toBe('both_sides_missing_funded_side');
   });
 
+  it('seeds the signal sell venue even when the other venue is cheaper', () => {
+    const decision = planAutomaticInventorySeed({
+      pair: config().autoRotation.pairs[0]!,
+      venues: [
+        inventoryVenue('gateio', '0.0050', '0.00499', '0', '20'),
+        inventoryVenue('bitget', '0.005004', '0.004994', '0', '20'),
+      ],
+      config: config().autoRotation.inventory,
+      now: Date.now(),
+      preferredVenueId: 'bitget',
+    });
+    expect(decision.action).toBe('SEED');
+    if (decision.action !== 'SEED') return;
+    expect(decision.plan.venueId).toBe('bitget');
+    expect(decision.plan.reason).toBe('missing_side_near_parity');
+  });
+
+  it('does not seed the preferred side when that side is already useful', () => {
+    const decision = planAutomaticInventorySeed({
+      pair: config().autoRotation.pairs[0]!,
+      venues: [
+        inventoryVenue('gateio', '0.0050', '0.00499', '0', '20'),
+        inventoryVenue('bitget', '0.0051', '0.00509', '1000', '20'),
+      ],
+      config: config().autoRotation.inventory,
+      now: Date.now(),
+      preferredVenueId: 'bitget',
+    });
+    expect(decision).toMatchObject({
+      action: 'NOOP',
+      reasons: ['inventory_preferred_side_sufficient'],
+    });
+  });
+
+  it('does not seed the preferred side outside the pair price band', () => {
+    const decision = planAutomaticInventorySeed({
+      pair: config().autoRotation.pairs[0]!,
+      venues: [
+        inventoryVenue('gateio', '0.0050', '0.00499', '0', '20'),
+        inventoryVenue('bitget', '0.0052', '0.00519', '0', '20'),
+      ],
+      config: config().autoRotation.inventory,
+      now: Date.now(),
+      preferredVenueId: 'bitget',
+    });
+    expect(decision).toMatchObject({
+      action: 'WAIT',
+      reasons: ['missing_side_above_pair_band'],
+    });
+  });
+
   it('waits for the price to remain stable', () => {
     const now = Date.now();
     const pair = config().autoRotation.pairs[0]!;
@@ -685,6 +742,36 @@ describe('automatic inventory execution', () => {
       now,
     });
     expect(result).toMatchObject({ status: 'NOOP', reasons: ['inventory_sufficient'] });
+    expect(gate.requests).toEqual([]);
+    expect(bitget.requests).toEqual([]);
+  });
+
+  it('does not call inventory sufficient when one venue has base but no buy-side USDT', async () => {
+    const {
+      repository,
+      adapters,
+      markets,
+      config: executorConfig,
+      gate,
+      bitget,
+      now,
+    } = setup({
+      gateWard: '1000',
+      bitgetWard: '1000',
+      gateUsdt: '20',
+      bitgetUsdt: '0.09',
+    });
+    const result = await attemptAutomaticInventorySeed({
+      repository,
+      config: executorConfig,
+      adapters,
+      markets,
+      pair: executorConfig.autoRotation.pairs[0]!,
+      now,
+    });
+    expect(result.status).toBe('WAIT');
+    expect(result.reasons).toContain('inventory_quote_rebalance_required');
+    expect(result.reasons).toContain('bitget_quote_reserve_short');
     expect(gate.requests).toEqual([]);
     expect(bitget.requests).toEqual([]);
   });

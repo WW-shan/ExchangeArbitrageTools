@@ -38,7 +38,7 @@ ws_scan_interval_ms = 1000
 orderbook_depth = 20
 min_net_profit_bps = 5
 safety_buffer_bps = 2
-min_profit_usd = "0.01"
+min_profit_usd = "0.005"
 max_slippage_bps = 30
 max_gas_cost_usd = "0.50"
 max_transfer_tax_bps = 0
@@ -53,7 +53,7 @@ rebalance_cost_bps = 0
 execution_mode = 'taker_taker'
 maker_fill_probability = '0.5'
 optimal_sizing = true
-min_sizing_notional = "3"
+min_sizing_notional = "1.4"
 sizing_step = "0.01"
 max_sizing_candidates_per_cycle = 20
 sizing_samples = 12
@@ -71,6 +71,11 @@ require_balances_for_s1 = true
 # Reserve 1% of the limiting balance for preflight price movement and fees.
 # Without this, a full-balance signal can safe-stop as sell_base_balance_insufficient.
 balance_safety_buffer_bps = 100
+# Keep a buy-side USDT reserve on every executable venue. The scanner will not
+# size an S1 buy that would consume this reserve. The current account is tiny,
+# so the reserve is 0.5 USDT and the minimum executable leg is 1.4 USDT; a
+# 5 USDT reserve made every minimum-size buy unfunded.
+min_buy_quote_reserve_usd = '0.5'
 min_top_depth_qty = "0"
 liquidity_top_levels = 5
 
@@ -145,13 +150,30 @@ max_baseline_age_ms = 60000
 [auto_rotation.inventory]
 enabled = true
 seed_notional_usd = '5'
-min_quote_reserve_usd = '5'
-min_useful_notional_usd = '3'
+# Minimum USDT that must remain available after the buy leg on each venue. This
+# is also passed to the scanner and executor as a hard post-trade reserve.
+min_quote_reserve_usd = '0.5'
+# The rebalancer restores reserve + this amount so the venue can immediately
+# submit a minimum-size S1 buy instead of stopping at an unusable reserve.
+min_executable_buy_usd = '1.4'
+min_useful_notional_usd = '1.4'
 min_stable_ms = 3000
 max_pair_deviation_bps = '30'
 max_price_drift_bps = '100'
 check_interval_ms = 1000
 retry_cooldown_ms = 60000
+# If a fresh positive S1 signal needs USDT on the buy venue and that venue has
+# excess base, sell only enough base to restore the buy reserve. The sale must
+# leave at least min_useful_notional_usd of base for the sell leg and must stay
+# below the configured one-time cost ceiling.
+rebalance_enabled = true
+max_rebalance_loss_usd = '0.25'
+min_rebalance_edge_bps = '50'
+rebalance_signal_max_age_ms = 15000
+# Do not build inventory for a pair unless there is a fresh directional S1
+# signal. Without this, the supervisor seeds every pair in rotation and can
+# spread the tiny shared USDT balance across unrelated base assets.
+require_signal_for_seed = true
 
 [[auto_rotation.pairs]]
 base = 'WARD'

@@ -88,6 +88,7 @@ export interface ScannerConfig {
   balanceMaxAgeMs: number;
   requireBalancesForS1: boolean;
   balanceSafetyBufferBps: Decimal;
+  minBuyQuoteReserveUsd: Decimal;
   optimalSizing: boolean;
   minSizingNotional: Decimal;
   sizingStep: Decimal;
@@ -365,6 +366,7 @@ export function loadConfig(path = 'config/default.toml'): AppConfig {
       balanceMaxAgeMs: numberValue(scanner, 'balance_max_age_ms', 300_000),
       requireBalancesForS1: booleanValue(scanner, 'require_balances_for_s1', false),
       balanceSafetyBufferBps: decimalValue(scanner, 'balance_safety_buffer_bps', '100'),
+      minBuyQuoteReserveUsd: decimalValue(scanner, 'min_buy_quote_reserve_usd', '0'),
       optimalSizing: booleanValue(scanner, 'optimal_sizing', true),
       minSizingNotional: decimalValue(scanner, 'min_sizing_notional', '1'),
       sizingStep: decimalValue(scanner, 'sizing_step', '0.01'),

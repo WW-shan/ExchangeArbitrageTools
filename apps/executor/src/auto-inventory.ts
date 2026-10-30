@@ -407,6 +407,7 @@ export function planAutomaticInventorySeed(input: {
   config: AutoInventoryConfig;
   now: number;
   previousObservation?: InventoryStabilityObservation;
+  preferredVenueId?: string;
 }): AutomaticInventoryDecision {
   const { pair, config, now, previousObservation } = input;
   const quote = pair.quote.trim().toUpperCase();
@@ -430,6 +431,20 @@ export function planAutomaticInventorySeed(input: {
   }
   const firstUseful = firstBaseUsd.gte(config.minUsefulNotionalUsd);
   const secondUseful = secondBaseUsd.gte(config.minUsefulNotionalUsd);
+  const quoteShortReasons = [
+    ...(first.balance.quoteFree.lt(config.minQuoteReserveUsd)
+      ? [`${first.venueId}_quote_reserve_short`]
+      : []),
+    ...(second.balance.quoteFree.lt(config.minQuoteReserveUsd)
+      ? [`${second.venueId}_quote_reserve_short`]
+      : []),
+  ];
+  if (quoteShortReasons.length > 0) {
+    return {
+      action: 'WAIT',
+      reasons: ['inventory_quote_rebalance_required', ...quoteShortReasons],
+    };
+  }
   if (firstUseful && secondUseful) {
     return { action: 'NOOP', reasons: ['inventory_sufficient'] };
   }
@@ -441,7 +456,28 @@ export function planAutomaticInventorySeed(input: {
   let seedBaseUsd: Decimal;
   let otherBaseUsd: Decimal;
   let reason: InventorySeedReason;
-  if (!firstUseful && !secondUseful) {
+  const preferred = input.preferredVenueId
+    ? [first, second].find((venue) => venue.venueId === input.preferredVenueId)
+    : undefined;
+  if (input.preferredVenueId && !preferred) {
+    return { action: 'WAIT', reasons: ['inventory_preferred_venue_not_in_pair'] };
+  }
+  if (preferred && (preferred.venueId === first.venueId ? firstUseful : secondUseful)) {
+    return { action: 'NOOP', reasons: ['inventory_preferred_side_sufficient'] };
+  }
+  if (preferred) {
+    seed = preferred;
+    other = preferred.venueId === first.venueId ? second : first;
+    seedAsk = preferred.venueId === first.venueId ? firstAsk : secondAsk;
+    otherAsk = preferred.venueId === first.venueId ? secondAsk : firstAsk;
+    seedBaseUsd = preferred.venueId === first.venueId ? firstBaseUsd : secondBaseUsd;
+    otherBaseUsd = preferred.venueId === first.venueId ? secondBaseUsd : firstBaseUsd;
+    const deviationBps = seedAsk.minus(otherAsk).div(otherAsk).mul(10_000);
+    if (seedAsk.gt(otherAsk) && deviationBps.gt(config.maxPairDeviationBps)) {
+      return { action: 'WAIT', reasons: ['missing_side_above_pair_band'] };
+    }
+    reason = seedAsk.lte(otherAsk) ? 'missing_side_cheaper' : 'missing_side_near_parity';
+  } else if (!firstUseful && !secondUseful) {
     const firstCheaper = firstAsk.lte(secondAsk);
     const requiredSpend = Decimal.min(
       config.seedNotionalUsd,
@@ -1390,6 +1426,7 @@ export async function attemptAutomaticInventorySeed(input: {
   pair: RotationPairConfig;
   now?: number;
   previousObservation?: InventoryStabilityObservation;
+  preferredVenueId?: string;
   sleep?: (ms: number) => Promise<void>;
 }): Promise<AutomaticInventoryResult> {
   const { repository, config, adapters, markets, pair } = input;
@@ -1488,6 +1525,7 @@ export async function attemptAutomaticInventorySeed(input: {
     config: settings,
     now,
     ...(input.previousObservation ? { previousObservation: input.previousObservation } : {}),
+    ...(input.preferredVenueId ? { preferredVenueId: input.preferredVenueId } : {}),
   });
   if (initial.action !== 'SEED') {
     return {
@@ -1533,6 +1571,7 @@ export async function attemptAutomaticInventorySeed(input: {
     config: settings,
     now,
     previousObservation: initial.plan.observation,
+    ...(input.preferredVenueId ? { preferredVenueId: input.preferredVenueId } : {}),
   });
   if (finalDecision.action !== 'SEED') {
     return {

@@ -185,6 +185,7 @@ export interface ScannerServiceOptions {
   balanceMaxAgeMs?: number;
   requireBalancesForS1?: boolean;
   balanceSafetyBufferBps?: Decimal;
+  minBuyQuoteReserveUsd?: Decimal;
   monitorOnlyVenues?: string[];
   optimalSizing?: boolean;
   minSizingNotional?: Decimal;
@@ -253,6 +254,7 @@ export class ScannerService {
   readonly #balanceMaxAgeMs: number;
   readonly #requireBalancesForS1: boolean;
   readonly #balanceSafetyBufferBps: Decimal;
+  readonly #minBuyQuoteReserveUsd: Decimal;
   readonly #monitorOnlyVenues: ReadonlySet<string>;
   readonly #optimalSizing: boolean;
   readonly #minSizingNotional: Decimal;
@@ -379,6 +381,11 @@ export class ScannerService {
       balanceSafetyBufferBps.lt(10_000)
         ? balanceSafetyBufferBps
         : new Decimal(100);
+    const minBuyQuoteReserveUsd = options.minBuyQuoteReserveUsd ?? ZERO;
+    this.#minBuyQuoteReserveUsd =
+      minBuyQuoteReserveUsd.isFinite() && minBuyQuoteReserveUsd.gte(0)
+        ? minBuyQuoteReserveUsd
+        : ZERO;
     this.#monitorOnlyVenues = new Set(
       (options.monitorOnlyVenues ?? []).map((venueId) => venueId.trim().toLowerCase()),
     );
@@ -1256,7 +1263,8 @@ export class ScannerService {
     const bufferFactor = new Decimal(1).minus(this.#balanceSafetyBufferBps.div(10_000));
     const buyFeeBps = buyMarket.feeTakerBps ?? ZERO;
     const quoteFactor = new Decimal(1).plus(buyFeeBps.div(10_000));
-    const quoteCap = quoteFree.div(quoteFactor).mul(bufferFactor);
+    const spendableQuote = Decimal.max(0, quoteFree.minus(this.#minBuyQuoteReserveUsd));
+    const quoteCap = spendableQuote.div(quoteFactor).mul(bufferFactor);
     const baseCap = baseFreeCanonical.mul(buyPrice).mul(bufferFactor);
     const maxNotional = Decimal.min(quoteCap, baseCap);
     return {

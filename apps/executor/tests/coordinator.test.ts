@@ -418,6 +418,30 @@ describe('live executor safety gates', () => {
     repo.close();
   });
 
+  it('rejects a buy that would consume the configured quote reserve', async () => {
+    const { repo, buy, sell } = setup();
+    const executor = new CexLiveExecutor({
+      repository: repo,
+      gate: new ExecutionGate(limits),
+      limits,
+      liveEnabled: true,
+      settings: { ...settings, minBuyQuoteReserveUsd: new Decimal(80) },
+      sleep: async () => {},
+      clock: () => now,
+    });
+    const result = await executor.execute(
+      request(
+        { adapter: buy.adapter, market: market('gateio'), credentials: keys, healthState: 'A' },
+        { adapter: sell.adapter, market: market('mexc'), credentials: keys, healthState: 'A' },
+      ),
+    );
+    expect(result.outcome).toBe('PREFLIGHT_FAILED');
+    expect(result.reasons).toContain('buy_quote_reserve_insufficient');
+    expect(buy.state.createCalls).toBe(0);
+    expect(sell.state.createCalls).toBe(0);
+    repo.close();
+  });
+
   it('rechecks signal age after fresh-book and balance preflight', async () => {
     let current = now;
     const { repo, buy, sell } = setup({ onFetchBook: () => (current += 750) });
