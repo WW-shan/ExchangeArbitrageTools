@@ -192,6 +192,38 @@ Gate 买入手续费从 WARD 余额扣除，所以两个交易所合计的 WARD 
 一致。成功这笔的预检耗时为 `1.482 s`（盘口 `1.424 s`，余额 `1.481 s`），
 说明超过 2 秒的预检确实是机会流失的主要风险。
 
+紧接着又闭合了第二笔真实 S1：
+
+```text
+S1-865739-1793352100602
+Gate buy     1051 WARD @ 0.002938
+Bitget sell  1051 WARD @ 0.00295
+both legs filled, fill mismatch 0
+economic profit       0.008594462114 USDT
+cash profit           0.00645459038 USDT
+rebate receivable     0.002139871734 USDT
+Gate WARD fee         1.04049 WARD (charged in base)
+preflight timing      424 ms
+```
+
+这笔的预检盘口、余额和挂单查询都只有 `0.3-0.4 s`，说明前一笔的慢主要是
+连接/代理冷启动或偶发抖动。两笔合计经济利润约 `0.01686 USDT`，均通过
+`CLOSED` 状态和两所余额增量核对。
+
+之后 `REBAL-LIGHT` 尝试卖出 `13 LIGHT` 补 Gate USDT，但 Gate FOK 返回
+未完全成交，执行状态为 `REBALANCE_REJECTED`，余额和订单均未改变。这是正确
+的 fail-closed 行为，没有留下挂单。
+
+截至 09:28 UTC 的轮换仓位：
+
+```text
+Gate   WARD  2614.40917     USDT  0.5350968062
+Bitget WARD   536.68001     USDT  3.60189106808
+```
+
+Gate 持有卖腿 base，Bitget 持有买腿 USDT，因此下一轮反向 `Bitget buy ->
+Gate sell` 已具备库存；如果价差反转，系统可以直接执行，不需要再次补资金。
+
 只读延迟拆解显示，正常情况下单次 Gate/Bitget 余额、挂单、盘口 REST 调用约为
 `290-320 ms`，启动时 `loadMarkets` 为 `5-6 s` 但不在热路径。由于预检存在
 偶发 3 秒级等待，代码已增加 `executionTiming`，记录：
