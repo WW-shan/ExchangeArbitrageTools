@@ -74,6 +74,18 @@ export interface LiveExecutionResult {
   reasons: string[];
   realizedProfit?: Decimal;
   ordersSubmitted: number;
+  timing?: LiveExecutionTiming;
+}
+
+export interface LiveExecutionTiming {
+  executeStartedAt: number;
+  bookFetchStartedAt?: number;
+  bookFetchCompletedAt?: number;
+  balanceFetchStartedAt?: number;
+  balanceFetchCompletedAt?: number;
+  openOrderCheckCompletedAt?: number;
+  evaluationCompletedAt?: number;
+  preflightAt?: number;
 }
 
 interface PreparedLimitOrder {
@@ -290,6 +302,7 @@ export class CexLiveExecutor {
 
   async execute(request: LiveExecutionRequest): Promise<LiveExecutionResult> {
     const executeStartedAt = this.#clock();
+    const timing: LiveExecutionTiming = { executeStartedAt };
     const machine = new BatchStateMachine();
     const states: BatchState[] = ['IDLE'];
     const reasons: string[] = [];
@@ -311,6 +324,7 @@ export class CexLiveExecutor {
       states,
       reasons,
       ordersSubmitted,
+      timing: { ...timing },
       ...(realized ? { realizedProfit: realized } : {}),
     });
     const safeStop = (reason: string): LiveExecutionResult => {
@@ -409,7 +423,9 @@ export class CexLiveExecutor {
     }
     const risk = this.#repository.riskSnapshot(this.#clock());
     const bookFetchStartedAt = this.#clock();
+    timing.bookFetchStartedAt = bookFetchStartedAt;
     const balanceFetchStartedAt = bookFetchStartedAt;
+    timing.balanceFetchStartedAt = balanceFetchStartedAt;
     const balanceFetchPromise = this.fetchBalanceRows(request);
     const openOrderCheckPromise = checkNoOpenOrders([
       {
@@ -428,6 +444,7 @@ export class CexLiveExecutor {
       this.fetchFreshBook(request.sell),
     ]);
     const bookFetchCompletedAt = this.#clock();
+    timing.bookFetchCompletedAt = bookFetchCompletedAt;
     if (!buyBookResult.ok || !sellBookResult.ok) {
       if (!buyBookResult.ok) reasons.push(...buyBookResult.reasons);
       if (!sellBookResult.ok) reasons.push(...sellBookResult.reasons);
@@ -479,6 +496,7 @@ export class CexLiveExecutor {
     const refreshed = preparation
       ? evaluateS1Preparation(evaluationInput, preparation)
       : evaluateS1Direction(evaluationInput);
+    timing.evaluationCompletedAt = this.#clock();
     if (!refreshed.valid) {
       reasons.push(...refreshed.rejectionReasons);
       transition('PREFLIGHT_FAILED');
@@ -570,6 +588,7 @@ export class CexLiveExecutor {
       .mul('1.01');
     const balanceRows = await balanceFetchPromise;
     const balanceFetchCompletedAt = this.#clock();
+    timing.balanceFetchCompletedAt = balanceFetchCompletedAt;
     if (!balanceRows.ok) {
       reasons.push(...balanceRows.reasons);
       transition('PREFLIGHT_FAILED');
@@ -596,6 +615,7 @@ export class CexLiveExecutor {
     const balanceBaselines = { buy: balances.buy, sell: balances.sell };
     const openOrderCheck = await openOrderCheckPromise;
     const openOrderCheckCompletedAt = this.#clock();
+    timing.openOrderCheckCompletedAt = openOrderCheckCompletedAt;
     if (openOrderCheck.orders.length > 0) {
       return safeStop('open_orders_present');
     }
@@ -605,6 +625,7 @@ export class CexLiveExecutor {
       return outcome('PREFLIGHT_FAILED');
     }
     const preflightAt = this.#clock();
+    timing.preflightAt = preflightAt;
     const signalAgeMs = Math.max(0, preflightAt - request.opportunity.sampledAt);
     const preflightMs = Math.max(0, preflightAt - executeStartedAt);
     if (

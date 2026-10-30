@@ -462,6 +462,15 @@ describe('live executor safety gates', () => {
     );
     expect(result.outcome).toBe('PREFLIGHT_FAILED');
     expect(result.reasons).toContain('signal_expired_at_preflight');
+    expect(result.timing).toMatchObject({
+      executeStartedAt: now,
+      bookFetchStartedAt: now,
+      bookFetchCompletedAt: now + 1500,
+      balanceFetchStartedAt: now,
+      balanceFetchCompletedAt: now + 1500,
+      openOrderCheckCompletedAt: now + 1500,
+      evaluationCompletedAt: now + 1500,
+    });
     expect(buy.state.createCalls).toBe(0);
     expect(sell.state.createCalls).toBe(0);
     repo.close();

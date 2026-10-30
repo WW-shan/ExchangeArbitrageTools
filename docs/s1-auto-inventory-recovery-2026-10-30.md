@@ -122,6 +122,56 @@ base 就买”改成“只有出现正价差方向才准备对应卖腿”。当
 以 LIGHT 为例，卖出约 `12 LIGHT`、按盘口最优卖价可得到约 `3 USDT`，随后
 重新扫描。没有正信号时不会为了补库存而主动卖出。
 
+## 2026-10-30 实盘验证
+
+17:02（HKT）出现 WARD `gateio->bitget` 的余额受限正信号，系统先执行了跨 pair
+补资金：
+
+```text
+REBALANCE execution 53
+funding pair        LA/USDT
+venue               gateio
+sell                57 LA
+limit price         0.05319
+average fill        0.05321
+FOK result          filled
+fee                 0.0030026403 USDT
+quote proceeds      3.0299673597 USDT
+Gate USDT before    2.052031568
+Gate USDT after     5.0819989277
+Gate LA before      94.81289
+Gate LA after       37.81289
+```
+
+余额增量与订单增量一致，执行状态为 `CLOSED`，kill switch 保持关闭，没有未对账
+订单。这证明“目标 pair 没库存 -> 从同交易所其他 pair 卖冗余 base -> 恢复买腿
+USDT -> 重新扫描”的链路在真实账户上成立。
+
+补资金完成后，系统立即看到 WARD `gateio->bitget` 的正 S1：
+
+```text
+09:03:05 UTC  55.83 bps  4.53 USDT  -> PREFLIGHT_FAILED: gross_profit_below_threshold
+09:03:32 UTC   7.08 bps  4.53 USDT  -> PREFLIGHT_FAILED: gross_profit_below_threshold
+09:03:37 UTC  45.33 bps  4.53 USDT  -> PREFLIGHT_FAILED: signal_expired_at_preflight
+09:04:50 UTC  41.86 bps  4.53 USDT  -> PREFLIGHT_FAILED: preflight_too_slow
+```
+
+这些失败的共同点是：信号选择到执行开始只有 `8-15 ms`，但预检耗时约
+`2.3-4.5 s`，重新抓到的盘口已经不支持原来的净利。它们没有提交任何订单，也
+没有改变余额。因此当前主要瓶颈不是扫描或选路，而是预检阶段的外部 API 往返。
+
+只读延迟拆解显示，正常情况下单次 Gate/Bitget 余额、挂单、盘口 REST 调用约为
+`290-320 ms`，启动时 `loadMarkets` 为 `5-6 s` 但不在热路径。由于预检存在
+偶发 3 秒级等待，代码已增加 `executionTiming`，记录：
+
+- `bookFetchStartedAt/bookFetchCompletedAt`
+- `balanceFetchStartedAt/balanceFetchCompletedAt`
+- `openOrderCheckCompletedAt`
+- `evaluationCompletedAt`
+- `preflightAt`
+
+下一次 S1 失败时可以直接区分是盘口请求、余额请求、挂单请求还是网络抖动。
+
 ## 验证
 
 ```text

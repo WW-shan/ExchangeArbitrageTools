@@ -1564,6 +1564,7 @@ export async function runAutoRotationSupervisor(
           signalAgeAtResultMs: Math.max(0, resultAt - opportunity.sampledAt),
           executionDurationMs: Math.max(0, resultAt - executionStartedAt),
           endToEndLatencyMs: Math.max(0, resultAt - opportunity.sampledAt),
+          executionTiming: result.timing ?? null,
           realizedProfit: result.realizedProfit?.toFixed() ?? null,
         },
         resultAt,
@@ -1580,6 +1581,7 @@ export async function runAutoRotationSupervisor(
         signalAgeAtResultMs: Math.max(0, resultAt - opportunity.sampledAt),
         executionDurationMs: Math.max(0, resultAt - executionStartedAt),
         endToEndLatencyMs: Math.max(0, resultAt - opportunity.sampledAt),
+        executionTiming: result.timing ?? null,
         realizedProfit: result.realizedProfit?.toFixed() ?? null,
       });
       if (result.outcome === 'CLOSED' || result.ordersSubmitted > 0) {
