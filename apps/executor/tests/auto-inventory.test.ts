@@ -67,8 +67,9 @@ function balances(
   ward: string,
   usdt: string,
   fetchedAt = Date.now() - 1000,
+  omitZero = false,
 ): BalanceSnapshot[] {
-  return [
+  const rows: BalanceSnapshot[] = [
     {
       venueId,
       accountId: 'default',
@@ -88,6 +89,7 @@ function balances(
       fetchedAt,
     },
   ];
+  return omitZero ? rows.filter((row) => row.free.gt(0)) : rows;
 }
 
 function inventoryVenue(
@@ -237,6 +239,7 @@ function setup(
     orderFee?: string;
     gateAfterWard?: string;
     gateAfterUsdt?: string;
+    omitZeroBalances?: boolean;
     inventory?: Partial<ExecutorConfig['autoRotation']['inventory']>;
   } = {},
 ) {
@@ -255,8 +258,20 @@ function setup(
   repository.setSetting('live_enabled', 'true', now);
   repository.setSetting('auto_execution_enabled', 'true', now);
   repository.setSetting('kill_switch', 'false', now);
-  const gateBefore = balances('gateio', options.gateWard ?? '0', options.gateUsdt ?? '20');
-  const bitgetBefore = balances('bitget', options.bitgetWard ?? '0', options.bitgetUsdt ?? '20');
+  const gateBefore = balances(
+    'gateio',
+    options.gateWard ?? '0',
+    options.gateUsdt ?? '20',
+    Date.now() - 1000,
+    options.omitZeroBalances,
+  );
+  const bitgetBefore = balances(
+    'bitget',
+    options.bitgetWard ?? '0',
+    options.bitgetUsdt ?? '20',
+    Date.now() - 1000,
+    options.omitZeroBalances,
+  );
   for (const row of [...gateBefore, ...bitgetBefore]) repository.recordBalance(row);
   const gateAfter = balances(
     'gateio',
@@ -371,7 +386,7 @@ describe('automatic inventory planning', () => {
     expect(decision.plan.plannedNotional.gt('2.4')).toBe(true);
   });
 
-  it('does not spend the quote reserve', () => {
+  it('does not buy the funded side when it is outside the pair band', () => {
     const decision = planAutomaticInventorySeed({
       pair: config().autoRotation.pairs[0]!,
       venues: [
@@ -383,8 +398,24 @@ describe('automatic inventory planning', () => {
     });
     expect(decision).toMatchObject({
       action: 'WAIT',
-      reasons: ['inventory_quote_reserve_exhausted'],
+      reasons: ['funded_side_above_pair_band'],
     });
+  });
+
+  it('seeds the funded side when both sides are missing and the price is near parity', () => {
+    const decision = planAutomaticInventorySeed({
+      pair: config().autoRotation.pairs[0]!,
+      venues: [
+        inventoryVenue('gateio', '0.0050', '0.00499', '0', '5'),
+        inventoryVenue('bitget', '0.005004', '0.004994', '0', '20'),
+      ],
+      config: config().autoRotation.inventory,
+      now: Date.now(),
+    });
+    expect(decision.action).toBe('SEED');
+    if (decision.action !== 'SEED') return;
+    expect(decision.plan.venueId).toBe('bitget');
+    expect(decision.plan.reason).toBe('both_sides_missing_funded_side');
   });
 
   it('waits for the price to remain stable', () => {
@@ -498,6 +529,30 @@ describe('automatic inventory fee accounting', () => {
 });
 
 describe('automatic inventory execution', () => {
+  it('treats omitted zero-balance assets as zero instead of a missing snapshot', async () => {
+    const {
+      repository,
+      adapters,
+      markets,
+      config: executorConfig,
+      gate,
+      now,
+    } = setup({
+      omitZeroBalances: true,
+    });
+    const result = await attemptAutomaticInventorySeed({
+      repository,
+      config: executorConfig,
+      adapters,
+      markets,
+      pair: executorConfig.autoRotation.pairs[0]!,
+      now,
+    });
+    expect(result.status).toBe('FILLED');
+    expect(gate.requests).toHaveLength(1);
+    expect(gate.requests[0]).toMatchObject({ side: 'buy', timeInForce: 'FOK' });
+  });
+
   it('submits one FOK buy and records a SEED execution', async () => {
     const { repository, adapters, markets, config: executorConfig, gate, now } = setup();
     const result = await attemptAutomaticInventorySeed({

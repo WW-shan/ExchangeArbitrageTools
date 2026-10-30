@@ -48,7 +48,10 @@ export interface InventoryStabilityObservation {
 }
 
 export type InventorySeedReason =
-  'both_sides_missing_cheaper_side' | 'missing_side_cheaper' | 'missing_side_near_parity';
+  | 'both_sides_missing_cheaper_side'
+  | 'both_sides_missing_funded_side'
+  | 'missing_side_cheaper'
+  | 'missing_side_near_parity';
 
 export interface AutomaticInventoryPlan {
   pair: RotationPairConfig;
@@ -322,14 +325,17 @@ function balanceView(
   venueId: string,
   market: MarketMetadata,
 ): InventoryBalanceView | undefined {
+  const venueRows = rows.filter(
+    (row) => row.venueId.trim().toLowerCase() === venueId.trim().toLowerCase(),
+  );
+  if (venueRows.length === 0) return undefined;
   const base = findBalance(rows, venueId, marketExchangeBase(market));
   const quote = findBalance(rows, venueId, market.quote);
-  if (!base || !quote) return undefined;
   return {
     venueId,
-    baseFree: base.free,
-    quoteFree: quote.free,
-    fetchedAt: Math.min(base.fetchedAt, quote.fetchedAt),
+    baseFree: base?.free ?? ZERO,
+    quoteFree: quote?.free ?? ZERO,
+    fetchedAt: Math.min(...venueRows.map((row) => row.fetchedAt)),
   };
 }
 
@@ -437,13 +443,35 @@ export function planAutomaticInventorySeed(input: {
   let reason: InventorySeedReason;
   if (!firstUseful && !secondUseful) {
     const firstCheaper = firstAsk.lte(secondAsk);
-    seed = firstCheaper ? first : second;
-    other = firstCheaper ? second : first;
-    seedAsk = firstCheaper ? firstAsk : secondAsk;
-    otherAsk = firstCheaper ? secondAsk : firstAsk;
-    seedBaseUsd = firstCheaper ? firstBaseUsd : secondBaseUsd;
-    otherBaseUsd = firstCheaper ? secondBaseUsd : firstBaseUsd;
-    reason = 'both_sides_missing_cheaper_side';
+    const requiredSpend = Decimal.min(
+      config.seedNotionalUsd,
+      config.minUsefulNotionalUsd,
+      pair.maxNotional,
+    );
+    const firstFunded = first.balance.quoteFree.minus(config.minQuoteReserveUsd).gte(requiredSpend);
+    const secondFunded = second.balance.quoteFree
+      .minus(config.minQuoteReserveUsd)
+      .gte(requiredSpend);
+    if (!firstFunded && !secondFunded) {
+      return { action: 'WAIT', reasons: ['inventory_quote_insufficient'] };
+    }
+    const cheaper = firstCheaper ? first : second;
+    const cheaperFunded = firstCheaper ? firstFunded : secondFunded;
+    seed = cheaperFunded ? cheaper : firstCheaper ? second : first;
+    other = seed.venueId === first.venueId ? second : first;
+    seedAsk = seed.venueId === first.venueId ? firstAsk : secondAsk;
+    otherAsk = seed.venueId === first.venueId ? secondAsk : firstAsk;
+    seedBaseUsd = seed.venueId === first.venueId ? firstBaseUsd : secondBaseUsd;
+    otherBaseUsd = seed.venueId === first.venueId ? secondBaseUsd : firstBaseUsd;
+    if (cheaperFunded) {
+      reason = 'both_sides_missing_cheaper_side';
+    } else {
+      const deviationBps = seedAsk.minus(otherAsk).div(otherAsk).mul(10_000);
+      if (deviationBps.gt(config.maxPairDeviationBps)) {
+        return { action: 'WAIT', reasons: ['funded_side_above_pair_band'] };
+      }
+      reason = 'both_sides_missing_funded_side';
+    }
   } else {
     seed = firstUseful ? second : first;
     other = firstUseful ? first : second;
