@@ -31,12 +31,13 @@ import {
 } from './auto-inventory.js';
 import {
   attemptAutomaticInventoryRebalance,
+  type AutomaticInventoryRebalanceResult,
   type InventoryRebalanceTrigger,
 } from './inventory-rebalance.js';
 import { CexLiveExecutor, type ExecutionVenue } from './coordinator.js';
 import { writeHeartbeat } from './heartbeat.js';
 import { s1BatchId } from './handoff.js';
-import { executionVenue, healthStates, splitInstrument } from './runtime.js';
+import { executionVenue, findMarket, healthStates, splitInstrument } from './runtime.js';
 import { evaluateAccountPermissions, type AccountPermissionReport } from './account-permissions.js';
 import type { StoredCredential } from './secret-store.js';
 import {
@@ -222,9 +223,10 @@ function inventoryRebalanceTrigger(
     }
     if (
       best &&
-      (opportunity.netProfitBps.lt(best.edgeBps) ||
-        (opportunity.netProfitBps.eq(best.edgeBps) && opportunity.sampledAt <= best.sampledAt))
+      (opportunity.sampledAt < best.sampledAt ||
+        (opportunity.sampledAt === best.sampledAt && opportunity.netProfitBps.lte(best.edgeBps)))
     ) {
+      if (opportunity.sampledAt < best.sampledAt) break;
       continue;
     }
     best = {
@@ -240,6 +242,80 @@ function inventoryRebalanceTrigger(
     };
   }
   return best?.trigger;
+}
+
+export interface InventoryRebalanceTarget {
+  pair: RotationPairConfig;
+  trigger: InventoryRebalanceTrigger;
+}
+
+export function selectInventoryRebalanceTarget(input: {
+  repository: ArbitrageRepository;
+  pairs: readonly RotationPairConfig[];
+  now: number;
+  config: ExecutorConfig['autoRotation']['inventory'];
+}): InventoryRebalanceTarget | undefined {
+  const { repository, pairs, now, config } = input;
+  let best: InventoryRebalanceTarget | undefined;
+  for (const pair of pairs) {
+    const trigger = inventoryRebalanceTrigger(repository, pair, now, config);
+    if (!trigger) continue;
+    if (
+      best &&
+      (trigger.sampledAt < best.trigger.sampledAt ||
+        (trigger.sampledAt === best.trigger.sampledAt && trigger.edgeBps.lte(best.trigger.edgeBps)))
+    ) {
+      continue;
+    }
+    best = { pair, trigger };
+  }
+  return best;
+}
+
+const FUNDING_BALANCE_MAX_AGE_MS = 120_000;
+const MAX_FUNDING_PAIR_CANDIDATES = 8;
+
+export function selectInventoryFundingPairs(input: {
+  repository: ArbitrageRepository;
+  pairs: readonly RotationPairConfig[];
+  targetPair: RotationPairConfig;
+  trigger: InventoryRebalanceTrigger;
+  markets: Readonly<Record<string, MarketMetadata[]>>;
+  now: number;
+}): RotationPairConfig[] {
+  const { repository, pairs, targetPair, trigger, markets, now } = input;
+  const balances = repository.latestBalances({
+    now,
+    maxAgeMs: FUNDING_BALANCE_MAX_AGE_MS,
+  });
+  const candidates = pairs
+    .map((pair, index) => ({ pair, index }))
+    .filter(
+      ({ pair }) =>
+        (pair.base !== targetPair.base || pair.quote !== targetPair.quote) &&
+        pair.venues.includes(trigger.venueId) &&
+        pair.venues.includes(trigger.otherVenueId),
+    )
+    .map(({ pair, index }) => {
+      const market = findMarket(
+        markets[trigger.venueId] ?? [],
+        trigger.venueId,
+        pair.base,
+        pair.quote,
+      );
+      if (!market) return { pair, index, free: new Decimal(0) };
+      const exchangeBase = marketExchangeBase(market);
+      const balance = balances.find(
+        (row) =>
+          row.venueId.trim().toLowerCase() === trigger.venueId.trim().toLowerCase() &&
+          row.currency.trim().toUpperCase() === exchangeBase.trim().toUpperCase(),
+      );
+      return { pair, index, free: balance?.free ?? new Decimal(0) };
+    })
+    .filter(({ free }) => free.gt(0))
+    .sort((left, right) => right.free.comparedTo(left.free) || left.index - right.index)
+    .map(({ pair }) => pair);
+  return [targetPair, ...candidates].slice(0, MAX_FUNDING_PAIR_CANDIDATES);
 }
 
 function logAccountState(
@@ -835,6 +911,7 @@ export async function runAutoRotationSupervisor(
   let lastInventoryCheckAt = 0;
   let inventoryPairIndex = 0;
   let inventoryRetryAt = 0;
+  let lastRebalanceAttemptAt = 0;
   let lastInventoryLogAt = 0;
   let accountStateLogged = false;
   let heartbeatPhase = 'STARTING';
@@ -1142,88 +1219,119 @@ export async function runAutoRotationSupervisor(
           now - lastInventoryCheckAt >= config.autoRotation.inventory.checkIntervalMs &&
           repository.countActiveTransferBatches() === 0
         ) {
-          const inventoryPair =
+          const roundRobinInventoryPair =
             config.autoRotation.pairs[inventoryPairIndex % config.autoRotation.pairs.length]!;
           inventoryPairIndex += 1;
           lastInventoryCheckAt = now;
-          const inventoryKey = `${inventoryPair.base}/${inventoryPair.quote}|${inventoryPair.venues.join('->')}`;
-          const rebalanceTrigger = inventoryRebalanceTrigger(
+          const rebalanceTarget = selectInventoryRebalanceTarget({
             repository,
-            inventoryPair,
+            pairs: config.autoRotation.pairs,
             now,
-            config.autoRotation.inventory,
-          );
-          if (rebalanceTrigger) {
+            config: config.autoRotation.inventory,
+          });
+          const inventoryPair = rebalanceTarget?.pair ?? roundRobinInventoryPair;
+          const rebalanceTrigger = rebalanceTarget?.trigger;
+          const inventoryKey = `${inventoryPair.base}/${inventoryPair.quote}|${inventoryPair.venues.join('->')}`;
+          if (rebalanceTrigger && now - lastRebalanceAttemptAt >= 5_000) {
+            lastRebalanceAttemptAt = now;
             heartbeatPhase = 'REBALANCING';
-            const rebalanceAttempt = await attemptAutomaticInventoryRebalance({
+            const fundingPairs = selectInventoryFundingPairs({
               repository,
-              config,
-              adapters,
-              markets,
-              pair: inventoryPair,
+              pairs: config.autoRotation.pairs,
+              targetPair: inventoryPair,
               trigger: rebalanceTrigger,
+              markets,
               now,
             });
-            if (rebalanceAttempt.status === 'FILLED') {
-              lastBalanceAt = 0;
-              inventoryRetryAt = clock() + config.autoRotation.inventory.retryCooldownMs;
-              repository.recordAudit(
-                'executor',
-                'inventory_rebalance_supervisor_result',
-                {
+            let filled = false;
+            let fatal = false;
+            let lastAttempt: AutomaticInventoryRebalanceResult | undefined;
+            for (const fundingPair of fundingPairs) {
+              const rebalanceAttempt = await attemptAutomaticInventoryRebalance({
+                repository,
+                config,
+                adapters,
+                markets,
+                pair: fundingPair,
+                trigger:
+                  fundingPair === inventoryPair
+                    ? rebalanceTrigger
+                    : { ...rebalanceTrigger, fundingOnly: true },
+                now,
+              });
+              lastAttempt = rebalanceAttempt;
+              if (rebalanceAttempt.status === 'FILLED') {
+                lastBalanceAt = 0;
+                repository.recordAudit(
+                  'executor',
+                  'inventory_rebalance_supervisor_result',
+                  {
+                    batchId: rebalanceAttempt.batchId ?? null,
+                    executionId: rebalanceAttempt.executionId ?? null,
+                    pair: inventoryKey,
+                    fundingPair: `${fundingPair.base}/${fundingPair.quote}`,
+                    filled: rebalanceAttempt.filled?.toFixed() ?? null,
+                    edgeBps: rebalanceTrigger.edgeBps.toFixed(),
+                  },
+                  clock(),
+                );
+                logEvent({
+                  status: 'inventory_rebalance_filled',
                   batchId: rebalanceAttempt.batchId ?? null,
                   executionId: rebalanceAttempt.executionId ?? null,
                   pair: inventoryKey,
+                  fundingPair: `${fundingPair.base}/${fundingPair.quote}`,
                   filled: rebalanceAttempt.filled?.toFixed() ?? null,
                   edgeBps: rebalanceTrigger.edgeBps.toFixed(),
-                },
-                clock(),
-              );
-              logEvent({
-                status: 'inventory_rebalance_filled',
-                batchId: rebalanceAttempt.batchId ?? null,
-                executionId: rebalanceAttempt.executionId ?? null,
-                pair: inventoryKey,
-                filled: rebalanceAttempt.filled?.toFixed() ?? null,
-                edgeBps: rebalanceTrigger.edgeBps.toFixed(),
-              });
+                });
+                filled = true;
+                break;
+              }
+              if (
+                rebalanceAttempt.status === 'UNKNOWN' ||
+                rebalanceAttempt.status === 'PARTIAL' ||
+                rebalanceAttempt.status === 'ACCOUNTING_UNKNOWN'
+              ) {
+                inventoryRetryAt = clock() + config.autoRotation.inventory.retryCooldownMs;
+                recordHeartbeat(repository, config, 'stopped', [
+                  `inventory_rebalance_${rebalanceAttempt.status.toLowerCase()}`,
+                ]);
+                logEvent({
+                  status: 'stopped',
+                  reason: `inventory_rebalance_${rebalanceAttempt.status.toLowerCase()}`,
+                  pair: inventoryKey,
+                  fundingPair: `${fundingPair.base}/${fundingPair.quote}`,
+                  batchId: rebalanceAttempt.batchId ?? null,
+                  reasons: rebalanceAttempt.reasons,
+                });
+                fatal = true;
+                break;
+              }
+              if (rebalanceAttempt.status === 'REJECTED') {
+                inventoryRetryAt = clock() + config.autoRotation.inventory.retryCooldownMs;
+                break;
+              }
+            }
+            if (filled) {
               await sleep(config.autoRotation.pollIntervalMs);
               continue;
             }
-            if (
-              rebalanceAttempt.status === 'UNKNOWN' ||
-              rebalanceAttempt.status === 'PARTIAL' ||
-              rebalanceAttempt.status === 'ACCOUNTING_UNKNOWN'
-            ) {
-              inventoryRetryAt = clock() + config.autoRotation.inventory.retryCooldownMs;
-              recordHeartbeat(repository, config, 'stopped', [
-                `inventory_rebalance_${rebalanceAttempt.status.toLowerCase()}`,
-              ]);
-              logEvent({
-                status: 'stopped',
-                reason: `inventory_rebalance_${rebalanceAttempt.status.toLowerCase()}`,
-                pair: inventoryKey,
-                batchId: rebalanceAttempt.batchId ?? null,
-                reasons: rebalanceAttempt.reasons,
-              });
-              break;
-            }
-            if (rebalanceAttempt.status === 'REJECTED') {
-              inventoryRetryAt = clock() + config.autoRotation.inventory.retryCooldownMs;
-            }
-            heartbeatWaitReasons = [
-              ...normalSelection.waitReasons,
-              ...rebalanceAttempt.reasons.map((reason) => `rebalance:${reason}`),
-            ];
-            if (now - lastInventoryLogAt >= 15_000) {
-              lastInventoryLogAt = now;
-              logEvent({
-                status: 'inventory_rebalance_waiting',
-                pair: inventoryKey,
-                action: rebalanceAttempt.status,
-                edgeBps: rebalanceTrigger.edgeBps.toFixed(),
-                reasons: rebalanceAttempt.reasons,
-              });
+            if (fatal) break;
+            if (lastAttempt) {
+              heartbeatWaitReasons = [
+                ...normalSelection.waitReasons,
+                ...lastAttempt.reasons.map((reason) => `rebalance:${reason}`),
+              ];
+              if (now - lastInventoryLogAt >= 15_000) {
+                lastInventoryLogAt = now;
+                logEvent({
+                  status: 'inventory_rebalance_waiting',
+                  pair: inventoryKey,
+                  action: lastAttempt.status,
+                  edgeBps: rebalanceTrigger.edgeBps.toFixed(),
+                  reasons: lastAttempt.reasons,
+                });
+              }
             }
           }
           if (!rebalanceTrigger && config.autoRotation.inventory.requireSignalForSeed) {

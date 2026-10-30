@@ -165,7 +165,7 @@ describe('automatic inventory rebalance planning', () => {
       trigger: trigger(now),
       now,
     });
-    expect(decision.action).toBe('SELL');
+    expect(decision, JSON.stringify(decision)).toMatchObject({ action: 'SELL' });
     if (decision.action !== 'SELL') return;
     expect(decision.plan.venueId).toBe('bitget');
     expect(decision.plan.currentQuoteUsd.toFixed()).toBe('0.09');
@@ -224,6 +224,63 @@ describe('automatic inventory rebalance planning', () => {
       action: 'WAIT',
       reasons: ['inventory_rebalance_sell_leg_unfunded'],
     });
+  });
+
+  it('can sell surplus base from a funding pair even when that pair is not the target trade', () => {
+    const now = Date.now();
+    const decision = planAutomaticInventoryRebalance({
+      pair: config().autoRotation.pairs[0]!,
+      venues: [
+        venue('gateio', '0', '2.05', '0.005', '0.00501', now),
+        venue('bitget', '4000', '0.09', '0.005', '0.00501', now),
+      ],
+      config: config().autoRotation.inventory,
+      trigger: { ...trigger(now), fundingOnly: true },
+      now,
+    });
+    expect(decision.action).toBe('SELL');
+    if (decision.action !== 'SELL') return;
+    expect(decision.plan.venueId).toBe('bitget');
+    expect(decision.plan.fundingOnly).toBe(true);
+  });
+
+  it('meets the venue minimum notional when funding another pair', () => {
+    const now = Date.now();
+    const fundingMarket: MarketMetadata = {
+      ...market('gateio'),
+      amountStep: new Decimal('1'),
+      minNotional: new Decimal('3'),
+    };
+    const decision = planAutomaticInventoryRebalance({
+      pair: config().autoRotation.pairs[0]!,
+      venues: [
+        {
+          venueId: 'gateio',
+          market: fundingMarket,
+          book: book('gateio', '0.25', '0.251', now),
+          balance: {
+            venueId: 'gateio',
+            baseFree: new Decimal('20'),
+            quoteFree: new Decimal('2.05'),
+            fetchedAt: now,
+          },
+        },
+        venue('bitget', '0', '0.5', '0.25', '0.251', now),
+      ],
+      config: config({ minQuoteReserveUsd: new Decimal('0.5') }).autoRotation.inventory,
+      trigger: {
+        ...trigger(now),
+        venueId: 'gateio',
+        otherVenueId: 'bitget',
+        fundingOnly: true,
+      },
+      now,
+    });
+    expect(decision, JSON.stringify(decision)).toMatchObject({ action: 'SELL' });
+    if (decision.action !== 'SELL') return;
+    expect(decision.plan.amount.gte(12)).toBe(true);
+    expect(decision.plan.amount.mul(decision.plan.limitPrice).gte(3)).toBe(true);
+    expect(decision.plan.expectedRemainingBaseUsd.lt(3)).toBe(true);
   });
 
   it('respects the one-time rebalance cost ceiling', () => {

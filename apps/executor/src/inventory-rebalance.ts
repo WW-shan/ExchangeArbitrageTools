@@ -7,6 +7,7 @@ import {
   bookReceivedAt,
   canonicalAmountFromExchange,
   calculateSellDepthByQuote,
+  ceilToStep,
   exchangeAmountFromCanonical,
   exchangePriceFromCanonical,
   marketBaseMultiplier,
@@ -47,6 +48,7 @@ export interface InventoryRebalanceTrigger {
   edgeBps: Decimal;
   sampledAt: number;
   opportunityId?: number;
+  fundingOnly?: boolean;
 }
 
 export interface AutomaticInventoryRebalancePlan {
@@ -61,6 +63,7 @@ export interface AutomaticInventoryRebalancePlan {
   reason: 'quote_short_with_base_surplus';
   edgeBps: Decimal;
   signalSampledAt: number;
+  fundingOnly: boolean;
   currentBaseUsd: Decimal;
   currentQuoteUsd: Decimal;
   targetQuoteUsd: Decimal;
@@ -188,7 +191,7 @@ export function planAutomaticInventoryRebalance(input: {
   }
   const targetBaseUsd = baseValueUsd(target, targetBid);
   const otherBaseUsd = baseValueUsd(other, otherBid);
-  if (otherBaseUsd.lt(config.minUsefulNotionalUsd)) {
+  if (!trigger.fundingOnly && otherBaseUsd.lt(config.minUsefulNotionalUsd)) {
     return { action: 'WAIT', reasons: ['inventory_rebalance_sell_leg_unfunded'] };
   }
   const targetQuoteUsd = config.minQuoteReserveUsd.plus(config.minExecutableBuyUsd);
@@ -211,10 +214,12 @@ export function planAutomaticInventoryRebalance(input: {
   if (!feeFactor.gt(0)) {
     return { action: 'BLOCKED', reasons: ['inventory_rebalance_fee_invalid'] };
   }
-  const maxSellableQuote = Decimal.min(
-    baseSurplusUsd.mul(feeFactor),
-    target.balance.baseFree.mul(targetBid).mul(feeFactor),
-  );
+  const maxSellableQuote = trigger.fundingOnly
+    ? target.balance.baseFree.mul(targetBid).mul(feeFactor)
+    : Decimal.min(
+        baseSurplusUsd.mul(feeFactor),
+        target.balance.baseFree.mul(targetBid).mul(feeFactor),
+      );
   if (maxSellableQuote.lt(quoteDeficit)) {
     return { action: 'WAIT', reasons: ['inventory_rebalance_base_surplus_insufficient'] };
   }
@@ -234,7 +239,15 @@ export function planAutomaticInventoryRebalance(input: {
     return { action: 'WAIT', reasons: ['inventory_rebalance_bid_liquidity_missing'] };
   }
   const multiplier = marketBaseMultiplier(target.market);
-  let exchangeAmount = alignAmountDown(
+  const canonicalWorst = depth.worstPrice;
+  const exchangeLimit = alignPriceDown(
+    exchangePriceFromCanonical(canonicalWorst, multiplier),
+    priceStep,
+  );
+  if (!exchangeLimit.gt(0)) {
+    return { action: 'WAIT', reasons: ['inventory_rebalance_limit_invalid'] };
+  }
+  let exchangeAmount = ceilToStep(
     exchangeAmountFromCanonical(depth.executableBaseAmount, multiplier),
     amountStep,
   );
@@ -243,22 +256,27 @@ export function planAutomaticInventoryRebalance(input: {
     amountStep,
   );
   exchangeAmount = Decimal.min(exchangeAmount, maxExchangeBase);
+  if (trigger.fundingOnly && target.market.minNotional) {
+    const minimumAmountByNotional = ceilToStep(
+      target.market.minNotional.div(exchangeLimit),
+      amountStep,
+    );
+    if (minimumAmountByNotional.gt(maxExchangeBase)) {
+      return { action: 'WAIT', reasons: ['inventory_rebalance_base_surplus_insufficient'] };
+    }
+    exchangeAmount = Decimal.max(exchangeAmount, minimumAmountByNotional);
+  }
   const amount = canonicalAmountFromExchange(exchangeAmount, multiplier);
   if (!amount.gt(0)) {
     return { action: 'WAIT', reasons: ['inventory_rebalance_amount_below_minimum'] };
   }
   const canonicalAmount = amount;
   const remainingBaseUsd = target.balance.baseFree.minus(canonicalAmount).mul(targetBid);
-  if (remainingBaseUsd.lt(config.minUsefulNotionalUsd)) {
-    return { action: 'WAIT', reasons: ['inventory_rebalance_would_break_sell_leg'] };
+  if (remainingBaseUsd.lt(0)) {
+    return { action: 'WAIT', reasons: ['inventory_rebalance_base_balance_insufficient'] };
   }
-  const canonicalWorst = depth.worstPrice;
-  const exchangeLimit = alignPriceDown(
-    exchangePriceFromCanonical(canonicalWorst, multiplier),
-    priceStep,
-  );
-  if (!exchangeLimit.gt(0)) {
-    return { action: 'WAIT', reasons: ['inventory_rebalance_limit_invalid'] };
+  if (!trigger.fundingOnly && remainingBaseUsd.lt(config.minUsefulNotionalUsd)) {
+    return { action: 'WAIT', reasons: ['inventory_rebalance_would_break_sell_leg'] };
   }
   const expectedQuoteProceeds = canonicalAmount.mul(canonicalWorst).mul(feeFactor);
   if (target.balance.quoteFree.plus(expectedQuoteProceeds).lt(targetQuoteUsd)) {
@@ -295,6 +313,7 @@ export function planAutomaticInventoryRebalance(input: {
       reason: 'quote_short_with_base_surplus',
       edgeBps: trigger.edgeBps,
       signalSampledAt: trigger.sampledAt,
+      fundingOnly: trigger.fundingOnly ?? false,
       currentBaseUsd: targetBaseUsd,
       currentQuoteUsd: target.balance.quoteFree,
       targetQuoteUsd,
@@ -327,6 +346,7 @@ function metadata(plan: AutomaticInventoryRebalancePlan, extra: Record<string, u
     reason: plan.reason,
     edgeBps: plan.edgeBps.toFixed(),
     signalSampledAt: plan.signalSampledAt,
+    fundingOnly: plan.fundingOnly,
     currentBaseUsd: plan.currentBaseUsd.toFixed(),
     currentQuoteUsd: plan.currentQuoteUsd.toFixed(),
     targetQuoteUsd: plan.targetQuoteUsd.toFixed(),

@@ -53,7 +53,7 @@ rebalance_cost_bps = 0
 execution_mode = 'taker_taker'
 maker_fill_probability = '0.5'
 optimal_sizing = true
-min_sizing_notional = "1.4"
+min_sizing_notional = "3"
 sizing_step = "0.01"
 max_sizing_candidates_per_cycle = 20
 sizing_samples = 12
@@ -73,8 +73,8 @@ require_balances_for_s1 = true
 balance_safety_buffer_bps = 100
 # Keep a buy-side USDT reserve on every executable venue. The scanner will not
 # size an S1 buy that would consume this reserve. The current account is tiny,
-# so the reserve is 0.5 USDT and the minimum executable leg is 1.4 USDT; a
-# 5 USDT reserve made every minimum-size buy unfunded.
+# so the reserve is 0.5 USDT and the minimum executable leg is 3 USDT (Gate's
+# minimum notional); a 5 USDT reserve made every minimum-size buy unfunded.
 min_buy_quote_reserve_usd = '0.5'
 min_top_depth_qty = "0"
 liquidity_top_levels = 5
@@ -155,8 +155,8 @@ seed_notional_usd = '5'
 min_quote_reserve_usd = '0.5'
 # The rebalancer restores reserve + this amount so the venue can immediately
 # submit a minimum-size S1 buy instead of stopping at an unusable reserve.
-min_executable_buy_usd = '1.4'
-min_useful_notional_usd = '1.4'
+min_executable_buy_usd = '3'
+min_useful_notional_usd = '3'
 min_stable_ms = 3000
 max_pair_deviation_bps = '30'
 max_price_drift_bps = '100'
