@@ -48,6 +48,7 @@ function rebalanceOpportunity(
   base: string,
   sampledAt: number,
   netProfitBps: string,
+  rejectionReasons: OpportunityResult['rejectionReasons'] = ['insufficient_balance'],
 ): OpportunityResult {
   const profit = new Decimal(netProfitBps);
   return {
@@ -67,7 +68,7 @@ function rebalanceOpportunity(
     netProfitBps: profit,
     dataAgeMs: 100,
     valid: false,
-    rejectionReasons: ['insufficient_balance'],
+    rejectionReasons,
     sampledAt,
   };
 }
@@ -272,6 +273,64 @@ describe('inventory funding pair selection', () => {
     });
     expect(target?.pair.base).toBe('KAT');
     expect(target?.trigger.sampledAt).toBe(now - 1_000);
+    repository.close();
+  });
+
+  it('accepts balance-limited signals with derived notional and depth rejections', () => {
+    const repository = repositoryWithVenues();
+    repository.upsertVenue({ id: 'bitget', type: 'cex', name: 'Bitget', tier: 'S', now });
+    repository.recordOpportunity(
+      rebalanceOpportunity('WARD', now - 1_000, '180', [
+        'insufficient_balance',
+        'below_min_notional',
+        'insufficient_depth',
+      ]),
+    );
+    const pairs = [
+      {
+        base: 'WARD',
+        quote: 'USDT',
+        maxNotional: new Decimal(10),
+        venues: ['gateio', 'bitget'] as const,
+      },
+    ];
+    const target = selectInventoryRebalanceTarget({
+      repository,
+      pairs,
+      now,
+      config: {
+        rebalanceSignalMaxAgeMs: 15_000,
+        minRebalanceEdgeBps: new Decimal(50),
+      } as ExecutorConfig['autoRotation']['inventory'],
+    });
+    expect(target?.pair.base).toBe('WARD');
+    repository.close();
+  });
+
+  it('rejects a balance-limited signal that also has a hard market-data failure', () => {
+    const repository = repositoryWithVenues();
+    repository.upsertVenue({ id: 'bitget', type: 'cex', name: 'Bitget', tier: 'S', now });
+    repository.recordOpportunity(
+      rebalanceOpportunity('WARD', now - 1_000, '180', ['insufficient_balance', 'stale_orderbook']),
+    );
+    const pairs = [
+      {
+        base: 'WARD',
+        quote: 'USDT',
+        maxNotional: new Decimal(10),
+        venues: ['gateio', 'bitget'] as const,
+      },
+    ];
+    const target = selectInventoryRebalanceTarget({
+      repository,
+      pairs,
+      now,
+      config: {
+        rebalanceSignalMaxAgeMs: 15_000,
+        minRebalanceEdgeBps: new Decimal(50),
+      } as ExecutorConfig['autoRotation']['inventory'],
+    });
+    expect(target).toBeUndefined();
     repository.close();
   });
 });

@@ -191,6 +191,12 @@ function logEvent(payload: Record<string, unknown>): void {
   console.log(JSON.stringify({ at: new Date().toISOString(), mode: 'auto_rotation', ...payload }));
 }
 
+const BALANCE_REBALANCE_REJECTIONS = new Set([
+  'insufficient_balance',
+  'below_min_notional',
+  'insufficient_depth',
+]);
+
 function inventoryRebalanceTrigger(
   repository: ArbitrageRepository,
   pair: RotationPairConfig,
@@ -208,11 +214,11 @@ function inventoryRebalanceTrigger(
   let best: { trigger: InventoryRebalanceTrigger; edgeBps: Decimal; sampledAt: number } | undefined;
   for (const loaded of rows) {
     const opportunity = loaded.opportunity;
-    const balanceOnlyRejection =
+    const balanceBlocked =
       !opportunity.valid &&
-      opportunity.rejectionReasons.length > 0 &&
-      opportunity.rejectionReasons.every((reason) => reason === 'insufficient_balance');
-    if (!balanceOnlyRejection) continue;
+      opportunity.rejectionReasons.includes('insufficient_balance') &&
+      opportunity.rejectionReasons.every((reason) => BALANCE_REBALANCE_REJECTIONS.has(reason));
+    if (!balanceBlocked) continue;
     if (opportunity.netProfitBps.lt(config.minRebalanceEdgeBps)) continue;
     if (opportunity.venueBuy === opportunity.venueSell) continue;
     if (

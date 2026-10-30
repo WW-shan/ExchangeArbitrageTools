@@ -58,6 +58,10 @@ pair 自己已经没有多余 base，恢复器还会从同一组交易所的其�
 - `apps/executor/src/auto-supervisor.ts`
   - 每轮库存检查不再只轮询一个 pair，而是扫描全部 pair，优先选择最新的
     “仅因余额不足而失败”的 S1 方向；同一时刻再比较净价差；
+  - 扫描器在余额不足时通常还会附带 `below_min_notional` 或
+    `insufficient_depth`。恢复触发允许这组由余额派生出的原因，但
+    `stale_orderbook`、`crossed_orderbook`、`suspicious_spread` 等硬失败仍
+    不会触发资金换手；
   - `require_signal_for_seed=true` 时，没有新鲜方向信号就不建仓；避免把共享的
     小额 USDT 分散到所有 pair；
   - 有信号时先恢复买腿 USDT，再在信号指定的卖腿补 base；
@@ -123,7 +127,7 @@ base 就买”改成“只有出现正价差方向才准备对应卖腿”。当
 ```text
 npm run typecheck        PASS
 npm run test:types       PASS
-npm test                 PASS (70 files / 480 tests)
+npm test                 PASS (70 files / 482 tests)
 npm run format:check     PASS
 npm run backtest         PASS
 ```
@@ -139,4 +143,5 @@ npm run backtest         PASS
 - 恢复成本超过上限时拒绝；
 - FOK 成交后必须通过余额增量核对才关闭执行。
 - 跨 pair 恢复只选择同组交易所、买腿交易所有正 base 余额的来源；
-- 多 pair 同时出现余额不足信号时，优先使用采样的最新方向，而不是轮询顺序。
+- 多 pair 同时出现余额不足信号时，优先使用采样的最新方向，而不是轮询顺序；
+- 余额受限且附带最小名义额/深度拒绝时仍可触发恢复，但硬行情失败必须拒绝。
