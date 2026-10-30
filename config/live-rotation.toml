@@ -106,11 +106,12 @@ enabled = true
 poll_interval_ms = 250
 balance_refresh_ms = 30000
 # Keep the signal window wider than the measured private-API preflight while
-# still bounding total decay. The executor re-fetches both books and evaluates
-# current profitability before submitting, and max_preflight_ms separately
-# rejects slow private-account checks.
-max_signal_age_ms = 3000
-max_preflight_ms = 2500
+# still bounding total decay. Timing on the live account showed several signals
+# whose refreshed books were still profitable at 2.5-3.2 seconds, but were
+# rejected only because the 2.5 s budget was too tight. FOK still prevents a
+# resting order, and the executor re-evaluates both fresh books before submit.
+max_signal_age_ms = 5000
+max_preflight_ms = 4000
 cooldown_ms = 0
 max_consecutive_failures = 3
 heartbeat_file = 'data/rotation-executor.heartbeat.json'
