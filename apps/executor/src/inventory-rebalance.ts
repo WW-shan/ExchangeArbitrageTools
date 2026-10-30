@@ -46,6 +46,7 @@ export interface InventoryRebalanceTrigger {
   venueId: string;
   otherVenueId: string;
   edgeBps: Decimal;
+  expectedProfitUsd?: Decimal;
   sampledAt: number;
   opportunityId?: number;
   fundingOnly?: boolean;
@@ -73,6 +74,7 @@ export interface AutomaticInventoryRebalancePlan {
   expectedQuoteProceeds: Decimal;
   expectedRemainingBaseUsd: Decimal;
   expectedCostUsd: Decimal;
+  costCeilingUsd: Decimal;
   ownBid: Decimal;
   otherBid: Decimal;
   bookFetchedAt: number;
@@ -287,7 +289,13 @@ export function planAutomaticInventoryRebalance(input: {
   const expectedCostUsd = Decimal.max(0, alternativeQuote.minus(ownQuote)).plus(
     ownQuote.mul(feeBps.div(10_000)),
   );
-  if (expectedCostUsd.gt(config.maxRebalanceLossUsd)) {
+  const costCeilingUsd = trigger.expectedProfitUsd
+    ? Decimal.min(
+        config.maxRebalanceLossUsd,
+        trigger.expectedProfitUsd.mul(config.maxRebalanceCostFraction),
+      )
+    : config.maxRebalanceLossUsd;
+  if (expectedCostUsd.gt(costCeilingUsd)) {
     return { action: 'WAIT', reasons: ['inventory_rebalance_cost_above_limit'] };
   }
   if (target.market.minAmount && exchangeAmount.lt(target.market.minAmount)) {
@@ -323,6 +331,7 @@ export function planAutomaticInventoryRebalance(input: {
       expectedQuoteProceeds,
       expectedRemainingBaseUsd: remainingBaseUsd,
       expectedCostUsd,
+      costCeilingUsd,
       ownBid: targetBid,
       otherBid,
       bookFetchedAt: target.book.fetchedAt,
@@ -356,6 +365,7 @@ function metadata(plan: AutomaticInventoryRebalancePlan, extra: Record<string, u
     expectedQuoteProceeds: plan.expectedQuoteProceeds.toFixed(),
     expectedRemainingBaseUsd: plan.expectedRemainingBaseUsd.toFixed(),
     expectedCostUsd: plan.expectedCostUsd.toFixed(),
+    costCeilingUsd: plan.costCeilingUsd.toFixed(),
     ownBid: plan.ownBid.toFixed(),
     otherBid: plan.otherBid.toFixed(),
     bookFetchedAt: plan.bookFetchedAt,

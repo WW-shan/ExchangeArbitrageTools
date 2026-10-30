@@ -242,6 +242,7 @@ function inventoryRebalanceTrigger(
         venueId: opportunity.venueBuy,
         otherVenueId: opportunity.venueSell,
         edgeBps: opportunity.netProfitBps,
+        expectedProfitUsd: opportunity.conservativeNetProfit,
         sampledAt: opportunity.sampledAt,
         opportunityId: loaded.id,
       },

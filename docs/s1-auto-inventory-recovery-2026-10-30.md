@@ -22,7 +22,9 @@ pair 自己已经没有多余 base，恢复器还会从同一组交易所的其�
 
 这里的前提是“恢复买腿”而不是“清仓换手”：卖出所得只需要覆盖
 `min_quote_reserve_usd + min_executable_buy_usd`，恢复后立刻重新扫描原始
-方向；成本超过 `max_rebalance_loss_usd` 就不做。
+方向；成本除了受 `max_rebalance_loss_usd` 限制，还必须低于目标机会
+`conservative_net_profit * max_rebalance_cost_fraction`。默认比例是 50%，
+即换手最多花掉机会利润的一半。
 
 ## 本轮代码改动
 
@@ -45,6 +47,8 @@ pair 自己已经没有多余 base，恢复器还会从同一组交易所的其�
     - 卖后必须保留 `min_useful_notional_usd` 的卖腿 base；
     - 另一所卖腿必须已有足够 base，否则 `inventory_rebalance_sell_leg_unfunded`；
     - 有一次性成本上限 `max_rebalance_loss_usd`；
+    - 换手成本不得超过目标机会保守利润的 `max_rebalance_cost_fraction`
+      （默认 50%）；不能只因价差大就付出全部利润；
     - 未知/部分成交立即停机，不重试；
     - 成交后必须通过 base 减少、quote 增加的余额增量核对才关闭执行。
   - 新增 `fundingOnly` 模式：当目标 pair 没有多余 base 时，允许从同一组
@@ -147,6 +151,11 @@ Gate LA after       37.81289
 订单。这证明“目标 pair 没库存 -> 从同交易所其他 pair 卖冗余 base -> 恢复买腿
 USDT -> 重新扫描”的链路在真实账户上成立。
 
+第二笔补资金（`REBAL-BREV`）卖出了 `37 BREV`，估算成本 `0.0146 USDT`，而
+对应信号的保守利润只有 `0.0161 USDT`，只留下约 `0.0015 USDT` 的理论空间，
+不足以覆盖真实滑点。新的 50% 利润上限会把这类换手拒绝，等待成本更低的来源
+pair；这用于避免“为了交易而交易”。
+
 补资金完成后，系统立即看到 WARD `gateio->bitget` 的正 S1：
 
 ```text
@@ -159,6 +168,24 @@ USDT -> 重新扫描”的链路在真实账户上成立。
 这些失败的共同点是：信号选择到执行开始只有 `8-15 ms`，但预检耗时约
 `2.3-4.5 s`，重新抓到的盘口已经不支持原来的净利。它们没有提交任何订单，也
 没有改变余额。因此当前主要瓶颈不是扫描或选路，而是预检阶段的外部 API 往返。
+
+不过同一时间段也成功闭合了一笔真实 S1：
+
+```text
+S1-859273-1793351323686
+Gate buy    1566 WARD @ 0.002892
+Bitget sell 1566 WARD @ average 0.0029010391762452
+both legs filled, fill mismatch 0
+economic profit       0.008267247666 USDT
+cash profit           0.00512873937 USDT
+rebate receivable     0.003138508296 USDT
+Gate WARD fee         1.55034 WARD (charged in base)
+```
+
+Gate 买入手续费从 WARD 余额扣除，所以两个交易所合计的 WARD 库存减少
+`1.55034`，这不是裸空或漏卖；两腿的成交数量都是 `1566`，订单事件和余额增量
+一致。成功这笔的预检耗时为 `1.482 s`（盘口 `1.424 s`，余额 `1.481 s`），
+说明超过 2 秒的预检确实是机会流失的主要风险。
 
 只读延迟拆解显示，正常情况下单次 Gate/Bitget 余额、挂单、盘口 REST 调用约为
 `290-320 ms`，启动时 `loadMarkets` 为 `5-6 s` 但不在热路径。由于预检存在
@@ -177,7 +204,7 @@ USDT -> 重新扫描”的链路在真实账户上成立。
 ```text
 npm run typecheck        PASS
 npm run test:types       PASS
-npm test                 PASS (70 files / 482 tests)
+npm test                 PASS (70 files / 483 tests)
 npm run format:check     PASS
 npm run backtest         PASS
 ```
@@ -191,6 +218,7 @@ npm run backtest         PASS
 - 卖后 base 低于卖腿下限时拒绝；
 - 另一所卖腿没有 base 时拒绝恢复；
 - 恢复成本超过上限时拒绝；
+- 换手成本超过目标机会保守利润的 50% 时拒绝；
 - FOK 成交后必须通过余额增量核对才关闭执行。
 - 跨 pair 恢复只选择同组交易所、买腿交易所有正 base 余额的来源；
 - 多 pair 同时出现余额不足信号时，优先使用采样的最新方向，而不是轮询顺序；

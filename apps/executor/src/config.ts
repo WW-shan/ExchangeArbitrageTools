@@ -69,6 +69,7 @@ export interface AutoInventoryConfig {
   minUsefulNotionalUsd: Decimal;
   rebalanceEnabled: boolean;
   maxRebalanceLossUsd: Decimal;
+  maxRebalanceCostFraction: Decimal;
   minRebalanceEdgeBps: Decimal;
   rebalanceSignalMaxAgeMs: number;
   requireSignalForSeed: boolean;
@@ -540,6 +541,7 @@ function autoRotationConfig(value: unknown, handoffMaxAgeMs: number): AutoRotati
       minUsefulNotionalUsd: decimalValue(inventory, 'min_useful_notional_usd', '3'),
       rebalanceEnabled: booleanValue(inventory, 'rebalance_enabled', false),
       maxRebalanceLossUsd: decimalValue(inventory, 'max_rebalance_loss_usd', '0.25'),
+      maxRebalanceCostFraction: decimalValue(inventory, 'max_rebalance_cost_fraction', '0.5'),
       minRebalanceEdgeBps: decimalValue(inventory, 'min_rebalance_edge_bps', '50'),
       rebalanceSignalMaxAgeMs: numberValue(inventory, 'rebalance_signal_max_age_ms', 15_000),
       requireSignalForSeed: booleanValue(inventory, 'require_signal_for_seed', true),
@@ -637,6 +639,15 @@ function validateSafetyBounds(config: ExecutorConfig): void {
       throw new Error(
         'auto_rotation.inventory.max_rebalance_loss_usd is outside the daily loss limit',
       );
+      if (
+        !inventory.maxRebalanceCostFraction.isFinite() ||
+        inventory.maxRebalanceCostFraction.lte(0) ||
+        inventory.maxRebalanceCostFraction.gt(1)
+      ) {
+        throw new Error(
+          'auto_rotation.inventory.max_rebalance_cost_fraction must be greater than 0 and at most 1',
+        );
+      }
     }
     if (
       !inventory.minRebalanceEdgeBps.isFinite() ||

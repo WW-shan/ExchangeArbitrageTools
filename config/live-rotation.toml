@@ -168,6 +168,10 @@ retry_cooldown_ms = 60000
 # below the configured one-time cost ceiling.
 rebalance_enabled = true
 max_rebalance_loss_usd = '0.25'
+# A funding sale must also leave at least half of the target opportunity's
+# conservative profit after the rebalance cost. This prevents a signal with a
+# large gross spread from consuming its entire edge in inventory conversion.
+max_rebalance_cost_fraction = '0.5'
 min_rebalance_edge_bps = '50'
 rebalance_signal_max_age_ms = 15000
 # Do not build inventory for a pair unless there is a fresh directional S1

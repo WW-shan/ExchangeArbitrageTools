@@ -129,6 +129,7 @@ function config(overrides: Partial<ExecutorConfig['autoRotation']['inventory']> 
         minUsefulNotionalUsd: new Decimal(3),
         rebalanceEnabled: true,
         maxRebalanceLossUsd: new Decimal('0.25'),
+        maxRebalanceCostFraction: new Decimal('0.5'),
         minRebalanceEdgeBps: new Decimal(50),
         rebalanceSignalMaxAgeMs: 15_000,
         requireSignalForSeed: true,

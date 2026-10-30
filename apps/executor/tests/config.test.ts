@@ -71,6 +71,7 @@ describe('executor configuration', () => {
     expect(config.autoRotation.inventory.minUsefulNotionalUsd.toFixed()).toBe('3');
     expect(config.autoRotation.inventory.rebalanceEnabled).toBe(false);
     expect(config.autoRotation.inventory.maxRebalanceLossUsd.toFixed()).toBe('0.25');
+    expect(config.autoRotation.inventory.maxRebalanceCostFraction.toFixed()).toBe('0.5');
     expect(config.autoRotation.inventory.minRebalanceEdgeBps.toFixed()).toBe('50');
     expect(config.autoRotation.inventory.rebalanceSignalMaxAgeMs).toBe(15_000);
     expect(config.autoRotation.inventory.requireSignalForSeed).toBe(true);
@@ -248,6 +249,7 @@ min_executable_buy_usd = '4'
 min_useful_notional_usd = '3'
 rebalance_enabled = true
 max_rebalance_loss_usd = '0.2'
+max_rebalance_cost_fraction = '0.4'
 min_rebalance_edge_bps = '40'
 rebalance_signal_max_age_ms = 12000
 require_signal_for_seed = false
@@ -269,6 +271,7 @@ max_notional = '20'
     expect(config.autoRotation.inventory.minUsefulNotionalUsd.toFixed()).toBe('3');
     expect(config.autoRotation.inventory.rebalanceEnabled).toBe(true);
     expect(config.autoRotation.inventory.maxRebalanceLossUsd.toFixed()).toBe('0.2');
+    expect(config.autoRotation.inventory.maxRebalanceCostFraction.toFixed()).toBe('0.4');
     expect(config.autoRotation.inventory.minRebalanceEdgeBps.toFixed()).toBe('40');
     expect(config.autoRotation.inventory.rebalanceSignalMaxAgeMs).toBe(12_000);
     expect(config.autoRotation.inventory.requireSignalForSeed).toBe(false);

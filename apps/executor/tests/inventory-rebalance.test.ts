@@ -120,6 +120,7 @@ function config(overrides: Partial<ExecutorConfig['autoRotation']['inventory']> 
         minUsefulNotionalUsd: new Decimal(3),
         rebalanceEnabled: true,
         maxRebalanceLossUsd: new Decimal('0.25'),
+        maxRebalanceCostFraction: new Decimal('0.5'),
         minRebalanceEdgeBps: new Decimal(50),
         rebalanceSignalMaxAgeMs: 15_000,
         requireSignalForSeed: true,
@@ -142,11 +143,12 @@ function config(overrides: Partial<ExecutorConfig['autoRotation']['inventory']> 
   } as unknown as ExecutorConfig;
 }
 
-function trigger(now: number) {
+function trigger(now: number, expectedProfitUsd?: Decimal) {
   return {
     venueId: 'bitget',
     otherVenueId: 'gateio',
     edgeBps: new Decimal(220),
+    ...(expectedProfitUsd ? { expectedProfitUsd } : {}),
     sampledAt: now,
     opportunityId: 1,
   };
@@ -293,6 +295,24 @@ describe('automatic inventory rebalance planning', () => {
       ],
       config: config({ maxRebalanceLossUsd: new Decimal('0.1') }).autoRotation.inventory,
       trigger: trigger(now),
+      now,
+    });
+    expect(decision).toMatchObject({
+      action: 'WAIT',
+      reasons: ['inventory_rebalance_cost_above_limit'],
+    });
+  });
+
+  it('does not consume more than half of the target opportunity profit', () => {
+    const now = Date.now();
+    const decision = planAutomaticInventoryRebalance({
+      pair: config().autoRotation.pairs[0]!,
+      venues: [
+        venue('gateio', '1000', '20', '0.005', '0.00501', now),
+        venue('bitget', '4000', '0.09', '0.005', '0.00501', now),
+      ],
+      config: config().autoRotation.inventory,
+      trigger: trigger(now, new Decimal('0.008')),
       now,
     });
     expect(decision).toMatchObject({
