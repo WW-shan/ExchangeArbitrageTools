@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import {
   Decimal,
   ZERO,
@@ -538,7 +539,19 @@ export async function planResidualHedge(input: {
 }
 
 function isDefinitiveNoFill(error: unknown): boolean {
-  return /FOK_NOT_FILL|cannot be filled completely/i.test(String(error));
+  return /FOK_NOT_FILL|cannot be filled completely|clientOrderId or text param must be up to 28 characters|clientOrderId[^\n]*invalid|invalid[^\n]*clientOrderId/i.test(
+    String(error),
+  );
+}
+
+function isOrderLookupNoFillError(error: string): boolean {
+  return /ordernotfound|client_id_not_found|order not found|clientOrderId or text param must be up to 28 characters|clientOrderId[^\n]*invalid|invalid[^\n]*clientOrderId/i.test(
+    error,
+  );
+}
+
+export function hedgeClientOrderId(now: number): string {
+  return `HD-${now.toString(36)}-${randomUUID().replace(/-/g, '').slice(0, 8)}`;
 }
 
 function hedgeMetadata(plan: ResidualHedgePlan, extra: Record<string, unknown> = {}) {
@@ -823,6 +836,86 @@ export async function reconcileResidualHedgeFill(input: {
     await new Promise((resolve) => setTimeout(resolve, 200 * (attempt + 1)));
   }
   if (!order) {
+    if (isOrderLookupNoFillError(lastError)) {
+      const baseline = baselineRows(
+        repository,
+        metadata.hedgeVenue,
+        hedgeExecution.opened_at,
+        300_000,
+      );
+      const baselineBase = baseline.find(
+        (row) =>
+          row.currency.toUpperCase() === (metadata.exchangeBase ?? metadata.base).toUpperCase(),
+      );
+      const baselineQuote = baseline.find(
+        (row) => row.currency.toUpperCase() === metadata.quote.toUpperCase(),
+      );
+      const openOrders = await fetchOpenOrdersForSymbols(bundle.adapter, bundle.credentials, [
+        symbol,
+      ]);
+      if (
+        baselineBase &&
+        baselineQuote &&
+        openOrders.errors.length === 0 &&
+        openOrders.orders.length === 0
+      ) {
+        const rows = await bundle.adapter.fetchBalances(bundle.credentials);
+        for (const row of rows) repository.recordBalance(row);
+        const currentBase = findBalance(
+          rows,
+          metadata.hedgeVenue,
+          metadata.exchangeBase ?? metadata.base,
+        );
+        const currentQuote = findBalance(rows, metadata.hedgeVenue, metadata.quote);
+        const unchanged =
+          currentBase !== undefined &&
+          currentQuote !== undefined &&
+          currentBase.total.eq(decimal(baselineBase.total)) &&
+          currentQuote.total.eq(decimal(baselineQuote.total));
+        if (unchanged) {
+          const closedAt = input.now ?? Date.now();
+          repository.recordOrder({
+            venueId: metadata.hedgeVenue,
+            clientOrderId: localOrder.client_order_id,
+            executionId: hedgeExecution.id,
+            symbol,
+            side: metadata.direction === 'short' ? 'buy' : 'sell',
+            type: 'limit',
+            price: ZERO,
+            amount: new Decimal(metadata.exchangeAmount),
+            filledAmount: ZERO,
+            status: 'rejected',
+            now: closedAt,
+          });
+          repository.updateExecutionLeg(localOrder.client_order_id, {
+            status: 'canceled',
+            filledAmount: ZERO,
+            error: lastError,
+          });
+          repository.updateExecutionStatus(hedgeExecution.id, 'HEDGE_REJECTED', {
+            closedAt,
+            metadata: {
+              ...metadata,
+              rejectionReason: lastError,
+              rejectionConfirmedBy: 'no_open_orders_and_unchanged_balances',
+            },
+          });
+          repository.recordRiskEvent(
+            'warning',
+            'hedge_rejected_no_fill',
+            'hedge submission was definitively rejected; balances and open orders confirm no fill',
+            {
+              batchId: metadata.originalBatchId,
+              hedgeBatchId: hedgeExecution.batch_id,
+              hedgeExecutionId: hedgeExecution.id,
+              error: lastError,
+            },
+            closedAt,
+          );
+          return { status: 'BLOCKED', reasons: ['hedge_rejected_no_fill'] };
+        }
+      }
+    }
     return {
       status: 'BLOCKED',
       reasons: [`hedge_order_query_failed:${lastError || 'no response'}`],
@@ -924,7 +1017,7 @@ export async function executeResidualHedge(input: {
     return { status: 'BLOCKED', reasons: ['open_orders_present'], plan };
   }
   const hedgeBatchId = `HEDGE-${batchId}-${now}`;
-  const clientOrderId = `${hedgeBatchId}-H1`;
+  const clientOrderId = hedgeClientOrderId(now);
   const hedgeSide: 'buy' | 'sell' = plan.direction === 'long' ? 'sell' : 'buy';
   const hedgeExecutionId = repository.createExecution({
     strategy: 'HEDGE',
