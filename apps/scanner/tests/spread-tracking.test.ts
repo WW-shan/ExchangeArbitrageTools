@@ -53,4 +53,15 @@ describe('spread persistence summary', () => {
     expect(summaries[0]?.eligibleSamples).toBe(2);
     expect(summaries[1]?.eligibleSamples).toBe(0);
   });
+
+  it('does not count sample gaps as continuous eligible duration', () => {
+    const samples = [
+      sample('gateio->hotcoin', 0, '100', true, '10'),
+      sample('gateio->hotcoin', 60_000, '100', true, '10'),
+    ];
+    const [summary] = summarizeSpreadSamples(samples, 3_000);
+    expect(summary?.eligibleSamples).toBe(2);
+    expect(summary?.longestEligibleStreakMs).toBe(3_000);
+    expect(summary?.totalEligibleDurationMs).toBe(6_000);
+  });
 });

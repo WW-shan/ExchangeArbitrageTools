@@ -43,6 +43,7 @@ function percentile(values: readonly Decimal[], fraction: number): Decimal | und
 function streakStats(
   samples: ReadonlyArray<{ timestamp: number; ok: boolean }>,
   intervalMs: number,
+  maxGapMs: number = intervalMs * 1.5,
 ): { longestMs: number; totalMs: number } {
   const sorted = [...samples].sort((left, right) => left.timestamp - right.timestamp);
   let longestMs = 0;
@@ -62,7 +63,17 @@ function streakStats(
       close();
       continue;
     }
-    if (start === undefined) start = sample.timestamp;
+    if (start === undefined) {
+      start = sample.timestamp;
+      last = sample.timestamp;
+      continue;
+    }
+    if (last !== undefined && sample.timestamp - last > maxGapMs) {
+      close();
+      start = sample.timestamp;
+      last = sample.timestamp;
+      continue;
+    }
     last = sample.timestamp;
   }
   close();
@@ -73,6 +84,7 @@ function summarizeDirection(
   direction: string,
   samples: readonly SpreadSample[],
   intervalMs: number,
+  maxGapMs: number,
 ): SpreadDirectionSummary {
   const sorted = [...samples].sort((left, right) => left.timestamp - right.timestamp);
   const gross = sorted.flatMap((sample) => (sample.grossBps ? [sample.grossBps] : []));
@@ -85,6 +97,7 @@ function summarizeDirection(
       ok: sample.maxEligibleNotional !== undefined,
     })),
     intervalMs,
+    maxGapMs,
   );
   const positiveStreak = streakStats(
     sorted.map((sample) => ({
@@ -92,6 +105,7 @@ function summarizeDirection(
       ok: sample.grossBps?.gt(0) ?? false,
     })),
     intervalMs,
+    maxGapMs,
   );
   const feeStreak = streakStats(
     sorted.map((sample) => ({
@@ -99,6 +113,7 @@ function summarizeDirection(
       ok: sample.maxFeeBreakEvenNotional !== undefined,
     })),
     intervalMs,
+    maxGapMs,
   );
   const firstEligible = eligible[0];
   const lastEligible = eligible[eligible.length - 1];
@@ -152,6 +167,7 @@ function summarizeDirection(
 export function summarizeSpreadSamples(
   samples: readonly SpreadSample[],
   intervalMs: number,
+  maxGapMs: number = intervalMs * 1.5,
 ): SpreadDirectionSummary[] {
   const groups = new Map<string, SpreadSample[]>();
   for (const sample of samples) {
@@ -160,7 +176,7 @@ export function summarizeSpreadSamples(
     groups.set(sample.direction, rows);
   }
   return [...groups.entries()]
-    .map(([direction, rows]) => summarizeDirection(direction, rows, intervalMs))
+    .map(([direction, rows]) => summarizeDirection(direction, rows, intervalMs, maxGapMs))
     .sort((left, right) => {
       if (right.eligibleSamples !== left.eligibleSamples) {
         return right.eligibleSamples - left.eligibleSamples;
