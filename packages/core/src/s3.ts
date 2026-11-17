@@ -377,7 +377,10 @@ export function evaluateS3(input: S3Input): OpportunityResult {
   if (input.direction === 'cex-buy-dex-sell') {
     const amountStep = input.cexMarket.amountStep ?? new Decimal(1);
     const requestedBase = alignAmountDown(input.dexQuote.sellAmount, amountStep);
-    if (!requestedBase.gt(0)) reasons.push('amount_precision_invalid');
+    if (!requestedBase.gt(0)) {
+      reasons.push('amount_precision_invalid');
+      return { ...baseResult, rejectionReasons: [...new Set(reasons)] };
+    }
     const cexBuy = calculateBuyDepthByBase(validatedBook, requestedBase);
     if (cexBuy.insufficientDepth) reasons.push('insufficient_depth');
     if (!isAligned(cexBuy.worstPrice, input.cexMarket.priceStep!)) {
@@ -475,7 +478,10 @@ export function evaluateS3(input: S3Input): OpportunityResult {
     ]);
     const amountStep = input.cexMarket.amountStep ?? new Decimal(1);
     const sellAmount = alignAmountDown(dexTokenOutput, amountStep);
-    if (!sellAmount.gt(0)) reasons.push('amount_precision_invalid');
+    if (!sellAmount.gt(0)) {
+      reasons.push('amount_precision_invalid');
+      return { ...baseResult, rejectionReasons: [...new Set(reasons)] };
+    }
     if (
       input.token.transferRequired &&
       input.token.minDepositAmount &&

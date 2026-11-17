@@ -255,6 +255,52 @@ describe('S2 triangular paths', () => {
 });
 
 describe('S3 CEX-DEX cost model', () => {
+  it.each(['cex-buy-dex-sell', 'dex-buy-cex-sell'] as const)(
+    'rejects rounded zero amounts and accepts one full step for %s',
+    (direction) => {
+      const cexBuy = direction === 'cex-buy-dex-sell';
+      const input = {
+        direction,
+        base: 'CAKE',
+        quote: 'USDT',
+        cexBook: book('gateio', 'CAKE/USDT', cexBuy ? '2.5' : '2.61', cexBuy ? '2.49' : '2.6'),
+        dexQuote: quote({
+          sellToken: cexBuy ? CAKE_TOKEN : USDT_TOKEN,
+          buyToken: cexBuy ? USDT_TOKEN : CAKE_TOKEN,
+          sellAmount: new Decimal(cexBuy ? 12 : 30),
+          buyAmount: new Decimal(cexBuy ? '31.2' : 12),
+          feeBps: new Decimal(0),
+          priceImpactBps: new Decimal(0),
+          expectedSlippageBps: new Decimal(0),
+        }),
+        quoteTokenContractAddress: USDT_TOKEN,
+        requestedNotional: new Decimal(30),
+        token: eligibleToken,
+        settings,
+        now,
+        inventoryMode: true,
+      };
+      const rejected = evaluateS3({
+        ...input,
+        cexMarket: { ...market('CAKE', 'USDT', '0'), amountStep: new Decimal(100) },
+      });
+      expect(rejected.valid).toBe(false);
+      expect(rejected.rejectionReasons).toEqual(['amount_precision_invalid']);
+      expect(rejected.depthNetProfit.toFixed()).toBe('0');
+      expect(rejected.fillQuality).toBeUndefined();
+
+      const accepted = evaluateS3({
+        ...input,
+        cexMarket: { ...market('CAKE', 'USDT', '0'), amountStep: new Decimal(12) },
+      });
+      expect({ valid: accepted.valid, reasons: accepted.rejectionReasons }).toEqual({
+        valid: true,
+        reasons: [],
+      });
+      expect(accepted.fillQuality).toBeDefined();
+    },
+  );
+
   it('applies transfer tax to the full quoted direction and reports a profitable trade', () => {
     const result = evaluateS3({
       direction: 'cex-buy-dex-sell',
