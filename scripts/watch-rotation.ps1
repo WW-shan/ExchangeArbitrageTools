@@ -182,6 +182,36 @@ function New-LogPaths {
   }
 }
 
+function Wait-ProxyReady {
+  param([int]$TimeoutSeconds = 180)
+  $raw = [string]$env:ARB_SOCKS_PROXY
+  if ([string]::IsNullOrWhiteSpace($raw)) { return 'skipped' }
+  $uri = $null
+  if (-not [Uri]::TryCreate($raw, [UriKind]::Absolute, [ref]$uri) -or [string]::IsNullOrWhiteSpace($uri.Host)) {
+    Write-WatchLog 'error' 'proxy_invalid' @{}
+    return 'invalid'
+  }
+  $port = if ($uri.Port -gt 0) { $uri.Port } else { 1080 }
+  $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+  while ((Get-Date) -lt $deadline) {
+    if (Test-Path -LiteralPath $stopPath) { return 'stop' }
+    $client = [Net.Sockets.TcpClient]::new()
+    try {
+      $connect = $client.ConnectAsync($uri.Host, $port)
+      if ($connect.Wait(3000) -and $client.Connected) {
+        Write-WatchLog 'info' 'proxy_ready' @{ host = $uri.Host; port = $port }
+        return 'ready'
+      }
+    } catch {
+    } finally {
+      $client.Dispose()
+    }
+    Start-Sleep -Seconds 2
+  }
+  Write-WatchLog 'error' 'proxy_not_ready' @{ host = $uri.Host; port = $port; timeoutSeconds = $TimeoutSeconds }
+  return 'timeout'
+}
+
 function Start-ExecutorProcess {
   $now = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
   $env:ARB_ROTATION_STARTED_AT = [string]$now
@@ -322,6 +352,13 @@ $env:ARB_ROTATION_RUN_ID = $script:RunId
 $env:ARB_ROTATION_STOP_FILE = $stopPath
 $env:ARB_ROTATION_EXECUTOR_HEARTBEAT = $ExecutorHeartbeatFile
 $env:ARB_ROTATION_SCANNER_HEARTBEAT = $ScannerHeartbeatFile
+
+$proxyReady = Wait-ProxyReady
+if ($proxyReady -eq 'stop') { exit 0 }
+if ($proxyReady -in @('invalid', 'timeout')) {
+  Write-WatchdogStatus -State 'BLOCKED' -Reason ("proxy_not_ready_{0}" -f $proxyReady)
+  exit 6
+}
 
 try {
   [IO.File]::WriteAllText($pidPath, [string]$PID, [Text.UTF8Encoding]::new($false))
