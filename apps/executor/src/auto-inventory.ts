@@ -167,7 +167,11 @@ export function usableSeedAccounting(accounting: SeedFillAccounting): boolean {
  * not expose the fee asset, callers must fall back to actual balance deltas.
  */
 export function accountSeedFill(input: SeedFillAccountingInput): SeedFillAccounting {
-  const grossQuote = (input.averagePrice ?? input.limitPrice).mul(input.filled);
+  const canonicalPrice = canonicalPriceFromExchange(
+    input.averagePrice ?? input.limitPrice,
+    input.baseMultiplier,
+  );
+  const grossQuote = canonicalPrice.mul(input.filled);
   const feeAmount = input.fee?.abs() ?? ZERO;
   if (!feeAmount.gt(0)) {
     return {
@@ -204,7 +208,7 @@ export function accountSeedFill(input: SeedFillAccountingInput): SeedFillAccount
       feeAmount,
       feeCurrency,
       grossQuote,
-      feeValueQuote: feeCanonical.mul(input.averagePrice ?? input.limitPrice),
+      feeValueQuote: feeCanonical.mul(canonicalPrice),
       baseDeltaCanonical: input.filled.minus(feeCanonical),
       quoteDelta: grossQuote.negated(),
     };

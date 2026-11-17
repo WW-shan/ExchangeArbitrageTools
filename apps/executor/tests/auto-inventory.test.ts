@@ -504,6 +504,60 @@ describe('automatic inventory planning', () => {
 });
 
 describe('automatic inventory fee accounting', () => {
+  it.each(
+    ['average', 'limit'].flatMap((priceSource) =>
+      [
+        {
+          feeKind: 'none',
+          fee: undefined,
+          currency: undefined,
+          base: '2000',
+          quote: '-4',
+          value: '0',
+        },
+        {
+          feeKind: 'base',
+          fee: '0.002',
+          currency: '1000TEST',
+          base: '1998',
+          quote: '-4',
+          value: '0.004',
+        },
+        {
+          feeKind: 'quote',
+          fee: '0.004',
+          currency: 'USDT',
+          base: '2000',
+          quote: '-4.004',
+          value: '0.004',
+        },
+      ].map((entry) => ({ ...entry, priceSource })),
+    ),
+  )('normalizes $priceSource price for multiplied fills with $feeKind fees', (entry) => {
+    const accounting = accountSeedFill({
+      base: 'TEST',
+      exchangeBase: '1000TEST',
+      quote: 'USDT',
+      baseMultiplier: new Decimal(1000),
+      filled: new Decimal(2000),
+      averagePrice: entry.priceSource === 'average' ? new Decimal(2) : undefined,
+      limitPrice: new Decimal(entry.priceSource === 'average' ? 3 : 2),
+      fee: entry.fee === undefined ? undefined : new Decimal(entry.fee),
+      feeCurrency: entry.currency,
+    });
+    expect({
+      grossQuote: accounting.grossQuote.toFixed(),
+      feeValueQuote: accounting.feeValueQuote.toFixed(),
+      baseDeltaCanonical: accounting.baseDeltaCanonical.toFixed(),
+      quoteDelta: accounting.quoteDelta.toFixed(),
+    }).toEqual({
+      grossQuote: '4',
+      feeValueQuote: entry.value,
+      baseDeltaCanonical: entry.base,
+      quoteDelta: entry.quote,
+    });
+  });
+
   it('deducts a base-asset fee from the net base received', () => {
     const accounting = accountSeedFill({
       base: 'WARD',
