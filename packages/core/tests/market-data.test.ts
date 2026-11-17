@@ -188,4 +188,31 @@ describe('order book validation', () => {
     });
     expect(latency).toBe(120);
   });
+
+  it('rejects a fresh fetch with an old exchange timestamp by default', () => {
+    const result = validateOrderBook(
+      {
+        ...book([['2.5', '1']], [['2.4', '1']]),
+        receivedAt: now,
+        exchangeTimestamp: now - 60_000,
+        source: 'rest',
+      },
+      { maxAgeMs: 3000, now },
+    );
+    expect(result.valid).toBe(false);
+    if (!result.valid) expect(result.reasons).toContain('exchange_timestamp_stale');
+  });
+
+  it('accepts an old exchange timestamp only when an explicit grace is configured', () => {
+    const result = validateOrderBook(
+      {
+        ...book([['2.5', '1']], [['2.4', '1']]),
+        receivedAt: now,
+        exchangeTimestamp: now - 60_000,
+        source: 'rest',
+      },
+      { maxAgeMs: 3000, maxExchangeAgeMs: 60_000, now },
+    );
+    expect(result.valid).toBe(true);
+  });
 });

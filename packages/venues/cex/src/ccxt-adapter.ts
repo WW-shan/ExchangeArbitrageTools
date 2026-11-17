@@ -905,7 +905,14 @@ export class CcxtCexAdapter implements CexAdapter {
     source: 'rest' | 'websocket' = 'rest',
   ): OrderBookSnapshot {
     const sequence = numberOrUndefined((book as { nonce?: unknown }).nonce);
-    const exchangeTimestamp = normalizeExchangeTimestamp(numberOrUndefined(book.timestamp));
+    const rawExchangeTimestamp = normalizeExchangeTimestamp(numberOrUndefined(book.timestamp));
+    // Some venues expose the snapshot/last-change time rather than the message
+    // arrival time. Do not report an obviously old timestamp as if it described
+    // this fetch; local receivedAt remains the authoritative freshness signal.
+    const exchangeTimestamp =
+      rawExchangeTimestamp !== undefined && fetchedAt - rawExchangeTimestamp > 5_000
+        ? undefined
+        : rawExchangeTimestamp;
     const levels = (values: unknown): Array<{ price: Decimal; amount: Decimal }> => {
       if (!Array.isArray(values)) return [];
       return values

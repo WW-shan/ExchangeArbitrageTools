@@ -4,6 +4,7 @@ import { ArbitrageRepository, openDatabase, writeHeartbeat } from '@arb/storage'
 import { applyFeeOverride, isCcxtShutdownError, mergeAccountFeeFile } from '@arb/venues-cex';
 import { loadExecutorConfig } from './config.js';
 import { CexLiveExecutor } from './coordinator.js';
+import { PreflightCache } from './preflight-cache.js';
 import { recoverExecutorStartup } from './bootstrap.js';
 import {
   buildS1ExecutionRequest,
@@ -253,6 +254,7 @@ async function main(): Promise<void> {
     const gate = new ExecutionGate(config.riskLimits);
     const persistedKillSwitchNow = repository.getSetting('kill_switch') !== 'false';
     gate.setKillSwitch(persistedKillSwitchNow, 'persisted_kill_switch_on');
+    const preflightCache = new PreflightCache();
     const engine = new CexLiveExecutor({
       repository,
       gate,
@@ -260,6 +262,7 @@ async function main(): Promise<void> {
       liveEnabled: config.liveEnabled,
       autoExecutionEnabled: config.autoRotation.enabled,
       legMode: config.legMode,
+      preflightCache,
       settings: config.settings,
     });
 
@@ -289,6 +292,7 @@ async function main(): Promise<void> {
         config,
         adapters,
         engine,
+        preflightCache,
         accountStatusCredentials: [...credentials.values()],
         ...(transferRuntime ? { transferVenues: transferRuntime.venues } : {}),
         shouldStop: () =>

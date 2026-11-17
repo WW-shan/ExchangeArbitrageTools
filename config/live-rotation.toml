@@ -1,27 +1,29 @@
-# Two-sided S1 rotation profile for Gate.io and Bitget. WARD is the first small
-# live candidate; KAT is the deeper secondary candidate. The manual CLI remains
-# available; --auto uses the persisted automatic gate.
+# WARD-only S1 rotation profile for Gate.io and Bitget.
+# Inventory is intentionally single-sided at the start: the venue that holds
+# WARD sells it while the other venue buys with USDT. A filled S1 naturally
+# flips the inventory to the other side, so both venues do not need to hold
+# WARD at the same time. The manual CLI remains available; --auto uses the
+# persisted automatic gate.
 
 [scanner]
-# Gate.io and Bitget are executable. WEEX stays public-monitor-only.
-enabled_venues = ['gateio', 'bitget', 'weex']
-monitor_only_venues = ['weex']
+# Gate.io and Bitget are the only enabled execution venues.
+enabled_venues = ['gateio', 'bitget']
+monitor_only_venues = []
 quote_currency = "USDT"
 # Keep the first live batch narrow. Use config/discovery.toml for read-only
 # volume-ranked opportunity discovery.
 asset_universe_mode = "explicit"
-# Gate/Bitget 1m backtest, 2026-10-24..2026-10-30. WARD and KAT remain the
-# highest-quality stress candidates. LIGHT, LA, BREV and AEON add breadth but
-# have fewer stress samples; they stay monitor-only until inventory is seeded.
-base_assets = ["WARD", "KAT", "LIGHT", "LA", "BREV", "AEON"]
+# WARD is the only live candidate. The 6-day 1m Gate/Bitget backtest showed
+# the highest repeatable executable frequency and the deepest two-sided book.
+base_assets = ["WARD"]
 quote_currencies = ["USDT"]
-max_base_assets = 6
+max_base_assets = 1
 fetch_concurrency = 4
 scan_interval_hot_ms = 30000
 scan_interval_top100_ms = 120000
 scan_interval_top500_ms = 600000
 signal_cooldown_ms = 60000
-max_order_notional = "20"
+max_order_notional = "5"
 # Low-liquidity books can legitimately go 2-15 seconds without a new exchange
 # update. Keep received-at/WebSocket freshness separate from this window; the
 # executor re-fetches both books and uses FOK before submitting.
@@ -34,7 +36,7 @@ ws_max_subscriptions = 200
 # After this many consecutive failures, keep retrying at ws_reconnect_max_ms.
 ws_max_reconnect_attempts = 5
 ws_rest_fallback_per_venue = 4
-ws_scan_interval_ms = 1000
+ws_scan_interval_ms = 100
 orderbook_depth = 20
 min_net_profit_bps = 5
 safety_buffer_bps = 2
@@ -87,10 +89,10 @@ manual_confirmation = true
 # across venues. Gate and Bitget private FOK no-fill paths were verified with
 # WARD on 2026-10-29 (zero fill, no resting order, unchanged balances).
 leg_mode = 'parallel_fok'
-# Gate/Bitget allow well above five requests per second. Keep a conservative
-# execution budget while avoiding the old 1 RPS queue that serialized the
-# orderbook, balance and open-order checks during preflight.
-requests_per_second = 5
+# Gate/Bitget allow well above ten requests per second. The hot path issues the
+# balance and open-order checks in parallel, so 10 RPS avoids serializing them
+# behind a conservative limiter while staying below the venue soft limits.
+requests_per_second = 10
 max_open_batches = 1
 daily_max_loss_usd = "5"
 handoff_max_age_ms = 15000
@@ -103,8 +105,13 @@ fok_venues = ['gateio', 'bitget']
 enabled = true
 # Poll the signal store frequently; balance refresh is parallelized and no
 # longer blocks the execution loop for the whole refresh interval.
-poll_interval_ms = 250
-balance_refresh_ms = 30000
+poll_interval_ms = 50
+# Keep the process-local preflight cache warm without blocking the signal loop.
+# The hot path reads these snapshots directly; REST is only a fallback.
+balance_refresh_ms = 1000
+preflight_balance_max_age_ms = 3000
+preflight_open_order_max_age_ms = 3000
+preflight_hot_book_max_age_ms = 3000
 # Keep the signal window wider than the measured private-API preflight while
 # still bounding total decay. Timing on the live account showed several signals
 # whose refreshed books were still profitable at 2.5-3.2 seconds, but were
@@ -116,11 +123,11 @@ cooldown_ms = 0
 max_consecutive_failures = 3
 heartbeat_file = 'data/rotation-executor.heartbeat.json'
 
-# Preparation is disabled until a WARD/KAT-specific calibration is generated.
-# The old LIGHT/TBK calibration must not be reused.
+# Preparation is disabled until a WARD-specific calibration is generated.
+# The old LIGHT/TBK/KAT calibration must not be reused.
 [auto_rotation.preparation]
 enabled = false
-max_notional = '10'
+max_notional = '5'
 min_stable_ms = 30000
 # No daily preparation count/cost cap and no preparation cooldown. Every new
 # opportunity still has to pass the fresh calibration and expected-value gate;
@@ -143,11 +150,13 @@ enabled = true
 max_loss_usd = '1'
 max_baseline_age_ms = 60000
 
-# Seed only the missing side. When both sides lack useful inventory, buy the
-# cheaper ask. When one side already has inventory, top up the missing side
-# only if it is cheaper or within 30 bps of the other ask. Every seed is a
-# separate SEED execution, not arbitrage profit, and unknown/partial orders
-# stop the executor.
+# Seed only the missing side and only after a fresh directional S1 signal.
+# When both sides lack useful inventory, buy the cheaper ask. When one side
+# already has inventory, top up the missing side only if it is cheaper or
+# within 30 bps of the other ask. This is signal-driven preparation, not a
+# standing instruction to hold WARD on both venues. Every seed is a separate
+# SEED execution, not arbitrage profit, and unknown/partial orders stop the
+# executor.
 [auto_rotation.inventory]
 enabled = true
 seed_notional_usd = '5'
@@ -184,37 +193,7 @@ require_signal_for_seed = true
 base = 'WARD'
 quote = 'USDT'
 venues = ['gateio', 'bitget']
-max_notional = '10'
-
-[[auto_rotation.pairs]]
-base = 'KAT'
-quote = 'USDT'
-venues = ['gateio', 'bitget']
-max_notional = '20'
-
-[[auto_rotation.pairs]]
-base = 'LIGHT'
-quote = 'USDT'
-venues = ['gateio', 'bitget']
-max_notional = '10'
-
-[[auto_rotation.pairs]]
-base = 'LA'
-quote = 'USDT'
-venues = ['gateio', 'bitget']
-max_notional = '10'
-
-[[auto_rotation.pairs]]
-base = 'BREV'
-quote = 'USDT'
-venues = ['gateio', 'bitget']
-max_notional = '10'
-
-[[auto_rotation.pairs]]
-base = 'AEON'
-quote = 'USDT'
-venues = ['gateio', 'bitget']
-max_notional = '10'
+max_notional = '5'
 
 # 2026-10-29 live check: Gate/Bitget WARD withdraw=false; Bitget KAT
 # withdraw=false. WARD/KAT have no two-way transfer route. See

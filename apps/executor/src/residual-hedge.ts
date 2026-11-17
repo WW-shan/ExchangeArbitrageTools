@@ -469,7 +469,12 @@ export async function planResidualHedge(input: {
     maxAgeMs: config.settings.maxOrderbookAgeMs,
     now: Date.now(),
   });
-  if (!validation.valid) return { status: 'BLOCKED', reasons: ['residual_book_stale_or_invalid'] };
+  if (!validation.valid) {
+    return {
+      status: 'BLOCKED',
+      reasons: ['residual_book_stale_or_invalid', ...validation.reasons],
+    };
+  }
   const chosen =
     direction === 'long'
       ? evaluateResidualHedgeCandidate({

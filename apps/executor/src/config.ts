@@ -104,6 +104,9 @@ export interface AutoRotationConfig {
   heartbeatFile: string;
   pollIntervalMs: number;
   balanceRefreshMs: number;
+  preflightBalanceMaxAgeMs?: number;
+  preflightOpenOrderMaxAgeMs?: number;
+  preflightHotBookMaxAgeMs?: number;
   maxSignalAgeMs: number;
   maxPreflightMs: number;
   cooldownMs: number;
@@ -494,6 +497,9 @@ function autoRotationConfig(value: unknown, handoffMaxAgeMs: number): AutoRotati
   const inventory = optionalTable(rotation.inventory, 'auto_rotation.inventory');
   const pollIntervalMs = numberValue(rotation, 'poll_interval_ms', 1000);
   const balanceRefreshMs = numberValue(rotation, 'balance_refresh_ms', 10_000);
+  const preflightBalanceMaxAgeMs = numberValue(rotation, 'preflight_balance_max_age_ms', 3000);
+  const preflightOpenOrderMaxAgeMs = numberValue(rotation, 'preflight_open_order_max_age_ms', 3000);
+  const preflightHotBookMaxAgeMs = numberValue(rotation, 'preflight_hot_book_max_age_ms', 3000);
   const maxSignalAgeMs = numberValue(rotation, 'max_signal_age_ms', handoffMaxAgeMs);
   const maxPreflightMs = numberValue(rotation, 'max_preflight_ms', 2_500);
   const cooldownMs = numberValue(rotation, 'cooldown_ms', 5000);
@@ -505,6 +511,9 @@ function autoRotationConfig(value: unknown, handoffMaxAgeMs: number): AutoRotati
   for (const [name, value] of [
     ['poll_interval_ms', pollIntervalMs],
     ['balance_refresh_ms', balanceRefreshMs],
+    ['preflight_balance_max_age_ms', preflightBalanceMaxAgeMs],
+    ['preflight_open_order_max_age_ms', preflightOpenOrderMaxAgeMs],
+    ['preflight_hot_book_max_age_ms', preflightHotBookMaxAgeMs],
     ['max_signal_age_ms', maxSignalAgeMs],
     ['max_preflight_ms', maxPreflightMs],
     ['cooldown_ms', cooldownMs],
@@ -554,6 +563,9 @@ function autoRotationConfig(value: unknown, handoffMaxAgeMs: number): AutoRotati
     heartbeatFile: stringValue(rotation, 'heartbeat_file', 'data/rotation-heartbeat.json'),
     pollIntervalMs,
     balanceRefreshMs,
+    preflightBalanceMaxAgeMs,
+    preflightOpenOrderMaxAgeMs,
+    preflightHotBookMaxAgeMs,
     maxSignalAgeMs,
     maxPreflightMs,
     cooldownMs,
@@ -883,6 +895,15 @@ export function loadExecutorConfig(
       maxGasCostUsd: decimalValue(scanner, 'max_gas_cost_usd', '0.50'),
       maxTransferTaxBps: decimalValue(scanner, 'max_transfer_tax_bps', '0'),
       minBuyQuoteReserveUsd: autoRotation.inventory.minQuoteReserveUsd,
+      ...(autoRotation.preflightBalanceMaxAgeMs !== undefined
+        ? { preflightBalanceMaxAgeMs: autoRotation.preflightBalanceMaxAgeMs }
+        : {}),
+      ...(autoRotation.preflightOpenOrderMaxAgeMs !== undefined
+        ? { preflightOpenOrderMaxAgeMs: autoRotation.preflightOpenOrderMaxAgeMs }
+        : {}),
+      ...(autoRotation.preflightHotBookMaxAgeMs !== undefined
+        ? { preflightHotBookMaxAgeMs: autoRotation.preflightHotBookMaxAgeMs }
+        : {}),
     },
   };
   if (maxOpenBatches !== 1) throw new Error('execution.max_open_batches must be 1');

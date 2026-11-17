@@ -22,6 +22,8 @@ import {
   venuesForRotationDirection,
 } from './auto-rotation.js';
 import { refreshBalances } from './balance-service.js';
+import { checkNoOpenOrders } from './open-orders.js';
+import type { PreflightCache } from './preflight-cache.js';
 import type { RecoveryVenue } from './bootstrap.js';
 import type { ExecutorConfig, RotationPairConfig } from './config.js';
 import { attemptAutomaticResidualHedge } from './auto-residual-hedge.js';
@@ -55,6 +57,7 @@ export interface AutoRotationSupervisorOptions {
   config: ExecutorConfig;
   adapters: Readonly<Record<string, RecoveryVenue>>;
   engine: CexLiveExecutor;
+  preflightCache?: PreflightCache;
   shouldStop?: () => boolean;
   sleep?: (ms: number) => Promise<void>;
   clock?: () => number;
@@ -889,6 +892,29 @@ export async function runAutoRotationSupervisor(
     const missing = executionVenueIds.filter((venueId) => !adapters[venueId]);
     throw new Error(`auto rotation requires trade credentials for: ${missing.join(', ')}`);
   }
+  const openOrderVenues = [
+    ...new Map(
+      config.autoRotation.pairs
+        .flatMap((pair) =>
+          [...pair.venues].flatMap((venueId) => {
+            const bundle = adapters[venueId];
+            const market = findMarket(markets[venueId] ?? [], venueId, pair.base, pair.quote);
+            if (!bundle || !market) return [];
+            return [
+              {
+                adapter: bundle.adapter,
+                credentials: bundle.credentials,
+                symbol: market.exchangeSymbol,
+              },
+            ];
+          }),
+        )
+        .map((venue) => [`${venue.adapter.venueId}|${venue.symbol}`, venue] as const),
+    ).values(),
+  ];
+  const openOrderCacheKeys = openOrderVenues.map(
+    (venue) => `${venue.adapter.venueId}|${venue.symbol}`,
+  );
   const statusCredentials = options.accountStatusCredentials ?? [];
   const statusTradeCredentials = statusCredentials.filter(
     (credential) => credential.role === 'trade',
@@ -902,6 +928,8 @@ export async function runAutoRotationSupervisor(
     }),
   );
   let lastBalanceAt = 0;
+  let lastPreflightRefreshAt = 0;
+  let preflightRefreshInFlight = false;
   let lastAccountStatusAt = 0;
   let lastAccountStatusSuccessAt = 0;
   let accountStatusReport: AccountPermissionReport | undefined;
@@ -925,6 +953,59 @@ export async function runAutoRotationSupervisor(
   let heartbeatWaitReasons: string[] | undefined;
   const failedOpportunityUntil = new Map<number, number>();
   const inventoryObservations = new Map<string, InventoryStabilityObservation>();
+  const refreshPreflightCache = async (): Promise<void> => {
+    const cache = options.preflightCache;
+    if (!cache || preflightRefreshInFlight) return;
+    preflightRefreshInFlight = true;
+    const startedAt = clock();
+    try {
+      const [refreshed, openOrders] = await Promise.all([
+        refreshBalances(repository, balanceVenues, startedAt),
+        openOrderVenues.length > 0
+          ? checkNoOpenOrders(openOrderVenues, { requireSupported: true })
+          : Promise.resolve({ ok: true, orders: [], errors: [] }),
+      ]);
+      const rows = repository.latestBalances({
+        maxAgeMs: Math.max(
+          (config.autoRotation.preflightBalanceMaxAgeMs ?? 3000) * 2,
+          config.autoRotation.balanceRefreshMs * 2,
+        ),
+        now: clock(),
+      });
+      cache.recordBalances(rows);
+      if (
+        openOrderVenues.length > 0 &&
+        openOrders.errors.every((error) => error === 'open_orders_present')
+      ) {
+        cache.recordOpenOrders(openOrderCacheKeys, openOrders, clock());
+      }
+      lastPreflightRefreshAt = clock();
+      if (refreshed.errors.length > 0) {
+        logEvent({ status: 'balance_refresh_failed', errors: refreshed.errors });
+      } else if (!accountStateLogged) {
+        logAccountState(repository, config, markets, lastPreflightRefreshAt);
+        accountStateLogged = true;
+      }
+    } catch (error) {
+      repository.recordRiskEvent(
+        'warning',
+        'preflight_cache_refresh_failed',
+        String(error),
+        {},
+        clock(),
+      );
+    } finally {
+      preflightRefreshInFlight = false;
+    }
+  };
+  const forcePreflightRefresh = (): void => {
+    lastPreflightRefreshAt = 0;
+    void refreshPreflightCache();
+  };
+  const invalidateBalanceCache = (): void => {
+    if (options.preflightCache) forcePreflightRefresh();
+    else lastBalanceAt = 0;
+  };
   repository.setSetting('auto_execution_enabled', 'true');
   repository.recordAudit('executor', 'auto_rotation_started', {
     pairs: instruments,
@@ -937,6 +1018,7 @@ export async function runAutoRotationSupervisor(
     recordHeartbeat(repository, config, 'running', heartbeatWaitReasons, heartbeatPhase);
   }, 5000);
   heartbeatTimer.unref?.();
+  await refreshPreflightCache();
 
   while (!(options.shouldStop?.() ?? false)) {
     let now = clock();
@@ -956,7 +1038,7 @@ export async function runAutoRotationSupervisor(
       logEvent({ status: 'stopped', reason: 'auto_execution_disabled' });
       break;
     }
-    if (now - lastBalanceAt >= config.autoRotation.balanceRefreshMs) {
+    if (!options.preflightCache && now - lastBalanceAt >= config.autoRotation.balanceRefreshMs) {
       heartbeatPhase = 'BALANCING';
       const refreshed = await refreshBalances(repository, balanceVenues, now);
       now = clock();
@@ -970,6 +1052,13 @@ export async function runAutoRotationSupervisor(
         logAccountState(repository, config, markets, now);
         accountStateLogged = true;
       }
+    } else if (
+      options.preflightCache &&
+      now - lastPreflightRefreshAt >= config.autoRotation.balanceRefreshMs
+    ) {
+      heartbeatPhase = 'BALANCING';
+      lastPreflightRefreshAt = now;
+      void refreshPreflightCache();
     }
     now = clock();
     heartbeatPhase = 'CHECKING_ACCOUNT';
@@ -1060,7 +1149,7 @@ export async function runAutoRotationSupervisor(
             return;
           }
           if (reconciled.status === TRANSFER_BATCH_STATUS.COMPLETED) {
-            lastBalanceAt = 0;
+            invalidateBalanceCache();
           }
         }
       }
@@ -1129,7 +1218,7 @@ export async function runAutoRotationSupervisor(
               batchId: attempt.batchId,
               direction: normalSelection.unfunded.direction,
             });
-            lastBalanceAt = 0;
+            invalidateBalanceCache();
             await sleep(config.autoRotation.pollIntervalMs);
             continue;
           }
@@ -1268,7 +1357,7 @@ export async function runAutoRotationSupervisor(
               });
               lastAttempt = rebalanceAttempt;
               if (rebalanceAttempt.status === 'FILLED') {
-                lastBalanceAt = 0;
+                invalidateBalanceCache();
                 repository.recordAudit(
                   'executor',
                   'inventory_rebalance_supervisor_result',
@@ -1378,7 +1467,7 @@ export async function runAutoRotationSupervisor(
             inventoryObservations.delete(inventoryKey);
           }
           if (inventoryAttempt.status === 'FILLED') {
-            lastBalanceAt = 0;
+            invalidateBalanceCache();
             repository.recordAudit(
               'executor',
               'inventory_seed_supervisor_result',
@@ -1545,7 +1634,7 @@ export async function runAutoRotationSupervisor(
       });
       const resultAt = clock();
       if (result.outcome === 'CLOSED' || result.ordersSubmitted > 0) {
-        lastBalanceAt = 0;
+        invalidateBalanceCache();
       }
       lastExecutionClosedAt = resultAt;
       preparationKey = undefined;

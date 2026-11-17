@@ -1913,6 +1913,9 @@ export class ScannerService {
     }
     const result: FetchedBook = { book: validation.book, valid: true, reasons: [] };
     this.#bookCache.set(key, result);
+    if (this.#persistSnapshots && validation.book.source === 'websocket') {
+      this.#repository.recordHotOrderbook(validation.book);
+    }
     return result;
   }
 

@@ -482,4 +482,30 @@
       ALTER TABLE orders ADD COLUMN fee_currency TEXT;
     `,
   },
+  {
+    version: 11,
+    name: 'orderbooks_venue_symbol_time',
+    sql: `
+      CREATE INDEX IF NOT EXISTS orderbooks_venue_symbol_time_idx
+        ON orderbooks(venue_id, exchange_symbol, fetched_at DESC);
+    `,
+  },
+  {
+    version: 12,
+    name: 'hot_orderbooks',
+    sql: `
+      CREATE TABLE hot_orderbooks (
+        venue_id TEXT NOT NULL,
+        exchange_symbol TEXT NOT NULL,
+        fetched_at INTEGER NOT NULL,
+        exchange_timestamp INTEGER,
+        bids_json TEXT NOT NULL,
+        asks_json TEXT NOT NULL,
+        source TEXT NOT NULL,
+        updated_at INTEGER NOT NULL,
+        PRIMARY KEY (venue_id, exchange_symbol),
+        FOREIGN KEY (venue_id) REFERENCES venues(id)
+      );
+    `,
+  },
 ] as const;

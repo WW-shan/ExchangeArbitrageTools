@@ -74,6 +74,7 @@ async function main(): Promise<void> {
     process.env.ARB_ROTATION_SCANNER_HEARTBEAT ?? 'data/rotation-scanner.heartbeat.json';
   const stopFile = process.env.ARB_ROTATION_STOP_FILE ?? 'data/rotation.stop';
   let scannerPhase = 'STARTING';
+  let lastHotSummaryLogAt = 0;
   const recordScannerHeartbeat = (state: 'running' | 'stopped', phase: string): void => {
     try {
       writeHeartbeat(heartbeatFile, {
@@ -303,8 +304,10 @@ async function main(): Promise<void> {
           maxWaitMs: waitMs,
           debounceMs: config.scanner.hotScanDebounceMs,
         });
-        if (summary && (summary.s1Count > 0 || summary.validOpportunities > 0)) {
+        const now = Date.now();
+        if (summary && (summary.validOpportunities > 0 || now - lastHotSummaryLogAt >= 10_000)) {
           console.log(JSON.stringify({ ...summary, mode: 'hot' }));
+          lastHotSummaryLogAt = now;
         }
       } catch (error) {
         console.error('hot scan failed', error);

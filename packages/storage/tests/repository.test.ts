@@ -516,6 +516,69 @@ describe('SQLite storage', () => {
     repo.close();
   });
 
+  it('returns the latest valid orderbook only while it is fresh', () => {
+    const db = openDatabase(':memory:');
+    const repo = new ArbitrageRepository(db);
+    repo.upsertVenue({ id: 'gateio', type: 'cex', name: 'Gate.io', tier: 'S', now });
+    repo.recordOrderbook(
+      {
+        venueId: 'gateio',
+        exchangeSymbol: 'CAKE/USDT',
+        fetchedAt: now,
+        exchangeTimestamp: now - 100,
+        asks: [{ price: new Decimal('2.5'), amount: new Decimal(1) }],
+        bids: [{ price: new Decimal('2.49'), amount: new Decimal(2) }],
+        source: 'websocket',
+      },
+      true,
+    );
+    const fresh = repo.latestOrderbook('gateio', 'CAKE/USDT', { maxAgeMs: 1000, now });
+    expect(fresh?.asks[0]?.price.toFixed()).toBe('2.5');
+    expect(fresh?.bids[0]?.amount.toFixed()).toBe('2');
+    expect(fresh?.source).toBe('websocket');
+    expect(
+      repo.latestOrderbook('gateio', 'CAKE/USDT', { maxAgeMs: 1000, now: now + 5000 }),
+    ).toBeUndefined();
+    repo.close();
+  });
+
+  it('upserts the hot orderbook used by the execution hot path', () => {
+    const db = openDatabase(':memory:');
+    const repo = new ArbitrageRepository(db);
+    repo.upsertVenue({ id: 'gateio', type: 'cex', name: 'Gate.io', tier: 'S', now });
+    repo.recordHotOrderbook({
+      venueId: 'gateio',
+      exchangeSymbol: 'WARD/USDT',
+      fetchedAt: now,
+      asks: [{ price: new Decimal('0.001600'), amount: new Decimal(100) }],
+      bids: [{ price: new Decimal('0.001590'), amount: new Decimal(200) }],
+      source: 'websocket',
+    });
+    repo.recordHotOrderbook({
+      venueId: 'gateio',
+      exchangeSymbol: 'WARD/USDT',
+      fetchedAt: now + 100,
+      asks: [{ price: new Decimal('0.001610'), amount: new Decimal(300) }],
+      bids: [{ price: new Decimal('0.001600'), amount: new Decimal(400) }],
+      source: 'websocket',
+    });
+
+    expect((db.prepare('SELECT COUNT(*) AS n FROM hot_orderbooks').get() as { n: number }).n).toBe(
+      1,
+    );
+    const fresh = repo.latestHotOrderbook('gateio', 'WARD/USDT', {
+      maxAgeMs: 1000,
+      now: now + 100,
+    });
+    expect(fresh?.asks[0]?.price.toFixed()).toBe('0.00161');
+    expect(fresh?.bids[0]?.amount.toFixed()).toBe('400');
+    expect(fresh?.source).toBe('websocket');
+    expect(
+      repo.latestHotOrderbook('gateio', 'WARD/USDT', { maxAgeMs: 1000, now: now + 5000 }),
+    ).toBeUndefined();
+    repo.close();
+  });
+
   it('retains opportunities referenced by executions or recent paper trades', () => {
     const db = openDatabase(':memory:');
     const repo = new ArbitrageRepository(db);
@@ -638,7 +701,9 @@ describe('SQLite storage', () => {
       .all() as Array<{
       version: number;
     }>;
-    expect(versions.map((row) => row.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+    expect(versions.map((row) => row.version)).toEqual(
+      MIGRATIONS.map((migration) => migration.version),
+    );
     const columns = db.prepare('PRAGMA table_info(unhedged_inventory)').all() as Array<{
       name: string;
     }>;

@@ -14,9 +14,11 @@ import { ArbitrageRepository, openDatabase } from '@arb/storage';
 import type { ApiCredentials, BalanceSnapshot, CexAdapter, OrderState } from '@arb/venues-cex';
 import {
   CexLiveExecutor,
+  type CexLiveExecutorOptions,
   type ExecutionVenue,
   type LiveExecutionRequest,
 } from '../src/coordinator.js';
+import { PreflightCache } from '../src/preflight-cache.js';
 
 const now = 1_700_000_000_000;
 const keys: ApiCredentials = { apiKey: 'test', secret: 'test' };
@@ -130,9 +132,11 @@ interface FakeOptions {
   onFetchBook?: () => void;
   bookFetchedAt?: () => number;
   bookQuote?: (venueId: string, call: number) => { ask: string; bid: string };
+  bookError?: Error;
   createDelayMs?: number;
   concurrency?: { active: number; max: number };
   orderFeeRate?: Decimal;
+  orderFeeCurrency?: string | ((isBuy: boolean) => string);
   openOrders?: OrderState[];
   openOrdersError?: Error;
   sellAmountTransform?: (amount: Decimal) => Decimal;
@@ -159,6 +163,10 @@ function fakeAdapter(venueId: string, options: FakeOptions = {}) {
       : (options.leg2FillRatio ?? new Decimal(1));
     const price = isBuy ? new Decimal('2.5') : new Decimal('2.55');
     const filled = amount.mul(ratio);
+    const feeCurrency =
+      typeof options.orderFeeCurrency === 'function'
+        ? options.orderFeeCurrency(isBuy)
+        : options.orderFeeCurrency;
     return {
       venueOrderId: isBuy ? 'order-1' : 'order-2',
       ...(clientOrderId ? { clientOrderId } : {}),
@@ -171,6 +179,7 @@ function fakeAdapter(venueId: string, options: FakeOptions = {}) {
       remaining: amount.minus(filled),
       averagePrice: price,
       fee: filled.mul(price).mul(options.orderFeeRate ?? new Decimal('0.001')),
+      ...(feeCurrency ? { feeCurrency } : {}),
       status,
       raw: { fake: true },
     };
@@ -192,6 +201,7 @@ function fakeAdapter(venueId: string, options: FakeOptions = {}) {
     loadMarkets: async () => [market(venueId)],
     fetchOrderBook: async () => {
       state.fetchBookCalls += 1;
+      if (options.bookError) throw options.bookError;
       options.onFetchBook?.();
       const fetchedAt = options.bookFetchedAt?.() ?? now;
       const quote = options.bookQuote?.(venueId, state.fetchBookCalls);
@@ -296,7 +306,14 @@ function fakeAdapter(venueId: string, options: FakeOptions = {}) {
   return { adapter, state };
 }
 
-function setup(options: FakeOptions = {}, legMode: 'serial' | 'parallel_fok' = 'serial') {
+function setup(
+  options: FakeOptions = {},
+  legMode: 'serial' | 'parallel_fok' = 'serial',
+  extras: {
+    preflightCache?: PreflightCache;
+    settings?: CexLiveExecutorOptions['settings'];
+  } = {},
+) {
   const db = openDatabase(':memory:');
   const repo = new ArbitrageRepository(db);
   repo.upsertVenue({
@@ -325,7 +342,8 @@ function setup(options: FakeOptions = {}, legMode: 'serial' | 'parallel_fok' = '
     limits,
     liveEnabled: true,
     legMode,
-    settings,
+    settings: extras.settings ?? settings,
+    ...(extras.preflightCache ? { preflightCache: extras.preflightCache } : {}),
     sleep: async () => {},
     clock: () => now,
   });
@@ -562,6 +580,91 @@ describe('live executor safety gates', () => {
     expect(buy.state.createCalls).toBe(1);
     expect(sell.state.createCalls).toBe(1);
     expect(repo.countOpenExecutions()).toBe(0);
+    repo.close();
+  });
+
+  it('uses the scanner websocket book cache when it is fresh', async () => {
+    const { repo, buy, sell } = setup({ bookError: new Error('REST book should not be called') });
+    repo.recordOrderbook(
+      {
+        venueId: 'gateio',
+        exchangeSymbol: 'CAKE/USDT',
+        fetchedAt: now,
+        asks: [{ price: new Decimal('2.5'), amount: new Decimal('100') }],
+        bids: [{ price: new Decimal('2.49'), amount: new Decimal('100') }],
+        source: 'websocket',
+      },
+      true,
+    );
+    repo.recordOrderbook(
+      {
+        venueId: 'mexc',
+        exchangeSymbol: 'CAKE/USDT',
+        fetchedAt: now,
+        asks: [{ price: new Decimal('2.56'), amount: new Decimal('100') }],
+        bids: [{ price: new Decimal('2.55'), amount: new Decimal('100') }],
+        source: 'websocket',
+      },
+      true,
+    );
+    const result = await new CexLiveExecutor({
+      repository: repo,
+      gate: new ExecutionGate(limits),
+      limits,
+      liveEnabled: true,
+      settings,
+      sleep: async () => {},
+      clock: () => now,
+    }).execute(
+      request(
+        { adapter: buy.adapter, market: market('gateio'), credentials: keys, healthState: 'A' },
+        { adapter: sell.adapter, market: market('mexc'), credentials: keys, healthState: 'A' },
+      ),
+    );
+    expect(result.outcome).toBe('CLOSED');
+    expect(buy.state.fetchBookCalls).toBe(0);
+    expect(sell.state.fetchBookCalls).toBe(0);
+    repo.close();
+  });
+
+  it('uses hot orderbooks and cached private state without preflight REST', async () => {
+    const preflightCache = new PreflightCache();
+    const hotSettings: CexLiveExecutorOptions['settings'] = {
+      ...settings,
+      preflightBalanceMaxAgeMs: 3000,
+      preflightOpenOrderMaxAgeMs: 3000,
+    };
+    const { repo, executor, buy, sell } = setup(
+      { bookError: new Error('REST book should not be called') },
+      'serial',
+      { preflightCache, settings: hotSettings },
+    );
+    const gateBook = { ...book('gateio', '2.500', '2.490'), source: 'websocket' as const };
+    const mexcBook = { ...book('mexc', '2.560', '2.550'), source: 'websocket' as const };
+    repo.recordHotOrderbook(gateBook);
+    repo.recordHotOrderbook(mexcBook);
+    preflightCache.recordBalances([...balances('gateio'), ...balances('mexc')]);
+    preflightCache.recordOpenOrders(
+      ['gateio|CAKE/USDT', 'mexc|CAKE/USDT'],
+      { ok: true, orders: [], errors: [] },
+      now,
+    );
+
+    const result = await executor.execute(
+      request(
+        { adapter: buy.adapter, market: market('gateio'), credentials: keys, healthState: 'A' },
+        { adapter: sell.adapter, market: market('mexc'), credentials: keys, healthState: 'A' },
+      ),
+    );
+
+    expect(result.outcome).toBe('CLOSED');
+    expect(buy.state.fetchBookCalls).toBe(0);
+    expect(sell.state.fetchBookCalls).toBe(0);
+    expect(result.timing).toMatchObject({
+      balanceSource: 'cache',
+      openOrderSource: 'cache',
+      bookSources: { buy: 'hot', sell: 'hot' },
+    });
     repo.close();
   });
 
@@ -1458,6 +1561,59 @@ describe('parallel FOK two-leg execution', () => {
     expect(JSON.parse(execution.metadata_json)).toMatchObject({
       mode: 'parallel_fok',
       outcome: 'CLOSED',
+    });
+    repo.close();
+  });
+
+  it('converts a base-asset buy fee to quote when balance reconciliation is unavailable', async () => {
+    const { db, repo, executor, buy, sell } = setup(
+      {
+        orderFeeRate: new Decimal('0.001'),
+        orderFeeCurrency: (isBuy) => (isBuy ? 'CAKE' : 'USDT'),
+        balanceAfterCreate: () => {
+          throw new Error('balance endpoint down');
+        },
+      },
+      'parallel_fok',
+    );
+    const result = await executor.execute(
+      request(
+        {
+          adapter: buy.adapter,
+          market: fokMarket('gateio'),
+          credentials: keys,
+          healthState: 'A',
+        },
+        {
+          adapter: sell.adapter,
+          market: fokMarket('mexc'),
+          credentials: keys,
+          healthState: 'A',
+        },
+      ),
+    );
+    expect(result.outcome).toBe('CLOSED');
+    const execution = db
+      .prepare(
+        'SELECT realized_profit, fees, inventory_delta_json, metadata_json FROM executions WHERE batch_id = ?',
+      )
+      .get('exec-batch') as {
+      realized_profit: string;
+      fees: string;
+      inventory_delta_json: string;
+      metadata_json: string;
+    };
+    expect(new Decimal(execution.realized_profit).toFixed(4)).toBe('0.4944');
+    expect(new Decimal(execution.fees).toFixed(4)).toBe('0.1056');
+    expect(JSON.parse(execution.metadata_json)).toMatchObject({
+      profitAccounting: 'order_fee_fallback',
+      buyFeeQuote: '0.075',
+      sellFeeQuote: '0.0306',
+      buyFeeCurrency: 'CAKE',
+      sellFeeCurrency: 'USDT',
+    });
+    expect(JSON.parse(execution.inventory_delta_json)).toMatchObject({
+      baseDelta: '-0.03',
     });
     repo.close();
   });

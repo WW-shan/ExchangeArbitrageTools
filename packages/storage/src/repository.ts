@@ -972,6 +972,10 @@ export class ArbitrageRepository {
     this.mutateDailyRisk('realized_loss', amount, now);
   }
 
+  adjustRealizedLoss(delta: Decimal, now = Date.now()): void {
+    this.mutateDailyRisk('realized_loss', delta, now);
+  }
+
   addRebalanceCost(amount: Decimal, now = Date.now()): void {
     if (amount.lt(0)) throw new Error('rebalance cost increment cannot be negative');
     this.mutateDailyRisk('rebalance_cost', amount, now);
@@ -1068,14 +1072,14 @@ export class ArbitrageRepository {
     amount: Decimal,
     now: number,
   ): void {
-    if (amount.lte(0)) return;
+    if (amount.eq(0)) return;
     const tradingDay = this.tradingDay(now);
     this.db.exec('BEGIN IMMEDIATE');
     try {
       const row = this.db
         .prepare(`SELECT ${column} AS value FROM daily_risk_state WHERE trading_day = ?`)
         .get(tradingDay) as { value: string } | undefined;
-      const next = new Decimal(row?.value ?? 0).plus(amount);
+      const next = Decimal.max(0, new Decimal(row?.value ?? 0).plus(amount));
       this.db
         .prepare(
           `INSERT INTO daily_risk_state(trading_day, ${column}, updated_at)
@@ -1109,6 +1113,117 @@ export class ArbitrageRepository {
         valid ? 1 : 0,
         validationError ?? null,
       );
+  }
+
+  recordHotOrderbook(book: OrderBookSnapshot): void {
+    this.db
+      .prepare(
+        `INSERT INTO hot_orderbooks(
+          venue_id, exchange_symbol, fetched_at, exchange_timestamp,
+          bids_json, asks_json, source, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(venue_id, exchange_symbol) DO UPDATE SET
+          fetched_at = excluded.fetched_at,
+          exchange_timestamp = excluded.exchange_timestamp,
+          bids_json = excluded.bids_json,
+          asks_json = excluded.asks_json,
+          source = excluded.source,
+          updated_at = excluded.updated_at`,
+      )
+      .run(
+        book.venueId,
+        book.exchangeSymbol,
+        book.fetchedAt,
+        book.exchangeTimestamp ?? null,
+        json(book.bids.map((level) => [level.price.toFixed(), level.amount.toFixed()])),
+        json(book.asks.map((level) => [level.price.toFixed(), level.amount.toFixed()])),
+        book.source,
+        Date.now(),
+      );
+  }
+
+  latestHotOrderbook(
+    venueId: string,
+    exchangeSymbol: string,
+    options: { maxAgeMs: number; now?: number },
+  ): OrderBookSnapshot | undefined {
+    const now = options.now ?? Date.now();
+    const row = this.db
+      .prepare(
+        `SELECT venue_id, exchange_symbol, fetched_at, exchange_timestamp,
+                bids_json, asks_json, source
+         FROM hot_orderbooks
+         WHERE venue_id = ? AND exchange_symbol = ? AND fetched_at >= ?`,
+      )
+      .get(venueId, exchangeSymbol, now - options.maxAgeMs) as
+      | {
+          venue_id: string;
+          exchange_symbol: string;
+          fetched_at: number;
+          exchange_timestamp: number | null;
+          bids_json: string;
+          asks_json: string;
+          source: OrderBookSnapshot['source'];
+        }
+      | undefined;
+    if (!row) return undefined;
+    const levels = (value: string): Array<{ price: Decimal; amount: Decimal }> =>
+      (JSON.parse(value) as Array<[string, string]>).map(([price, amount]) => ({
+        price: new Decimal(price),
+        amount: new Decimal(amount),
+      }));
+    return {
+      venueId: row.venue_id,
+      exchangeSymbol: row.exchange_symbol,
+      fetchedAt: row.fetched_at,
+      receivedAt: row.fetched_at,
+      ...(row.exchange_timestamp !== null ? { exchangeTimestamp: row.exchange_timestamp } : {}),
+      bids: levels(row.bids_json),
+      asks: levels(row.asks_json),
+      source: row.source,
+    };
+  }
+
+  latestOrderbook(
+    venueId: string,
+    exchangeSymbol: string,
+    options: { maxAgeMs: number; now?: number },
+  ): OrderBookSnapshot | undefined {
+    const now = options.now ?? Date.now();
+    const row = this.db
+      .prepare(
+        `SELECT venue_id, exchange_symbol, fetched_at, exchange_timestamp,
+                bids_json, asks_json
+         FROM orderbooks
+         WHERE venue_id = ? AND exchange_symbol = ? AND valid = 1 AND fetched_at >= ?
+         ORDER BY fetched_at DESC LIMIT 1`,
+      )
+      .get(venueId, exchangeSymbol, now - options.maxAgeMs) as
+      | {
+          venue_id: string;
+          exchange_symbol: string;
+          fetched_at: number;
+          exchange_timestamp: number | null;
+          bids_json: string;
+          asks_json: string;
+        }
+      | undefined;
+    if (!row) return undefined;
+    const levels = (value: string): Array<{ price: Decimal; amount: Decimal }> =>
+      (JSON.parse(value) as Array<[string, string]>).map(([price, amount]) => ({
+        price: new Decimal(price),
+        amount: new Decimal(amount),
+      }));
+    return {
+      venueId: row.venue_id,
+      exchangeSymbol: row.exchange_symbol,
+      fetchedAt: row.fetched_at,
+      receivedAt: row.fetched_at,
+      ...(row.exchange_timestamp !== null ? { exchangeTimestamp: row.exchange_timestamp } : {}),
+      bids: levels(row.bids_json),
+      asks: levels(row.asks_json),
+      source: 'websocket',
+    };
   }
 
   recordOpportunity(opportunity: OpportunityResult, episodeGapMs = 15_000): StoredOpportunity {

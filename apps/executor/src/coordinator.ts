@@ -28,6 +28,7 @@ import {
 import type { ArbitrageRepository } from '@arb/storage';
 import { accountClosedTrade, type ClosedTradeAccounting } from './profit-accounting.js';
 import { checkNoOpenOrders } from './open-orders.js';
+import { PreflightCache } from './preflight-cache.js';
 import type {
   ApiCredentials,
   BalanceSnapshot,
@@ -61,6 +62,26 @@ export interface LiveExecutionRequest {
 
 export type ExecutionConfirmationMode = 'manual' | 'automatic';
 
+function feeInQuote(input: {
+  fee: Decimal;
+  feeCurrency?: string;
+  base: string;
+  quote: string;
+  price: Decimal;
+}): Decimal {
+  if (!input.fee.gt(0)) return ZERO;
+  const currency = input.feeCurrency?.trim().toUpperCase();
+  if (currency === input.base.trim().toUpperCase()) return input.fee.mul(input.price);
+  return input.fee;
+}
+
+function baseFeeAmount(input: { fee: Decimal; feeCurrency?: string; base: string }): Decimal {
+  if (!input.fee.gt(0)) return ZERO;
+  return input.feeCurrency?.trim().toUpperCase() === input.base.trim().toUpperCase()
+    ? input.fee
+    : ZERO;
+}
+
 export type LiveExecutionOutcome =
   'BLOCKED' | 'PREFLIGHT_FAILED' | 'LEG1_REJECTED' | 'PARALLEL_REJECTED' | 'CLOSED' | 'SAFE_STOP';
 
@@ -86,6 +107,12 @@ export interface LiveExecutionTiming {
   openOrderCheckCompletedAt?: number;
   evaluationCompletedAt?: number;
   preflightAt?: number;
+  balanceSource?: 'cache' | 'rest';
+  openOrderSource?: 'cache' | 'rest';
+  bookSources?: {
+    buy: 'hot' | 'snapshot' | 'rest';
+    sell: 'hot' | 'snapshot' | 'rest';
+  };
 }
 
 interface PreparedLimitOrder {
@@ -97,6 +124,16 @@ interface PreparedLimitOrder {
   timeInForce: 'IOC' | 'FOK';
   clientOrderId: string;
 }
+
+type FreshBookResult =
+  | {
+      ok: true;
+      book: import('@arb/core').OrderBookSnapshot;
+      source: 'hot' | 'snapshot' | 'rest';
+      ageMs: number;
+      fetchMs: number;
+    }
+  | { ok: false; reasons: string[] };
 
 interface VenueBalanceBaseline {
   base?: BalanceSnapshot;
@@ -148,6 +185,17 @@ function sameBalanceValue(left?: BalanceSnapshot, right?: BalanceSnapshot): bool
   const normalize = (value?: BalanceSnapshot): string =>
     value ? `${value.free.toFixed()}|${value.used.toFixed()}|${value.total.toFixed()}` : 'missing';
   return normalize(left) === normalize(right);
+}
+
+function hasBalanceCurrencies(
+  rows: readonly BalanceSnapshot[],
+  venueId: string,
+  currencies: readonly string[],
+): boolean {
+  const present = new Set(
+    rows.filter((row) => row.venueId === venueId).map((row) => row.currency.trim().toUpperCase()),
+  );
+  return currencies.every((currency) => present.has(currency.trim().toUpperCase()));
 }
 
 function syntheticNoFillOrder(
@@ -208,6 +256,7 @@ export interface CexLiveExecutorOptions {
   liveEnabled: boolean;
   autoExecutionEnabled?: boolean;
   legMode?: LegExecutionMode;
+  preflightCache?: PreflightCache;
   settings: {
     maxOrderbookAgeMs: number;
     orderbookDepth?: number;
@@ -220,6 +269,9 @@ export interface CexLiveExecutorOptions {
     maxGasCostUsd: Decimal;
     maxTransferTaxBps: Decimal;
     minBuyQuoteReserveUsd?: Decimal;
+    preflightBalanceMaxAgeMs?: number;
+    preflightOpenOrderMaxAgeMs?: number;
+    preflightHotBookMaxAgeMs?: number;
   };
   sleep?: (ms: number) => Promise<void>;
   clock?: () => number;
@@ -285,6 +337,7 @@ export class CexLiveExecutor {
   readonly #liveEnabled: boolean;
   readonly #autoExecutionEnabled: boolean;
   readonly #legMode: LegExecutionMode;
+  readonly #preflightCache: PreflightCache | undefined;
   readonly #settings: CexLiveExecutorOptions['settings'];
   readonly #sleep: (ms: number) => Promise<void>;
   readonly #clock: () => number;
@@ -295,6 +348,7 @@ export class CexLiveExecutor {
     this.#liveEnabled = options.liveEnabled;
     this.#autoExecutionEnabled = options.autoExecutionEnabled === true;
     this.#legMode = options.legMode ?? 'serial';
+    this.#preflightCache = options.preflightCache;
     this.#settings = options.settings;
     this.#sleep = options.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
     this.#clock = options.clock ?? Date.now;
@@ -422,29 +476,51 @@ export class CexLiveExecutor {
       return safeStop('persisted_balance_mismatch');
     }
     const risk = this.#repository.riskSnapshot(this.#clock());
-    const bookFetchStartedAt = this.#clock();
-    timing.bookFetchStartedAt = bookFetchStartedAt;
-    const balanceFetchStartedAt = bookFetchStartedAt;
-    timing.balanceFetchStartedAt = balanceFetchStartedAt;
-    const balanceFetchPromise = this.fetchBalanceRows(request);
-    const openOrderCheckPromise = checkNoOpenOrders([
-      {
-        adapter: request.buy.adapter,
-        credentials: request.buy.credentials,
-        symbol: request.buy.market.exchangeSymbol,
-      },
-      {
-        adapter: request.sell.adapter,
-        credentials: request.sell.credentials,
-        symbol: request.sell.market.exchangeSymbol,
-      },
-    ]);
-    const [buyBookResult, sellBookResult] = await Promise.all([
+    const preflightStartedAt = this.#clock();
+    timing.balanceFetchStartedAt = preflightStartedAt;
+    timing.bookFetchStartedAt = preflightStartedAt;
+    // The balance, open-order and both order-book reads are independent. Start
+    // all of them together so a slow private REST call never serializes the
+    // public book fetch that decides whether the opportunity still exists.
+    const balanceFetchPromise = this.fetchBalanceRows(request).then((result) => {
+      timing.balanceFetchCompletedAt = this.#clock();
+      return result;
+    });
+    const openOrderCheckPromise = this.checkOpenOrders(request).then((result) => {
+      timing.openOrderCheckCompletedAt = this.#clock();
+      return result;
+    });
+    const bookFetchPromise = Promise.all([
       this.fetchFreshBook(request.buy),
       this.fetchFreshBook(request.sell),
+    ]).then(([buyBookResult, sellBookResult]) => {
+      timing.bookFetchCompletedAt = this.#clock();
+      return { buyBookResult, sellBookResult };
+    });
+    const [balanceRows, openOrderCheck, books] = await Promise.all([
+      balanceFetchPromise,
+      openOrderCheckPromise,
+      bookFetchPromise,
     ]);
-    const bookFetchCompletedAt = this.#clock();
-    timing.bookFetchCompletedAt = bookFetchCompletedAt;
+    if (balanceRows.ok) timing.balanceSource = balanceRows.source;
+    timing.openOrderSource = openOrderCheck.source;
+    if (!balanceRows.ok) {
+      reasons.push(...balanceRows.reasons);
+      transition('PREFLIGHT_FAILED');
+      return outcome('PREFLIGHT_FAILED');
+    }
+    if (openOrderCheck.orders.length > 0) {
+      return safeStop('open_orders_present');
+    }
+    if (!openOrderCheck.ok) {
+      reasons.push(...openOrderCheck.errors);
+      transition('PREFLIGHT_FAILED');
+      return outcome('PREFLIGHT_FAILED');
+    }
+    const { buyBookResult, sellBookResult } = books;
+    if (buyBookResult.ok && sellBookResult.ok) {
+      timing.bookSources = { buy: buyBookResult.source, sell: sellBookResult.source };
+    }
     if (!buyBookResult.ok || !sellBookResult.ok) {
       if (!buyBookResult.ok) reasons.push(...buyBookResult.reasons);
       if (!sellBookResult.ok) reasons.push(...sellBookResult.reasons);
@@ -586,14 +662,6 @@ export class CexLiveExecutor {
     const requiredQuote = plannedBuyNotional
       .mul(new Decimal(1).plus(buyFeeBps.div(10_000)))
       .mul('1.01');
-    const balanceRows = await balanceFetchPromise;
-    const balanceFetchCompletedAt = this.#clock();
-    timing.balanceFetchCompletedAt = balanceFetchCompletedAt;
-    if (!balanceRows.ok) {
-      reasons.push(...balanceRows.reasons);
-      transition('PREFLIGHT_FAILED');
-      return outcome('PREFLIGHT_FAILED');
-    }
     const balances = this.validateBalances(
       request,
       balanceRows,
@@ -613,17 +681,6 @@ export class CexLiveExecutor {
       return outcome('PREFLIGHT_FAILED');
     }
     const balanceBaselines = { buy: balances.buy, sell: balances.sell };
-    const openOrderCheck = await openOrderCheckPromise;
-    const openOrderCheckCompletedAt = this.#clock();
-    timing.openOrderCheckCompletedAt = openOrderCheckCompletedAt;
-    if (openOrderCheck.orders.length > 0) {
-      return safeStop('open_orders_present');
-    }
-    if (!openOrderCheck.ok) {
-      reasons.push(...openOrderCheck.errors);
-      transition('PREFLIGHT_FAILED');
-      return outcome('PREFLIGHT_FAILED');
-    }
     const preflightAt = this.#clock();
     timing.preflightAt = preflightAt;
     const signalAgeMs = Math.max(0, preflightAt - request.opportunity.sampledAt);
@@ -695,14 +752,26 @@ export class CexLiveExecutor {
       preflightAt,
       timing: {
         executeStartedAt,
-        bookFetchStartedAt,
-        bookFetchCompletedAt,
-        bookFetchMs: Math.max(0, bookFetchCompletedAt - bookFetchStartedAt),
-        balanceFetchStartedAt,
-        balanceFetchCompletedAt,
-        balanceFetchMs: Math.max(0, balanceFetchCompletedAt - balanceFetchStartedAt),
-        openOrderCheckCompletedAt,
-        openOrderCheckMs: Math.max(0, openOrderCheckCompletedAt - bookFetchStartedAt),
+        bookFetchStartedAt: timing.bookFetchStartedAt,
+        bookFetchCompletedAt: timing.bookFetchCompletedAt,
+        bookFetchMs: Math.max(
+          0,
+          (timing.bookFetchCompletedAt ?? 0) - (timing.bookFetchStartedAt ?? 0),
+        ),
+        balanceFetchStartedAt: timing.balanceFetchStartedAt,
+        balanceFetchCompletedAt: timing.balanceFetchCompletedAt,
+        balanceFetchMs: Math.max(
+          0,
+          (timing.balanceFetchCompletedAt ?? 0) - (timing.balanceFetchStartedAt ?? 0),
+        ),
+        openOrderCheckCompletedAt: timing.openOrderCheckCompletedAt,
+        openOrderCheckMs: Math.max(
+          0,
+          (timing.openOrderCheckCompletedAt ?? 0) - (timing.bookFetchStartedAt ?? 0),
+        ),
+        ...(timing.balanceSource ? { balanceSource: timing.balanceSource } : {}),
+        ...(timing.openOrderSource ? { openOrderSource: timing.openOrderSource } : {}),
+        ...(timing.bookSources ? { bookSources: timing.bookSources } : {}),
         preflightMs: Math.max(0, preflightAt - executeStartedAt),
       },
       signalAgeMs: Math.max(0, preflightAt - request.opportunity.sampledAt),
@@ -1027,7 +1096,14 @@ export class CexLiveExecutor {
       return safeStop('leg2_below_minimum');
     }
     const buyFee = first.fee ?? ZERO;
-    const buyCost = (first.averagePrice ?? leg1Price).mul(first.filled).plus(buyFee);
+    const buyFeeQuote = feeInQuote({
+      fee: buyFee,
+      ...(first.feeCurrency ? { feeCurrency: first.feeCurrency } : {}),
+      base: request.buy.market.base,
+      quote: request.buy.market.quote,
+      price: first.averagePrice ?? leg1Price,
+    });
+    const buyCost = (first.averagePrice ?? leg1Price).mul(first.filled).plus(buyFeeQuote);
     const sellFee = executionSellDepth.executableQuoteAmount.mul(
       (request.sell.market.feeTakerBps ?? ZERO).div(10_000),
     );
@@ -1214,14 +1290,21 @@ export class CexLiveExecutor {
       sellPrice: sellCanonicalAverage,
     });
     const sellFeeActual = second.fee ?? ZERO;
+    const sellFeeQuote = feeInQuote({
+      fee: sellFeeActual,
+      ...(second.feeCurrency ? { feeCurrency: second.feeCurrency } : {}),
+      base: request.sell.market.base,
+      quote: request.sell.market.quote,
+      price: second.averagePrice ?? sellExecutionPrice,
+    });
     const sellProceeds = (second.averagePrice ?? sellExecutionPrice).mul(second.filled);
-    const fallbackRealized = sellProceeds.minus(sellFeeActual).minus(buyCost);
+    const fallbackRealized = sellProceeds.minus(sellFeeQuote).minus(buyCost);
     const fallbackGrossSpread = sellProceeds.minus(
       (first.averagePrice ?? leg1Price).mul(first.filled),
     );
     const realized = accounting?.economicProfit ?? fallbackRealized;
     const grossSpread = accounting?.grossSpread ?? fallbackGrossSpread;
-    const fees = accounting?.netFeesQuote ?? buyFee.plus(sellFeeActual);
+    const fees = accounting?.netFeesQuote ?? buyFeeQuote.plus(sellFeeQuote);
     const riskProfit = accounting?.cashProfit ?? realized;
     this.#repository.updateExecutionLeg(`${request.batchId}-L2`, {
       status: 'filled',
@@ -1239,7 +1322,18 @@ export class CexLiveExecutor {
       latencyMs: Math.max(0, closedAt - preflightAt),
       inventoryDelta: {
         baseAsset: request.buy.market.base,
-        baseDelta: (accounting?.baseDelta ?? boughtCanonical.minus(soldCanonical)).toFixed(),
+        baseDelta: (
+          accounting?.baseDelta ??
+          boughtCanonical
+            .minus(
+              baseFeeAmount({
+                fee: buyFee,
+                ...(first.feeCurrency ? { feeCurrency: first.feeCurrency } : {}),
+                base: request.buy.market.base,
+              }),
+            )
+            .minus(soldCanonical)
+        ).toFixed(),
         quoteAsset: request.buy.market.quote,
         quoteDelta: (accounting?.quoteDelta ?? realized).toFixed(),
       },
@@ -1270,7 +1364,13 @@ export class CexLiveExecutor {
               quoteDelta: accounting.quoteDelta.toFixed(),
               markPrice: accounting.markPrice.toFixed(),
             }
-          : { profitAccounting: 'order_fee_fallback' }),
+          : {
+              profitAccounting: 'order_fee_fallback',
+              buyFeeQuote: buyFeeQuote.toFixed(),
+              sellFeeQuote: sellFeeQuote.toFixed(),
+              buyFeeCurrency: first.feeCurrency ?? null,
+              sellFeeCurrency: second.feeCurrency ?? null,
+            }),
       },
     });
     if (riskProfit.lt(0)) this.#repository.addRealizedLoss(riskProfit.abs(), closedAt);
@@ -1528,9 +1628,23 @@ export class CexLiveExecutor {
     const sellAverage = sellOrderState.averagePrice ?? plan.sellPrice;
     const buyFee = buyOrderState.fee ?? ZERO;
     const sellFee = sellOrderState.fee ?? ZERO;
-    const buyCost = buyAverage.mul(buyFilled).plus(buyFee);
+    const buyFeeQuote = feeInQuote({
+      fee: buyFee,
+      ...(buyOrderState.feeCurrency ? { feeCurrency: buyOrderState.feeCurrency } : {}),
+      base: request.buy.market.base,
+      quote: request.buy.market.quote,
+      price: buyAverage,
+    });
+    const sellFeeQuote = feeInQuote({
+      fee: sellFee,
+      ...(sellOrderState.feeCurrency ? { feeCurrency: sellOrderState.feeCurrency } : {}),
+      base: request.sell.market.base,
+      quote: request.sell.market.quote,
+      price: sellAverage,
+    });
+    const buyCost = buyAverage.mul(buyFilled).plus(buyFeeQuote);
     const sellProceeds = sellAverage.mul(sellFilled);
-    const fallbackRealized = sellProceeds.minus(sellFee).minus(buyCost);
+    const fallbackRealized = sellProceeds.minus(sellFeeQuote).minus(buyCost);
     const fallbackGrossSpread = sellProceeds.minus(buyAverage.mul(buyFilled));
     this.#repository.updateExecutionLeg(`${request.batchId}-L1`, {
       status: 'filled',
@@ -1558,7 +1672,7 @@ export class CexLiveExecutor {
     });
     const realized = accounting?.economicProfit ?? fallbackRealized;
     const grossSpread = accounting?.grossSpread ?? fallbackGrossSpread;
-    const fees = accounting?.netFeesQuote ?? buyFee.plus(sellFee);
+    const fees = accounting?.netFeesQuote ?? buyFeeQuote.plus(sellFeeQuote);
     const riskProfit = accounting?.cashProfit ?? realized;
     const closedAt = this.#clock();
     this.#repository.updateExecutionStatus(plan.executionId, 'CLOSED', {
@@ -1569,7 +1683,18 @@ export class CexLiveExecutor {
       latencyMs: Math.max(0, closedAt - plan.preflightAt),
       inventoryDelta: {
         baseAsset: request.buy.market.base,
-        baseDelta: (accounting?.baseDelta ?? ZERO).toFixed(),
+        baseDelta: (
+          accounting?.baseDelta ??
+          boughtCanonical
+            .minus(
+              baseFeeAmount({
+                fee: buyFee,
+                ...(buyOrderState.feeCurrency ? { feeCurrency: buyOrderState.feeCurrency } : {}),
+                base: request.buy.market.base,
+              }),
+            )
+            .minus(soldCanonical)
+        ).toFixed(),
         quoteAsset: request.buy.market.quote,
         quoteDelta: (accounting?.quoteDelta ?? realized).toFixed(),
       },
@@ -1601,7 +1726,13 @@ export class CexLiveExecutor {
               quoteDelta: accounting.quoteDelta.toFixed(),
               markPrice: accounting.markPrice.toFixed(),
             }
-          : { profitAccounting: 'order_fee_fallback' }),
+          : {
+              profitAccounting: 'order_fee_fallback',
+              buyFeeQuote: buyFeeQuote.toFixed(),
+              sellFeeQuote: sellFeeQuote.toFixed(),
+              buyFeeCurrency: buyOrderState.feeCurrency ?? null,
+              sellFeeCurrency: sellOrderState.feeCurrency ?? null,
+            }),
       },
     });
     if (riskProfit.lt(0)) this.#repository.addRealizedLoss(riskProfit.abs(), closedAt);
@@ -1683,8 +1814,26 @@ export class CexLiveExecutor {
   private async fetchBalanceRows(
     request: LiveExecutionRequest,
   ): Promise<
-    { ok: true; buy: BalanceSnapshot[]; sell: BalanceSnapshot[] } | { ok: false; reasons: string[] }
+    | { ok: true; buy: BalanceSnapshot[]; sell: BalanceSnapshot[]; source: 'cache' | 'rest' }
+    | { ok: false; reasons: string[] }
   > {
+    const now = this.#clock();
+    const maxAgeMs = this.#settings.preflightBalanceMaxAgeMs ?? 0;
+    const buyVenueId = request.buy.adapter.venueId;
+    const sellVenueId = request.sell.adapter.venueId;
+    const buyCurrencyBase = marketExchangeBase(request.buy.market);
+    const sellCurrencyBase = marketExchangeBase(request.sell.market);
+    const cachedBuy = this.#preflightCache?.balancesForVenue(buyVenueId, { maxAgeMs, now });
+    const cachedSell = this.#preflightCache?.balancesForVenue(sellVenueId, { maxAgeMs, now });
+    if (
+      maxAgeMs > 0 &&
+      cachedBuy &&
+      cachedSell &&
+      hasBalanceCurrencies(cachedBuy, buyVenueId, [buyCurrencyBase, request.buy.market.quote]) &&
+      hasBalanceCurrencies(cachedSell, sellVenueId, [sellCurrencyBase, request.sell.market.quote])
+    ) {
+      return { ok: true, buy: cachedBuy, sell: cachedSell, source: 'cache' };
+    }
     try {
       const [buyBalances, sellBalances] = await Promise.all([
         request.buy.adapter.fetchBalances!(request.buy.credentials),
@@ -1702,10 +1851,40 @@ export class CexLiveExecutor {
           capturedAt: balance.fetchedAt,
         });
       }
-      return { ok: true, buy: buyBalances, sell: sellBalances };
+      this.#preflightCache?.recordBalances([...buyBalances, ...sellBalances]);
+      return { ok: true, buy: buyBalances, sell: sellBalances, source: 'rest' };
     } catch (error) {
       return { ok: false, reasons: [`balance_fetch_failed: ${String(error)}`] };
     }
+  }
+
+  private async checkOpenOrders(request: LiveExecutionRequest): Promise<{
+    ok: boolean;
+    orders: OrderState[];
+    errors: string[];
+    source: 'cache' | 'rest';
+  }> {
+    const venues = [
+      {
+        adapter: request.buy.adapter,
+        credentials: request.buy.credentials,
+        symbol: request.buy.market.exchangeSymbol,
+      },
+      {
+        adapter: request.sell.adapter,
+        credentials: request.sell.credentials,
+        symbol: request.sell.market.exchangeSymbol,
+      },
+    ];
+    const keys = venues.map((venue) => `${venue.adapter.venueId}|${venue.symbol}`);
+    const cached = this.#preflightCache?.openOrdersFor(keys, {
+      maxAgeMs: this.#settings.preflightOpenOrderMaxAgeMs ?? 0,
+      now: this.#clock(),
+    });
+    if (cached) return { ...cached, source: 'cache' };
+    const result = await checkNoOpenOrders(venues);
+    this.#preflightCache?.recordOpenOrders(keys, result, this.#clock());
+    return { ...result, source: 'rest' };
   }
 
   private validateBalances(
@@ -1751,25 +1930,74 @@ export class CexLiveExecutor {
       : { ok: false, reasons };
   }
 
-  private async fetchFreshBook(
-    venue: ExecutionVenue,
-  ): Promise<
-    { ok: true; book: import('@arb/core').OrderBookSnapshot } | { ok: false; reasons: string[] }
-  > {
+  private async fetchFreshBook(venue: ExecutionVenue): Promise<FreshBookResult> {
+    const observedAt = this.#clock();
+    const hotBookMaxAgeMs = this.#settings.preflightHotBookMaxAgeMs ?? 750;
+    const hot = this.#repository.latestHotOrderbook(
+      venue.adapter.venueId,
+      venue.market.exchangeSymbol,
+      { maxAgeMs: hotBookMaxAgeMs, now: observedAt },
+    );
+    if (hot) {
+      const hotValidation = validateOrderBook(hot, {
+        expectedVenueId: venue.adapter.venueId,
+        expectedSymbol: venue.market.exchangeSymbol,
+        maxAgeMs: hotBookMaxAgeMs,
+        now: observedAt,
+      });
+      if (hotValidation.valid) {
+        return {
+          ok: true,
+          book: hotValidation.book,
+          source: 'hot',
+          ageMs: Math.max(0, observedAt - hot.fetchedAt),
+          fetchMs: 0,
+        };
+      }
+    }
+    const cached = this.#repository.latestOrderbook(
+      venue.adapter.venueId,
+      venue.market.exchangeSymbol,
+      { maxAgeMs: hotBookMaxAgeMs, now: observedAt },
+    );
+    if (cached) {
+      const cachedValidation = validateOrderBook(cached, {
+        expectedVenueId: venue.adapter.venueId,
+        expectedSymbol: venue.market.exchangeSymbol,
+        maxAgeMs: hotBookMaxAgeMs,
+        now: observedAt,
+      });
+      if (cachedValidation.valid) {
+        return {
+          ok: true,
+          book: cachedValidation.book,
+          source: 'snapshot',
+          ageMs: Math.max(0, observedAt - cached.fetchedAt),
+          fetchMs: 0,
+        };
+      }
+    }
+    const fetchStartedAt = this.#clock();
     try {
       const book = await venue.adapter.fetchOrderBook(
         venue.market.exchangeSymbol,
         this.#settings.orderbookDepth ?? 20,
       );
-      const observedAt = this.#clock();
+      const restObservedAt = this.#clock();
       const validation = validateOrderBook(book, {
         expectedVenueId: venue.adapter.venueId,
         expectedSymbol: venue.market.exchangeSymbol,
         maxAgeMs: this.#settings.maxOrderbookAgeMs,
-        now: observedAt,
+        now: restObservedAt,
       });
       return validation.valid
-        ? { ok: true, book: validation.book }
+        ? {
+            ok: true,
+            book: validation.book,
+            source: 'rest',
+            ageMs: Math.max(0, restObservedAt - book.fetchedAt),
+            fetchMs: Math.max(0, restObservedAt - fetchStartedAt),
+          }
         : { ok: false, reasons: validation.reasons };
     } catch (error) {
       return { ok: false, reasons: [`orderbook_fetch_failed: ${String(error)}`] };

@@ -5,6 +5,7 @@ export interface OrderBookValidationOptions {
   expectedVenueId?: string;
   expectedSymbol?: string;
   maxAgeMs: number;
+  maxExchangeAgeMs?: number;
   now?: number;
   maxFutureSkewMs?: number;
   maxFeedLatencyMs?: number;
@@ -99,7 +100,8 @@ export function validateOrderBook(
       reasons.push('exchange_timestamp_invalid');
     } else {
       const exchangeAge = now - book.exchangeTimestamp;
-      if (exchangeAge > options.maxAgeMs || exchangeAge < -(options.maxFutureSkewMs ?? 250)) {
+      const maxExchangeAgeMs = options.maxExchangeAgeMs ?? options.maxAgeMs;
+      if (exchangeAge > maxExchangeAgeMs || exchangeAge < -(options.maxFutureSkewMs ?? 250)) {
         reasons.push('exchange_timestamp_stale');
       }
       const feedLatency = receivedAt - book.exchangeTimestamp;
