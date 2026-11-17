@@ -14,6 +14,9 @@ Remove-Item -LiteralPath $stopPath -Force -ErrorAction SilentlyContinue
 $watch = Join-Path $PSScriptRoot 'watch-rotation.ps1'
 if (-not [IO.Path]::IsPathRooted($Config)) { $Config = Join-Path $root $Config }
 
+# Let a previous watchdog/executor/scanner exit before starting a new one.
+Start-Sleep -Seconds 5
+
 if ($Foreground) {
   & $watch -Config $Config -NoScanner:$NoScanner
   exit

@@ -183,7 +183,7 @@ describe('automatic inventory rebalance planning', () => {
       pair: config().autoRotation.pairs[0]!,
       venues: [
         venue('gateio', '1000', '20', '0.005', '0.00501', now),
-        venue('bitget', '4000', '5', '0.005', '0.00501', now),
+        venue('bitget', '4000', '5.1', '0.005', '0.00501', now),
       ],
       config: config().autoRotation.inventory,
       trigger: trigger(now),

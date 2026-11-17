@@ -1883,7 +1883,11 @@ export class CexLiveExecutor {
     });
     if (cached) return { ...cached, source: 'cache' };
     const result = await checkNoOpenOrders(venues);
-    this.#preflightCache?.recordOpenOrders(keys, result, this.#clock());
+    // Do not cache transient query failures: the next preflight must retry REST
+    // instead of inheriting a stale error until the freshness window expires.
+    if (result.errors.every((error) => error === 'open_orders_present')) {
+      this.#preflightCache?.recordOpenOrders(keys, result, this.#clock());
+    }
     return { ...result, source: 'rest' };
   }
 

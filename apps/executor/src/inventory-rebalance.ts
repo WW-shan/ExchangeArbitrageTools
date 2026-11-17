@@ -196,7 +196,21 @@ export function planAutomaticInventoryRebalance(input: {
   if (!trigger.fundingOnly && otherBaseUsd.lt(config.minUsefulNotionalUsd)) {
     return { action: 'WAIT', reasons: ['inventory_rebalance_sell_leg_unfunded'] };
   }
-  const targetQuoteUsd = config.minQuoteReserveUsd.plus(config.minExecutableBuyUsd);
+  // The executor preflight adds 1% price movement and 1% fee headroom on top of
+  // the buy notional. Rebalance to the same executable target, otherwise a
+  // just-rebalanced venue is still rejected as underfunded.
+  let targetQuoteUsd = config.minQuoteReserveUsd.plus(config.minExecutableBuyUsd.mul('1.0201'));
+  const minimumTradeNotional = target.market.minNotional ?? ZERO;
+  const rawQuoteDeficit = Decimal.max(0, targetQuoteUsd.minus(target.balance.quoteFree));
+  if (
+    rawQuoteDeficit.gt(0) &&
+    minimumTradeNotional.gt(0) &&
+    rawQuoteDeficit.lt(minimumTradeNotional)
+  ) {
+    // A sub-minimum top-up would be rejected by the venue. Sell one minimum
+    // notional instead so the next buy-side preflight can actually pass.
+    targetQuoteUsd = target.balance.quoteFree.plus(minimumTradeNotional);
+  }
   const quoteDeficit = Decimal.max(0, targetQuoteUsd.minus(target.balance.quoteFree));
   if (!quoteDeficit.gt(0)) {
     return { action: 'NOOP', reasons: ['inventory_quote_sufficient'] };
