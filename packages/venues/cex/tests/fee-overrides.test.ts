@@ -108,4 +108,33 @@ describe('venue fee overrides', () => {
     const base = { hotcoin: { takerBps: new Decimal(12) } };
     expect(mergeAccountFeeFile(base, 'missing-fees.json')).toBe(base);
   });
+
+  it.each([
+    { account: { takerBps: '10' }, taker: '5', maker: '1' },
+    { account: { makerBps: '6' }, taker: '2', maker: '3' },
+    { account: { takerBps: '0' }, taker: '0', maker: '1' },
+    { account: { makerBps: '-1' }, taker: '2', maker: '-0.5' },
+  ])('preserves missing symbol fees when merging $account', ({ account, taker, maker }) => {
+    const directory = mkdtempSync(join(tmpdir(), 'arb-fee-overrides-'));
+    directories.push(directory);
+    const path = join(directory, 'fees.json');
+    writeFileSync(path, JSON.stringify({ hotcoin: { cake_usdt: account } }));
+    const base = {
+      hotcoin: {
+        takerBps: new Decimal(20),
+        makerBps: new Decimal(20),
+        rebatePct: new Decimal(50),
+        symbols: { cake_usdt: { takerBps: new Decimal(4), makerBps: new Decimal(2) } },
+      },
+    };
+
+    const merged = mergeAccountFeeFile(base, path);
+    const effective = applyFeeOverride(market(), merged);
+
+    expect(effective.feeTakerBps?.toFixed()).toBe(taker);
+    expect(effective.makerFeeBps?.toFixed()).toBe(maker);
+    expect(effective.feeProvenance).toBe('account');
+    expect(base.hotcoin.symbols.cake_usdt.takerBps.toFixed()).toBe('4');
+    expect(base.hotcoin.symbols.cake_usdt.makerBps.toFixed()).toBe('2');
+  });
 });

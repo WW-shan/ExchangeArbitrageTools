@@ -67,6 +67,7 @@ export function mergeAccountFeeFile(
       const maker = decimalOrUndefined(fee?.makerBps);
       if (taker === undefined && maker === undefined) continue;
       symbolOverrides[symbol] = {
+        ...(symbolOverrides[symbol] ?? {}),
         ...(taker !== undefined ? { takerBps: taker } : {}),
         ...(maker !== undefined ? { makerBps: maker } : {}),
       };
