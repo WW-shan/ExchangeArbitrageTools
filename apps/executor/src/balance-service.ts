@@ -1,5 +1,6 @@
 import type { ArbitrageRepository } from '@arb/storage';
 import type { ApiCredentials, CexAdapter } from '@arb/venues-cex';
+import { retryTransient } from './network-retry.js';
 
 export interface BalanceVenue {
   adapter: CexAdapter;
@@ -25,7 +26,9 @@ export async function refreshBalances(
         };
       }
       try {
-        const balances = await venue.adapter.fetchBalances(venue.credentials);
+        const balances = await retryTransient(() =>
+          venue.adapter.fetchBalances!(venue.credentials),
+        );
         repository.ensureVenue({
           id: venue.adapter.venueId,
           type: 'cex',

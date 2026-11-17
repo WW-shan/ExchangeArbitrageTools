@@ -9,6 +9,7 @@ import type { ApiCredentials, CexAdapter, OrderQuery, OrderState } from '@arb/ve
 import { fetchOpenOrdersForSymbols } from './open-orders.js';
 import { evaluateAccountPermissions, type AccountPermissionReport } from './account-permissions.js';
 import type { AccountStatusConfig } from './config.js';
+import { retryOpenOrderResult, retryTransient } from './network-retry.js';
 import type { StoredCredential } from './secret-store.js';
 
 export interface RecoveryVenue {
@@ -174,7 +175,7 @@ export async function recoverExecutorStartup(
     };
     queriedOrders += 1;
     try {
-      const order = await venue.adapter.fetchOrder(query, venue.credentials);
+      const order = await retryTransient(() => venue.adapter.fetchOrder!(query, venue.credentials));
       const at = now();
       const price = decimal(candidate.order?.price ?? candidate.leg?.requestedPrice);
       const amount = decimal(candidate.order?.amount ?? candidate.leg?.requestedAmount);
@@ -266,7 +267,9 @@ export async function recoverExecutorStartup(
         continue;
       }
       try {
-        const balances = await venue.adapter.fetchBalances(venue.credentials);
+        const balances = await retryTransient(() =>
+          venue.adapter.fetchBalances!(venue.credentials),
+        );
         for (const balance of balances) {
           repository.recordBalance(balance);
           repository.recordInventorySnapshot({
@@ -296,7 +299,7 @@ export async function recoverExecutorStartup(
     for (const [venueId, venue] of Object.entries(options.venues)) {
       let markets: MarketMetadata[];
       try {
-        markets = await venue.adapter.loadMarkets();
+        markets = await retryTransient(() => venue.adapter.loadMarkets());
       } catch (error) {
         openOrderQueryFailures += 1;
         repository.recordRiskEvent(
@@ -333,7 +336,9 @@ export async function recoverExecutorStartup(
       }
       for (const symbol of symbols) {
         openOrdersQueried += 1;
-        const result = await fetchOpenOrdersForSymbols(venue.adapter, venue.credentials, [symbol]);
+        const result = await retryOpenOrderResult(() =>
+          fetchOpenOrdersForSymbols(venue.adapter, venue.credentials, [symbol]),
+        );
         openOrdersFound += result.orders.length;
         if (result.errors.length > 0) {
           openOrderQueryFailures += result.errors.length;

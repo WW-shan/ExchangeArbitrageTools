@@ -28,6 +28,7 @@ import {
 import type { ArbitrageRepository } from '@arb/storage';
 import { accountClosedTrade, type ClosedTradeAccounting } from './profit-accounting.js';
 import { checkNoOpenOrders } from './open-orders.js';
+import { isTransientNetworkError } from './network-retry.js';
 import { PreflightCache } from './preflight-cache.js';
 import type {
   ApiCredentials,
@@ -1882,7 +1883,15 @@ export class CexLiveExecutor {
       now: this.#clock(),
     });
     if (cached) return { ...cached, source: 'cache' };
-    const result = await checkNoOpenOrders(venues);
+    let result = await checkNoOpenOrders(venues);
+    for (
+      let attempt = 1;
+      attempt < 3 && result.errors.some(isTransientNetworkError);
+      attempt += 1
+    ) {
+      await this.#sleep(500);
+      result = await checkNoOpenOrders(venues);
+    }
     // Do not cache transient query failures: the next preflight must retry REST
     // instead of inheriting a stale error until the freshness window expires.
     if (result.errors.every((error) => error === 'open_orders_present')) {

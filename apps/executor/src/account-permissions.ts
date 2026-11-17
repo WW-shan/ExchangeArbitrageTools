@@ -1,5 +1,6 @@
 import type { ArbitrageRepository } from '@arb/storage';
 import type { AccountStatusSnapshot, CexAdapter } from '@arb/venues-cex';
+import { isTransientNetworkError, retryTransient } from './network-retry.js';
 import { credentialFingerprint, type StoredCredential } from './secret-store.js';
 
 export interface AccountStatusConfig {
@@ -144,10 +145,16 @@ export async function evaluateAccountPermissions(
       if (typeof venue.adapter.fetchAccountStatus !== 'function') {
         warn('account_status_unsupported');
       } else {
-        observed = await venue.adapter.fetchAccountStatus(
-          { requiredPairs: options.requiredPairs },
-          trade,
-        );
+        observed = await retryTransient(async () => {
+          const snapshot = await venue.adapter.fetchAccountStatus!(
+            { requiredPairs: options.requiredPairs },
+            trade,
+          );
+          if (snapshot.errors.some(isTransientNetworkError)) {
+            throw new Error(`transient account status: ${snapshot.errors.join('; ')}`);
+          }
+          return snapshot;
+        });
       }
     } catch (error) {
       block(
