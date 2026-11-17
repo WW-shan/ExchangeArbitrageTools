@@ -158,3 +158,21 @@ w32tm /resync /force
 ```
 
 在时钟修正前，代码已避免用交易所旧时间戳判断盘口新鲜度，改用本地 `receivedAt`。
+
+## 8. 实盘验证结果（2026-11-18 19:02–19:03）
+
+第一笔使用新热路径的实盘批次：
+
+- batch：`S1-948690-1794942178846`
+- 方向：`bitget -> gateio`
+- 预检：`6ms`
+- `balanceSource = cache`
+- `openOrderSource = cache`
+- `bookSources = { buy: hot, sell: hot }`
+- 预检完成到提交：`7ms`
+- Bitget 响应：`613ms`
+- Gate 响应：`616ms`
+- 结果：`CLOSED`
+- 实现利润：`+0.011909024352 USDT`
+
+同一批次没有触发 SAFE_STOP，没有未对冲库存，也没有挂单。说明热盘口和私有缓存路径已经在真实 Gate/Bitget 账户上跑通。
