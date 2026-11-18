@@ -130,3 +130,18 @@ WARD 25.3 小时真实盘口，严格 5 秒对齐后 676 个跨所样本：
 快照（`data/dislocation/`）。已按 PID 停止（3484/8128/8720），并按时间清理到最近 30 分钟，
 目录从 2.7 GB 降到 337 MB。**注意：该脚本每 5 秒写一个完整快照且没有保留策略，
 不要在实盘机上长期挂。**
+
+
+## 7. 运维提示：`start-rotation.ps1` 可能拉起两个 watchdog
+
+值班时观察到一次：执行 `start-rotation.ps1` 后同时存在两个
+`watch-rotation.ps1`（PID 20004 与 11216）。原因是上一次启动尝试在
+30 秒内没有写出状态文件，人（或脚本重试）又执行了一次。
+
+- 两个 watchdog 会**互相看到对方**并都报告 `already running`；
+  executor 与 scanner 仍然各只有 1 个，短时间不会重复下单；
+- 但仍应清理，否则 stop 时其中一个可能继续重启。
+
+清理方式：先 `stop-rotation.ps1`，确认所有相关进程退出，再
+`start-rotation.ps1` 一次并且**只执行一次**。
+不要把 `start-rotation.ps1` 放在自动重试循环里。
