@@ -114,3 +114,19 @@ WARD 25.3 小时真实盘口，严格 5 秒对齐后 676 个跨所样本：
 2. `min_turnover_fraction` 是否需要按交易所分别校准（Gate 与 Bitget 的成交量上报
    频率不同，0.3 是一个保守起点，可再收窄）。
 3. 如果要做跨所提币补库存，再单独评估 1.3 的结论。
+
+## 6. 上线状态（05:22 UTC+8）
+
+- 已用仓库自带的 `scripts/stop-rotation.ps1` / `start-rotation.ps1` 重启，未按进程名杀进程。
+- executor `pid 21376`、scanner `pid 19644`，`state=RUNNING`，`phase=WAIT/SCANNING`。
+- 重启前三项检查全部干净：`open_executions=0`、`unresolved_orders=0`、`unhedged=[]`。
+- 新通道已加载：配置读到 `dislocation_enabled=true`、`min=500 bps`、`min_notional=3`。
+- 重启后 WARD 的 S1 样本持续写入（约 874 条/3 分钟），`DISLOCATION` 行数为 0，
+  与 25 小时历史一致——WARD 不产生插针，这是预期结果，不是故障。
+
+### 顺带清理
+
+原先还有一个遗留的只读 `scripts/scan-dislocation.ts` 进程在跑，11 小时写了 **2.7 GB**
+快照（`data/dislocation/`）。已按 PID 停止（3484/8128/8720），并按时间清理到最近 30 分钟，
+目录从 2.7 GB 降到 337 MB。**注意：该脚本每 5 秒写一个完整快照且没有保留策略，
+不要在实盘机上长期挂。**
