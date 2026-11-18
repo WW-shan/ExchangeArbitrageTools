@@ -832,7 +832,9 @@ describe('dislocation channel', () => {
       clockNow += 5_000;
       await scanner.scanOnce();
     }
-    const before = repo.listOpportunities({ limit: 500 }).filter((row) => row.strategy === 'DISLOCATION');
+    const before = repo
+      .listOpportunities({ limit: 500 })
+      .filter((row) => row.strategy === 'DISLOCATION');
     expect(before.length).toBe(0);
 
     phase = 'spike';
@@ -843,9 +845,7 @@ describe('dislocation channel', () => {
       .listOpportunities({ limit: 500 })
       .filter((row) => row.strategy === 'DISLOCATION');
     expect(rows.length).toBeGreaterThan(0);
-    const best = rows.sort(
-      (a, b) => Number(b.net_profit_bps) - Number(a.net_profit_bps),
-    )[0]!;
+    const best = rows.sort((a, b) => Number(b.net_profit_bps) - Number(a.net_profit_bps))[0]!;
     expect(best.venue_buy).toBe('mexc');
     expect(best.venue_sell).toBe('gateio');
     expect(Number(best.net_profit_bps)).toBeGreaterThan(500);
@@ -860,7 +860,9 @@ describe('dislocation channel', () => {
     const gate = adapter('gateio', '2.500', '2.490');
     const mexc = adapter('mexc', '2.560', '2.550');
     mexc.fetchOrderBook = async () =>
-      phase === 'spike' ? book('mexc', '1.200', '1.190', clockNow) : book('mexc', '2.560', '2.550', clockNow);
+      phase === 'spike'
+        ? book('mexc', '1.200', '1.190', clockNow)
+        : book('mexc', '2.560', '2.550', clockNow);
     gate.fetchOrderBook = async () => book('gateio', '2.500', '2.490', clockNow);
     const scanner = new ScannerService({
       venues: [
@@ -894,6 +896,83 @@ describe('dislocation channel', () => {
     phase = 'spike';
     clockNow += 5_000;
     await scanner.scanOnce();
+    const rows = repo
+      .listOpportunities({ limit: 500 })
+      .filter((row) => row.strategy === 'DISLOCATION');
+    expect(rows.length).toBe(0);
+  });
+});
+describe('dislocation unit handling', () => {
+  it('does not treat a 1000x denomination alias as a dislocation', async () => {
+    // Gate lists CAKE normally; Bitget lists 1000CAKE at 1/1000 the price.
+    // Raw exchange prices differ by ~99.9%, which must not become a spike.
+    const db = openDatabase(':memory:');
+    const repo = new ArbitrageRepository(db);
+    let clockNow = now;
+    const gate = adapter('gateio', '2.500', '2.490');
+    const tiny = adapter('mexc', '0.002560', '0.002550');
+    tiny.loadMarkets = async () => [
+      {
+        ...market('mexc', 'CAKE', 'USDT'),
+        exchangeSymbol: '1000CAKE/USDT',
+        unifiedSymbol: 'CAKE/USDT',
+        exchangeBase: '1000CAKE',
+        baseMultiplier: new Decimal(1000),
+        pricePrecision: 6,
+      },
+    ];
+    tiny.fetchOrderBook = async () => ({
+      venueId: 'mexc',
+      exchangeSymbol: '1000CAKE/USDT',
+      fetchedAt: clockNow,
+      asks: [{ price: new Decimal('0.002560'), amount: new Decimal('100') }],
+      bids: [{ price: new Decimal('0.002550'), amount: new Decimal('100') }],
+      source: 'replay',
+    });
+    gate.fetchOrderBook = async () => book('gateio', '2.500', '2.490', clockNow);
+
+    const scanner = new ScannerService({
+      venues: [
+        { adapter: gate, health: new VenueHealthTracker(), markets: [] },
+        { adapter: tiny, health: new VenueHealthTracker(), markets: [] },
+      ],
+      repository: repo,
+      settings: {
+        minProfitUsd: new Decimal('0.01'),
+        safetyBufferBps: new Decimal(2),
+        minNetProfitBps: new Decimal(5),
+        maxOrderbookAgeMs: 20_000,
+        maxSlippageBps: new Decimal(50),
+        maxGasCostUsd: new Decimal('0.50'),
+        maxTransferTaxBps: new Decimal(0),
+        suspiciousSpreadBps: new Decimal(1000),
+        maxPriceDeviationBps: new Decimal(1000),
+      },
+      quoteCurrency: 'USDT',
+      baseAssets: ['CAKE'],
+      requestedNotional: new Decimal(10),
+      orderBookDepth: 50,
+      maxTriangularPaths: 0,
+      persistSnapshots: false,
+      paperSimulation: false,
+      dislocationEnabled: true,
+      dislocationSettings: {
+        minDislocationBps: new Decimal(500),
+        minVenueDeviationBps: new Decimal(300),
+        maxCounterDeviationBps: new Decimal(150),
+        maxQuoteAgeMs: 20_000,
+        maxBaselineAgeMs: 300_000,
+        minBaselineSamples: 3,
+        maxRepeatCount: 8,
+      },
+      dislocationMinNotional: new Decimal(3),
+      clock: () => clockNow,
+    });
+    await scanner.initialize();
+    for (let i = 0; i < 6; i += 1) {
+      clockNow += 5_000;
+      await scanner.scanOnce();
+    }
     const rows = repo
       .listOpportunities({ limit: 500 })
       .filter((row) => row.strategy === 'DISLOCATION');

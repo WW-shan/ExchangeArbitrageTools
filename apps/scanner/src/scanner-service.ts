@@ -774,8 +774,13 @@ export class ScannerService {
       entry: (typeof input.prepared)[number];
     }> = [];
     for (const entry of input.prepared) {
-      const bid = entry.fetched.book.bids[0]?.price;
-      const ask = entry.fetched.book.asks[0]?.price;
+      // Detect on *canonical* prices (quote per canonical base). Two venues can
+      // list the same asset under different denominations - 1000PEPE on one,
+      // PEPE on the other - and comparing raw exchange prices would print a
+      // fake ~99.9% dislocation. The S1 path already normalises before
+      // evaluating; the spike path must do the same.
+      const bid = entry.evalBook.bids[0]?.price;
+      const ask = entry.evalBook.asks[0]?.price;
       if (!bid || !ask || !bid.gt(0) || !ask.gt(0)) continue;
       const venueId = entry.venue.adapter.venueId;
       const symbol = entry.market.exchangeSymbol;
@@ -801,6 +806,20 @@ export class ScannerService {
       for (let j = i + 1; j < observed.length; j += 1) {
         const left = observed[i]!;
         const right = observed[j]!;
+        // Same guard S1 uses: an alias pair is only comparable when the two
+        // independently normalised mids agree. Without it, one venue's
+        // 1000-unit contract looks like a 999x dislocation.
+        if (
+          !marketsShareUnderlying(
+            left.entry.market,
+            left.entry.fetched.book,
+            right.entry.market,
+            right.entry.fetched.book,
+          )
+        ) {
+          input.summary.aliasMismatches += 1;
+          continue;
+        }
         const leftBaseline = this.#dislocationBaselines
           .get(left.venueId + '|' + left.symbol)
           ?.baseline(input.now, settings.maxBaselineAgeMs);
