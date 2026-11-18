@@ -1175,9 +1175,26 @@ export async function runAutoRotationSupervisor(
         maxCandidates: 200,
       })
       .filter((candidate) => (failedOpportunityUntil.get(candidate.id) ?? 0) <= now);
+    // Rank by profit, but treat signals inside a small bps band as tied and
+    // prefer the fresher one.
+    //
+    // Sorting on profit alone means the same old signal keeps winning every
+    // poll until it expires, so the executor starts each batch from a quote
+    // recorded seconds ago. Measured 2026-11-18: signal age at execution start
+    // was 844-2609 ms (p50 1452), while preflight itself takes 1-3 ms. The
+    // extra latency was not work, it was staleness.
+    //
+    // A 15 bps band is inside our own noise floor (fills moved 60-160 bps in
+    // one second), so preferring the newer quote costs essentially nothing in
+    // expected edge and buys back most of that staleness.
+    const freshnessBandBps = new Decimal(15);
     candidates.sort((left, right) => {
-      const byProfit = right.opportunity.netProfitBps.comparedTo(left.opportunity.netProfitBps);
-      return byProfit !== 0 ? byProfit : right.opportunity.sampledAt - left.opportunity.sampledAt;
+      const leftBps = left.opportunity.netProfitBps;
+      const rightBps = right.opportunity.netProfitBps;
+      if (leftBps.minus(rightBps).abs().lte(freshnessBandBps)) {
+        return right.opportunity.sampledAt - left.opportunity.sampledAt;
+      }
+      return rightBps.comparedTo(leftBps);
     });
     let executionSelection: ExecutionSelection | undefined;
     const normalSelection = actionableCandidate({
