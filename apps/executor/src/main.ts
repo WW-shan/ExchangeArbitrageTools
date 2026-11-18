@@ -262,6 +262,7 @@ async function main(): Promise<void> {
       liveEnabled: config.liveEnabled,
       autoExecutionEnabled: config.autoRotation.enabled,
       legMode: config.legMode,
+      maxPostFillExitLossUsd: config.maxPostFillExitLossUsd,
       preflightCache,
       settings: config.settings,
     });
@@ -400,3 +401,4 @@ main().catch((error) => {
   console.error(error);
   process.exitCode = 1;
 });
+

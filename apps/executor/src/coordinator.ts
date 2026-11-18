@@ -232,7 +232,7 @@ function isDefinitiveNoFillCreateError(error: unknown): boolean {
 
 function isOrderNotFoundError(message: string): boolean {
   if (/ordernotfound|client_id_not_found/i.test(message)) return true;
-  return /委单不存在|order not found/i.test(message);
+  return /\u59d4\u5355\u4e0d\u5b58\u5728|order not found/i.test(message);
 }
 
 function terminalOrderCanBeTrusted(order: OrderState): boolean {
@@ -258,6 +258,8 @@ export interface CexLiveExecutorOptions {
   autoExecutionEnabled?: boolean;
   legMode?: LegExecutionMode;
   preflightCache?: PreflightCache;
+  /** Max loss accepted to flatten a position whose first leg already filled. */
+  maxPostFillExitLossUsd?: Decimal;
   settings: {
     maxOrderbookAgeMs: number;
     orderbookDepth?: number;
@@ -342,6 +344,12 @@ export class CexLiveExecutor {
   readonly #settings: CexLiveExecutorOptions['settings'];
   readonly #sleep: (ms: number) => Promise<void>;
   readonly #clock: () => number;
+  /**
+   * Largest loss we will accept to flatten a position we already filled.
+   * Beyond this, stopping (and raising an operator alert) is cheaper than
+   * dumping into a collapsed book.
+   */
+  readonly #maxPostFillExitLossUsd: Decimal;
 
   constructor(options: CexLiveExecutorOptions) {
     this.#repository = options.repository;
@@ -351,6 +359,7 @@ export class CexLiveExecutor {
     this.#legMode = options.legMode ?? 'serial';
     this.#preflightCache = options.preflightCache;
     this.#settings = options.settings;
+    this.#maxPostFillExitLossUsd = options.maxPostFillExitLossUsd ?? new Decimal(0.5);
     this.#sleep = options.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
     this.#clock = options.clock ?? Date.now;
   }
@@ -1123,16 +1132,40 @@ export class CexLiveExecutor {
       preparation !== undefined &&
       (projectedProfit.lt(preparation.maxCostUsd.neg()) ||
         postFillProfitBps.lt(preparation.maxCostBps.neg()));
-    if (preparation ? preparationCostTooHigh : projectedProfit.lte(0)) {
+    // Leg 1 is already filled, so the base asset is sitting on the venue. Not
+    // selling it is not "avoiding a loss": it is choosing to keep an open
+    // position that the strategy never sized or hedged.
+    //
+    // Measured consequence of the old behaviour (2026-11-18, Gate->Bitget
+    // WARD): 27 buys filled, only 1 sell filled. 14 stops were
+    // `leg2_partial_fill` and 12 were `post_fill_profit_not_positive`, and the
+    // day's S1 result was -2.54 USDT. Every one of those stops left inventory
+    // behind at a price the strategy had already judged unattractive.
+    //
+    // The post-fill edge can genuinely be negative: Bitget's ask moved on 49%
+    // of 1-second horizons in our recorded books. But the correct response to
+    // "the spread is gone" is to exit what we already own, not to keep it.
+    // The only case that still stops is one where exiting would lock in a loss
+    // larger than the configured loss ceiling - a real risk limit, not an
+    // edge test.
+    const exitLossUsd = projectedProfit.lt(0) ? projectedProfit.neg() : ZERO;
+    const exitLossCeiling = preparation?.maxCostUsd ?? this.#maxPostFillExitLossUsd;
+    if (exitLossUsd.gt(exitLossCeiling)) {
       this.recordUnhedgedInventory(
         request,
         executionId,
         boughtCanonical,
         this.conservativePrice(buyCanonicalAverage, executionSellDepth.averagePrice),
-        preparation ? 'post_fill_preparation_cost_too_high' : 'post_fill_profit_not_positive',
+        'post_fill_exit_loss_above_ceiling',
       );
-      return safeStop(
-        preparation ? 'post_fill_preparation_cost_too_high' : 'post_fill_profit_not_positive',
+      return safeStop('post_fill_exit_loss_above_ceiling');
+    }
+    if (preparationCostTooHigh && preparation) {
+      this.#repository.recordRiskEvent(
+        'warning',
+        'post_fill_preparation_cost_high',
+        'preparation cost above ceiling but exiting the filled position',
+        { batchId: request.batchId, projectedProfit: projectedProfit.toFixed() },
       );
     }
     const precisionResidual = boughtCanonical.minus(leg2CanonicalActual);
@@ -2633,3 +2666,6 @@ export class CexLiveExecutor {
     return prices.reduce((highest, price) => (price.gt(highest) ? price : highest));
   }
 }
+
+
+

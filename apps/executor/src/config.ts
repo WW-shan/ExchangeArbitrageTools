@@ -144,6 +144,8 @@ export interface ExecutorConfig {
   executionRequestsPerSecond: number;
   minSizingNotional: Decimal;
   legMode: LegExecutionMode;
+  /** Loss ceiling for flattening a position whose first leg already filled. */
+  maxPostFillExitLossUsd: Decimal;
   iocVenues: string[];
   fokVenues: string[];
   feeFile: string;
@@ -920,6 +922,7 @@ export function loadExecutorConfig(
     executionRequestsPerSecond,
     minSizingNotional,
     legMode: legModeValue(execution, 'leg_mode', 'serial'),
+    maxPostFillExitLossUsd: decimalValue(execution, 'max_post_fill_exit_loss_usd', '0.5'),
     iocVenues: stringArray(execution, 'ioc_venues', []),
     fokVenues: stringArray(execution, 'fok_venues', []),
     feeFile: typeof scanner.fee_file === 'string' ? scanner.fee_file : '',
@@ -970,3 +973,4 @@ export function loadExecutorConfig(
   validateSafetyBounds(config);
   return config;
 }
+

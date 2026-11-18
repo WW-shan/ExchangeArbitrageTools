@@ -267,7 +267,7 @@ function fakeAdapter(venueId: string, options: FakeOptions = {}) {
         options.queryNotFound &&
         (!options.queryNotFoundSide || (options.queryNotFoundSide === 'buy') === isBuy)
       ) {
-        throw new Error('Hotcoin API 40010: 委单不存在，请确认AccessKeyId或id是否正确');
+        throw new Error('Hotcoin API 40010: \u59d4\u5355\u4e0d\u5b58\u5728\uff0c\u8bf7\u786e\u8ba4AccessKeyId\u6216id\u662f\u5426\u6b63\u786e');
       }
       if (
         options.queryUnknown &&
@@ -668,6 +668,48 @@ describe('live executor safety gates', () => {
     repo.close();
   });
 
+  it('still sells after a filled buy when the spread has collapsed', async () => {
+    // Regression for 2026-11-18: a filled buy followed by a re-fetched sell
+    // book whose edge had gone negative used to SAFE_STOP without submitting
+    // the sell, leaving the base asset on the venue. That is how 26 of 27
+    // Gate->Bitget batches ended, and the day lost 2.54 USDT while the buy
+    // leg was fully filled.
+    //
+    // Bitget asks moved on 49% of 1-second horizons in our recorded books, so
+    // a negative post-fill edge is normal, not exceptional. The right response
+    // is to exit what we own, not to keep it.
+    let sellFetches = 0;
+    const { repo, buy, sell } = setup({
+      bookQuote: (venueId) => {
+        if (venueId !== 'mexc') return { ask: '2.500', bid: '2.490' };
+        sellFetches += 1;
+        // First fetch prices the original opportunity; the second is the
+        // post-fill re-fetch and has collapsed below the buy price.
+        return sellFetches === 1
+          ? { ask: '2.560', bid: '2.550' }
+          : { ask: '2.510', bid: '2.500' };
+      },
+    });
+    const result = await new CexLiveExecutor({
+      repository: repo,
+      gate: new ExecutionGate(limits),
+      limits,
+      liveEnabled: true,
+      settings,
+      sleep: async () => {},
+      clock: () => now,
+    }).execute(
+      request(
+        { adapter: buy.adapter, market: market('gateio'), credentials: keys, healthState: 'A' },
+        { adapter: sell.adapter, market: market('mexc'), credentials: keys, healthState: 'A' },
+      ),
+    );
+    // The sell leg must still be submitted even though the edge is gone.
+    expect(sell.state.createCalls).toBe(1);
+    expect(sell.state.createSides).toEqual(['sell']);
+    expect(result.reasons).not.toContain('post_fill_profit_not_positive');
+    repo.close();
+  });
   it('safe-stops before submission when the exchange reports an external open order', async () => {
     const external: OrderState = {
       venueOrderId: 'external-1',
@@ -1872,3 +1914,6 @@ describe('parallel FOK two-leg execution', () => {
     repo.close();
   });
 });
+
+
+

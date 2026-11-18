@@ -93,6 +93,15 @@ manual_confirmation = true
 # buy into a harmless retry instead of a forced hedge.
 # Do not switch back to parallel without A/B data showing a higher fill rate.
 leg_mode = 'serial'
+# Leg 1 is already filled once we get here, so the base asset is sitting on the
+# venue. Not selling it is not "avoiding a loss" - it is keeping an open
+# position the strategy never sized. Measured 2026-11-18: 27 buys filled, only
+# 1 sell filled, and the day's S1 result was -2.54 USDT because 26 stops left
+# inventory behind. The sell leg now always runs; this ceiling is the only
+# thing that still stops it, and it must be a real loss limit, not a profit
+# test. At 0.5 USDT it is ~7% of a 7 USDT batch - large enough to exit a moved
+# book, small enough to catch a collapse.
+max_post_fill_exit_loss_usd = "0.5"
 # Gate/Bitget allow well above ten requests per second. The hot path issues the
 # balance and open-order checks in parallel, so 10 RPS avoids serializing them
 # behind a conservative limiter while staying below the venue soft limits.
@@ -318,3 +327,4 @@ rebate_pct = 80
 #   balance; the executor now confirms such IOC/FOK misses from pre-submit and
 #   post-submit balances before closing the batch.
 # Keep IOC empty: only the FOK path has been verified end-to-end on both venues.
+
