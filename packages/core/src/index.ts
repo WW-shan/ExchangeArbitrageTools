@@ -22,5 +22,7 @@ export * from './rotation.js';
 export * from './asset-identity.js';
 export * from './dislocation.js';
 export * from './book-liveness.js';
+export * from './transferability.js';
+
 
 

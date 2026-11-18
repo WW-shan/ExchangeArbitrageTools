@@ -1,0 +1,69 @@
+﻿# Read-only dislocation scanner.
+#
+# Never touches API keys and never creates orders. Its job is to answer, from
+# real data, which pairs actually print tradeable spikes and how often.
+#
+#   npm run scan:dislocation
+#
+# The thresholds come from measured behaviour, not guesses:
+#   - 24h of recorded Gate/Bitget/WEEX books put every large spread on BREV,
+#     between 500 and 1000 bps;
+#   - WEEX held one top-of-book unchanged across 15 REST polls over 34 seconds;
+#   - so a spread is only reported when the taken venue deviates from its own
+#     median and the counter venue is stable but *live*.
+
+[scanner]
+# Venues with a working public market-data path. WEEX is included precisely
+# because it is the source of the frozen-book trap we need to measure.
+venues = ["gateio", "bitget", "weex"]
+quote_currency = "USDT"
+proxy_url = "socks5://127.0.0.1:10808"
+
+# Universe: everything that trades against USDT on at least two venues.
+max_bases = 600
+# Skip pairs below this 24h quote volume on either venue. Below it the book is
+# usually frozen, which is a trap, not an opportunity.
+min_leg_quote_volume_usd = "200"
+# ... and skip pairs above this. Mega-cap books do not dislocate at a size
+# worth trading.
+max_leg_quote_volume_usd = "5000000"
+
+[detection]
+# Minimum executable spread (sell bid / buy ask - 1) to report. 500 bps = 5%.
+min_dislocation_bps = "500"
+# The venue being taken must be at least this far from its own trailing median.
+min_venue_deviation_bps = "300"
+# The counter venue must be closer than this to its own median, otherwise the
+# asset genuinely repriced and there is no edge.
+max_counter_deviation_bps = "150"
+# Baseline window and minimum samples.
+baseline_window_ms = 300000
+baseline_capacity = 61
+min_baseline_samples = 5
+# Quotes older than this are ignored.
+max_quote_age_ms = 30000
+
+[liveness]
+# A venue whose top of book repeats this many times in a row is frozen.
+# Calibrated on REST polling: Gate/Bitget change nearly every poll.
+max_repeat_count = 8
+# Forget venues that stopped reporting.
+stale_ms = 300000
+
+[sampling]
+# Coarse pass over every pair using one ticker request per venue.
+ticker_interval_ms = 5000
+# Pairs within this multiple of the threshold go to the depth-confirmation pass.
+deep_check_multiplier = "3"
+# How many pairs to confirm per round.
+max_deep_checks = 12
+# Order-book depth used for confirmation.
+orderbook_depth = 20
+# Minimum executable notional after walking the book. Below this a "spike" has
+# no size behind it.
+min_executable_notional_usd = "3"
+
+[output]
+dir = "data/dislocation"
+# Write a snapshot every round and a summary every N rounds.
+summary_every_rounds = 12
