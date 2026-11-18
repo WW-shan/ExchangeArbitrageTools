@@ -273,15 +273,18 @@ block_on_ip_whitelist_change = true
 block_on_account_id_change = true
 block_on_account_mode_change = true
 
-# Conservative public taker fees for monitor-only venues. Replace these with
-# account-tier fees before enabling execution on WEEX or Bitget.
+# Fee values are GROSS before rebate: effective = gross * (1 - rebate_pct/100).
+# Bitget: operator-confirmed 80% spot rebate -> 2 bps effective. Without it the
+# round trip pays 12.97 bps instead of 4.97, which turns a 60 bps spread into a loss.
 [fees.weex]
 taker_bps = 10
 maker_bps = 10
+rebate_pct = 0
 
 [fees.bitget]
 taker_bps = 10
 maker_bps = 10
+rebate_pct = 80
 
 [database]
 path = "data/rotation.sqlite"
