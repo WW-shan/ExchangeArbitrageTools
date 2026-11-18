@@ -55,15 +55,6 @@ interface BalanceRow {
   fetched_at: number;
 }
 
-interface LegRow {
-  leg_number: number;
-  venue_id: string;
-  side: string;
-  filled_amount: string | null;
-  average_fill_price: string | null;
-  fee_paid: string | null;
-}
-
 export interface ResidualHedgeVenue {
   adapter: CexAdapter;
   credentials: ApiCredentials;
@@ -80,6 +71,12 @@ export interface ResidualHedgePlan {
   exchangeBase: string;
   baseMultiplier: Decimal;
   direction: 'long' | 'short';
+  /**
+   * Side the hedge order must take on `venueId`. Equals `direction` when the
+   * hedge flattens on the residual venue, and is the opposite when it finishes
+   * the trade at the original counterparty.
+   */
+  hedgeSide: 'long' | 'short';
   residualCanonical: Decimal;
   costPerCanonical: Decimal;
   costQuote: Decimal;
@@ -345,8 +342,36 @@ export async function planResidualHedge(input: {
     return { status: 'BLOCKED', reasons: ['multiple_assets_not_supported'] };
   }
   const pair = config.autoRotation.pairs.find((row) => row.base.toUpperCase() === asset);
+  // A stopped S1 leaves the base on the venue that filled leg 1. The natural
+  // way to finish that trade is to sell on the venue where leg 2 *was meant to
+  // run*, not to dump on leg 1's venue. Measured 2026-11-18: every hedge sold
+  // on Gate at 0.001649 while Bitget bid 0.001676 and the original leg-2 order
+  // there filled 0. On a 4138 WARD batch that single choice was the difference
+  // between +45 bps and -96 bps.
+  //
+  // We only switch when the counterparty actually holds the asset (or the
+  // quote, for a short), so a venue with empty inventory still falls back to
+  // flattening locally.
   if (!pair) return { status: 'BLOCKED', reasons: ['rotation_pair_missing'] };
   const residualVenue = unhedged[0]!.venue_id.trim().toLowerCase();
+  //
+  // This is opt-in. Selling inventory a venue already held is a deliberate
+  // strategy choice, not a recovery default: it can liquidate a position the
+  // operator built for another purpose. Off by default keeps the old, narrow
+  // behaviour ("flatten only what leg 1 bought").
+  const allowCounterpartyHedge = config.autoRotation.residualHedge.allowCounterpartyHedge === true;
+  const plannedCounterpartyVenue = (() => {
+    if (!allowCounterpartyHedge) return undefined;
+    const legs = repository.db
+      .prepare(
+        `SELECT venue_id, side, status FROM execution_legs
+         WHERE execution_id = ? ORDER BY leg_number`,
+      )
+      .all(execution.id) as Array<{ venue_id: string; side: string; status: string }>;
+    const wantedSide = direction === 'long' ? 'sell' : 'buy';
+    const leg = legs.find((row) => row.side === wantedSide && row.venue_id.toLowerCase() !== residualVenue);
+    return leg ? leg.venue_id.trim().toLowerCase() : undefined;
+  })();
   const residualBaseline = baselineRows(
     repository,
     residualVenue,
@@ -362,96 +387,190 @@ export async function planResidualHedge(input: {
     return { status: 'BLOCKED', reasons: ['pre_execution_balance_baseline_incomplete'] };
   }
 
-  const bundle = adapters[residualVenue];
-  if (!bundle) return { status: 'BLOCKED', reasons: ['residual_venue_missing'] };
-  const markets = await bundle.adapter.loadMarkets();
-  const market = findMarket(markets, residualVenue, pair.base, pair.quote);
-  if (!market) return { status: 'BLOCKED', reasons: ['residual_market_missing'] };
-  const residualVenueData: ResidualHedgeVenue = {
-    adapter: bundle.adapter,
-    credentials: bundle.credentials,
-    market,
-    balances: await fetchBalances(repository, bundle),
-  };
-  const currentBase = findBalance(residualVenueData.balances, residualVenue, asset);
-  const currentQuote = findBalance(residualVenueData.balances, residualVenue, pair.quote);
+  // Where should the hedge run?
+  //
+  // A stopped S1 leaves the base on the venue that filled leg 1. Flattening
+  // there means selling at that venue's own bid. Finishing the trade means
+  // selling on the venue leg 2 was planned for.
+  //
+  // Measured 2026-11-18: 27 Gate->Bitget batches filled leg 1 on Gate, leg 2
+  // on Bitget filled zero times, and every hedge then sold on Gate at
+  // 0.001649 while Bitget still bid 0.001676. That single venue choice turned
+  // +45 bps into -96 bps on every batch, and it is why the day lost 2.54 USDT
+  // with a fully filled buy leg.
+  //
+  // The counterparty is preferred only when it actually holds what it needs to
+  // act; otherwise we fall back to flattening on the residual venue, which is
+  // the old behaviour and still correct for inventory that cannot move.
+  const candidates: Array<{
+    venueId: string;
+    side: 'long' | 'short';
+    role: 'counterparty' | 'residual';
+  }> = [];
+  if (plannedCounterpartyVenue && plannedCounterpartyVenue !== residualVenue) {
+    candidates.push({ venueId: plannedCounterpartyVenue, side: direction, role: 'counterparty' });
+  }
+  candidates.push({ venueId: residualVenue, side: direction, role: 'residual' });
+
+  let hedgeVenue: string | undefined;
+  let hedgeSide: 'long' | 'short' | undefined;
+  let hedgeVenueData: ResidualHedgeVenue | undefined;
+  for (const candidate of candidates) {
+    const candidateBundle = adapters[candidate.venueId];
+    if (!candidateBundle) continue;
+    const candidateMarkets = await candidateBundle.adapter.loadMarkets();
+    const candidateMarket = findMarket(candidateMarkets, candidate.venueId, pair.base, pair.quote);
+    if (!candidateMarket) continue;
+    const data: ResidualHedgeVenue = {
+      adapter: candidateBundle.adapter,
+      credentials: candidateBundle.credentials,
+      market: candidateMarket,
+      balances: await fetchBalances(repository, candidateBundle),
+    };
+    const base = findBalance(data.balances, candidate.venueId, asset);
+    const quote = findBalance(data.balances, candidate.venueId, pair.quote);
+    if (!base || !quote) continue;
+    // Selling requires base; buying back requires quote. Never substitute one
+    // for the other - that is how an unrelated position gets liquidated.
+    const canAct = candidate.side === 'long' ? base.free.gt(0) : quote.free.gt(0);
+    if (!canAct) continue;
+    hedgeVenue = candidate.venueId;
+    hedgeSide = candidate.side;
+    hedgeVenueData = data;
+    break;
+  }
+  if (!hedgeVenue || !hedgeSide || !hedgeVenueData) {
+    // No venue can act. Keep the specific reason the caller already relies on:
+    // the residual venue lacking the base is the common, expected case.
+    return {
+      status: 'BLOCKED',
+      reasons: [direction === 'long' ? 'residual_base_not_available' : 'residual_quote_not_available'],
+    };
+  }
+  const residualVenueData = hedgeVenueData;
+  const currentBase = findBalance(residualVenueData.balances, hedgeVenue, asset);
+  const currentQuote = findBalance(residualVenueData.balances, hedgeVenue, pair.quote);
   if (!currentBase || !currentQuote) {
     return { status: 'BLOCKED', reasons: ['current_residual_balances_missing'] };
   }
   const multiplier = marketBaseMultiplier(residualVenueData.market);
   const recordedResidual = unhedged.reduce((sum, row) => sum.plus(decimal(row.amount)), ZERO);
-  let residualExchange: Decimal;
-  if (direction === 'long') {
-    const baseDeltaExchange = currentBase.total.minus(decimal(baselineBase.total));
-    if (!baseDeltaExchange.gt(0)) {
-      return { status: 'NO_RESIDUAL', reasons: ['base_balance_restored'] };
+  const counterparty = hedgeVenue !== residualVenue;
+  // A counterparty hedge is a *new* position there (we sell base it already
+  // holds), so its reference balance is that venue's baseline, not the
+  // residual venue's.
+  const hedgeBaseline =
+    counterparty
+      ? baselineRows(repository, hedgeVenue, execution.opened_at, input.maxBaselineAgeMs ?? 60_000)
+      : residualBaseline;
+  const hedgeBaselineBase = hedgeBaseline.find((row) => row.currency.toUpperCase() === asset);
+  const hedgeBaselineQuote = hedgeBaseline.find((row) => row.currency.toUpperCase() === pair.quote);
+  if (!hedgeBaselineBase || !hedgeBaselineQuote) {
+    return { status: 'BLOCKED', reasons: ['hedge_venue_baseline_incomplete'] };
+  }
+
+  // How much to close.
+  //
+  // Flattening locally: the residual is what leg 1 bought and leg 2 did not
+  // sell, which is exactly what was recorded at stop time. Using the balance
+  // delta here would double-count, because the baseline is taken at
+  // `opened_at` and already excludes the fill.
+  //
+  // Finishing at the counterparty: the amount is the same recorded residual;
+  // that venue simply already holds enough base (or quote) to supply it, which
+  // is what makes the trade whole rather than a fire sale on the wrong book.
+  let residualExchange = recordedResidual;
+  if (hedgeSide === 'long') {
+    // Only sell base that is actually there. At the residual venue this is the
+    // tokens leg 1 bought; at the counterparty it is inventory that was already
+    // held, which is why the trade can be finished there without moving funds.
+    const available = Decimal.min(currentBase.free, currentBase.total);
+    if (!available.gt(0)) {
+      return { status: 'NO_RESIDUAL', reasons: ['base_not_held'] };
     }
-    residualExchange = Decimal.min(baseDeltaExchange, recordedResidual);
+    residualExchange = Decimal.min(recordedResidual, available);
   } else {
-    const baseShortfallExchange = decimal(baselineBase.total).minus(currentBase.total);
-    if (!baseShortfallExchange.gt(0)) {
-      return { status: 'NO_RESIDUAL', reasons: ['base_balance_restored'] };
+    if (!currentQuote.total.gt(0)) {
+      return { status: 'NO_RESIDUAL', reasons: ['quote_not_held'] };
     }
-    residualExchange = Decimal.min(baseShortfallExchange, recordedResidual);
+    residualExchange = recordedResidual;
+  }
+  const freeBaseNow = findBalance(
+    residualVenueData.balances,
+    hedgeVenue,
+    marketExchangeBase(residualVenueData.market),
+  )?.free;
+  if (hedgeSide === 'long' && freeBaseNow && freeBaseNow.lt(residualExchange)) {
+    residualExchange = freeBaseNow;
+  }
+  if (!residualExchange.gt(0)) {
+    return { status: 'NO_RESIDUAL', reasons: ['nothing_to_hedge'] };
   }
   const residualCanonical = residualExchange.mul(multiplier);
+
+  // Cost basis.
+  //
+  // long: the round trip starts at the price leg 1 paid for the base, so use
+  //   that fill and net out the buy fee.
+  // short: leg 1 sold base we did not have, so the basis is the quote received,
+  //   measured from that venue's own balance delta.
   let costPerCanonical: Decimal;
   let costQuote: Decimal;
-  if (direction === 'long') {
-    const quoteCost = decimal(baselineQuote.total).minus(currentQuote.total);
-    if (quoteCost.gt(0)) {
+  if (hedgeSide === 'long') {
+    const originalBuy = repository.db
+      .prepare(
+        `SELECT average_fill_price FROM execution_legs
+         WHERE execution_id = ? AND side = 'buy' AND average_fill_price IS NOT NULL
+         ORDER BY leg_number LIMIT 1`,
+      )
+      .get(execution.id) as { average_fill_price: string } | undefined;
+    const originalBuyPrice = decimal(originalBuy?.average_fill_price);
+    if (originalBuyPrice.gt(0)) {
+      const buyFeeBps = grossFeeBps(config, residualVenue, residualVenueData.market).div(10_000);
+      const denominator = new Decimal(1).minus(buyFeeBps);
+      if (!denominator.gt(0)) return { status: 'BLOCKED', reasons: ['fee_basis_invalid'] };
+      costPerCanonical = originalBuyPrice.div(denominator);
+      costQuote = costPerCanonical.mul(residualCanonical);
+    } else {
+      const quoteCost = decimal(hedgeBaselineQuote.total).minus(currentQuote.total);
+      if (!quoteCost.gt(0)) return { status: 'BLOCKED', reasons: ['cost_basis_missing'] };
       costPerCanonical = quoteCost.div(residualCanonical);
       costQuote = quoteCost;
-    } else {
-      const buyLeg = repository.db
-        .prepare(
-          `SELECT leg_number, venue_id, side, filled_amount, average_fill_price, fee_paid
-           FROM execution_legs WHERE execution_id = ? AND side = 'buy' ORDER BY leg_number LIMIT 1`,
-        )
-        .get(execution.id) as LegRow | undefined;
-      const average = decimal(buyLeg?.average_fill_price);
-      if (!average.gt(0)) return { status: 'BLOCKED', reasons: ['cost_basis_missing'] };
-      const feeBps = grossFeeBps(config, residualVenue, residualVenueData.market).div(10_000);
-      const denominator = new Decimal(1).minus(feeBps);
-      if (!denominator.gt(0)) return { status: 'BLOCKED', reasons: ['fee_basis_invalid'] };
-      costPerCanonical = average.div(denominator);
-      costQuote = costPerCanonical.mul(residualCanonical);
     }
   } else {
-    const quoteProceeds = currentQuote.total.minus(decimal(baselineQuote.total));
+    const quoteProceeds = currentQuote.total.minus(decimal(hedgeBaselineQuote.total));
     if (quoteProceeds.gt(0)) {
       costPerCanonical = quoteProceeds.div(residualCanonical);
       costQuote = quoteProceeds;
     } else {
-      const sellLeg = repository.db
+      const originalSell = repository.db
         .prepare(
-          `SELECT leg_number, venue_id, side, filled_amount, average_fill_price, fee_paid
-           FROM execution_legs WHERE execution_id = ? AND side = 'sell' ORDER BY leg_number LIMIT 1`,
+          `SELECT average_fill_price FROM execution_legs
+           WHERE execution_id = ? AND side = 'sell' AND average_fill_price IS NOT NULL
+           ORDER BY leg_number LIMIT 1`,
         )
-        .get(execution.id) as LegRow | undefined;
-      const average = decimal(sellLeg?.average_fill_price);
-      if (!average.gt(0)) return { status: 'BLOCKED', reasons: ['proceeds_basis_missing'] };
-      const feeBps = grossFeeBps(config, residualVenue, residualVenueData.market).div(10_000);
-      const netFactor = new Decimal(1).minus(feeBps);
+        .get(execution.id) as { average_fill_price: string } | undefined;
+      const originalSellPrice = decimal(originalSell?.average_fill_price);
+      if (!originalSellPrice.gt(0)) {
+        return { status: 'BLOCKED', reasons: ['proceeds_basis_missing'] };
+      }
+      const sellFeeBps = grossFeeBps(config, residualVenue, residualVenueData.market).div(10_000);
+      const netFactor = new Decimal(1).minus(sellFeeBps);
       if (!netFactor.gt(0)) return { status: 'BLOCKED', reasons: ['fee_basis_invalid'] };
-      costPerCanonical = average.mul(netFactor);
+      costPerCanonical = originalSellPrice.mul(netFactor);
       costQuote = costPerCanonical.mul(residualCanonical);
     }
   }
 
-  const freeBase = findBalance(
-    residualVenueData.balances,
-    residualVenue,
-    marketExchangeBase(residualVenueData.market),
-  )?.free;
-  const freeQuote = findBalance(residualVenueData.balances, residualVenue, pair.quote)?.free;
+  const freeBase = freeBaseNow;
+  const freeQuote = findBalance(residualVenueData.balances, hedgeVenue, pair.quote)?.free;
   if (!residualVenueData.adapter.capabilities.fok) {
     return { status: 'BLOCKED', reasons: ['residual_venue_not_fok_eligible'] };
   }
-  if (direction === 'long' && (!freeBase || freeBase.lte(0))) {
+  if (hedgeSide === 'long' && (!freeBase || freeBase.lte(0))) {
     return { status: 'BLOCKED', reasons: ['residual_base_not_available'] };
   }
-  if (direction === 'short' && (!freeQuote || freeQuote.lte(0))) {
+  if (hedgeSide === 'short' && (!freeQuote || freeQuote.lte(0))) {
     return { status: 'BLOCKED', reasons: ['residual_quote_not_available'] };
   }
   let book: OrderBookSnapshot;
@@ -464,7 +583,7 @@ export async function planResidualHedge(input: {
     return { status: 'BLOCKED', reasons: ['residual_book_unavailable'] };
   }
   const validation = validateOrderBook(book, {
-    expectedVenueId: residualVenue,
+    expectedVenueId: hedgeVenue,
     expectedSymbol: residualVenueData.market.exchangeSymbol,
     // Flattening a naked leg is a recovery action, not a scan. Judge it by the
     // fetch that just happened, not by the scanner's low-liquidity window, and
@@ -481,25 +600,25 @@ export async function planResidualHedge(input: {
     };
   }
   const chosen =
-    direction === 'long'
+    hedgeSide === 'long'
       ? evaluateResidualHedgeCandidate({
-          venueId: residualVenue,
+          venueId: hedgeVenue,
           market: residualVenueData.market,
           book: validation.book,
           residualCanonical,
           costPerCanonical,
           freeBase: freeBase!,
-          grossFeeBps: grossFeeBps(config, residualVenue, residualVenueData.market),
+          grossFeeBps: grossFeeBps(config, hedgeVenue, residualVenueData.market),
           minProfitUsd,
         })
       : evaluateShortResidualHedgeCandidate({
-          venueId: residualVenue,
+          venueId: hedgeVenue,
           market: residualVenueData.market,
           book: validation.book,
           residualCanonical,
           proceedsPerCanonical: costPerCanonical,
           freeQuote: freeQuote!,
-          grossFeeBps: grossFeeBps(config, residualVenue, residualVenueData.market),
+          grossFeeBps: grossFeeBps(config, hedgeVenue, residualVenueData.market),
           minProfitUsd,
         });
   if (!chosen) {
@@ -527,6 +646,7 @@ export async function planResidualHedge(input: {
       exchangeBase: marketExchangeBase(chosenVenue.market),
       baseMultiplier: marketBaseMultiplier(chosenVenue.market),
       direction,
+      hedgeSide: hedgeSide!,
       residualCanonical,
       costPerCanonical,
       costQuote,
@@ -1028,7 +1148,7 @@ export async function executeResidualHedge(input: {
   }
   const hedgeBatchId = `HEDGE-${batchId}-${now}`;
   const clientOrderId = hedgeClientOrderId(now);
-  const hedgeSide: 'buy' | 'sell' = plan.direction === 'long' ? 'sell' : 'buy';
+  const hedgeSide: 'buy' | 'sell' = (plan.hedgeSide ?? plan.direction) === 'long' ? 'sell' : 'buy';
   const hedgeExecutionId = repository.createExecution({
     strategy: 'HEDGE',
     batchId: hedgeBatchId,

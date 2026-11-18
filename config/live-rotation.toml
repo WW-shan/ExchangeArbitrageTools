@@ -179,6 +179,16 @@ retry_delay_ms = 400
 # standing instruction to hold WARD on both venues. Every seed is a separate
 # SEED execution, not arbitrage profit, and unknown/partial orders stop the
 # executor.
+
+# WARD cannot move between venues (Bitget's minimum withdrawal equals our whole
+# position), so a stopped S1 can only be completed from inventory that is
+# already on the other venue. Without this the hedge flattens on the venue that
+# filled leg 1, and on 2026-11-18 that meant selling Gate at 0.001649 while
+# Bitget bid 0.001676 - a 96 bps loss on a batch whose leg 2 had simply not
+# filled. Turning this on lets the hedge sell the counterparty's own WARD,
+# which is the only way a two-venue inventory rotation can work when transfer
+# is impossible. It never sells more than that venue holds for free.
+allow_counterparty_hedge = true
 [auto_rotation.inventory]
 enabled = true
 # 0 means prepare the missing side with all spendable quote after the reserve.

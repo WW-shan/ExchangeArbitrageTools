@@ -287,6 +287,7 @@ describe('automatic residual hedge', () => {
       adapters,
       batchId,
     });
+    if (result.status !== 'HEDGED') console.error('DBG', JSON.stringify({status: result.status, reasons: result.reasons}));
     expect(result.status).toBe('HEDGED');
     expect(result.attempted).toBe(true);
     expect(result.realizedProfit?.toFixed()).toBe('1.4945');

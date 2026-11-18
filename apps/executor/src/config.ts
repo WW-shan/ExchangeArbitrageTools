@@ -67,6 +67,13 @@ export interface AutoResidualHedgeConfig {
   bookMaxExchangeAgeMs: number;
   maxAttempts: number;
   retryDelayMs: number;
+  /**
+   * Allow a hedge to finish the trade on the venue leg 2 was planned for,
+   * using that venue's own inventory, instead of only flattening on the venue
+   * that filled leg 1. Off by default: it can move a position the operator
+   * holds for another purpose.
+   */
+  allowCounterpartyHedge: boolean;
 }
 
 export interface AutoInventoryConfig {
@@ -555,6 +562,7 @@ function autoRotationConfig(value: unknown, handoffMaxAgeMs: number): AutoRotati
       bookMaxExchangeAgeMs: numberValue(residualHedge, 'book_max_exchange_age_ms', 300_000),
       maxAttempts: numberValue(residualHedge, 'max_attempts', 3),
       retryDelayMs: numberValue(residualHedge, 'retry_delay_ms', 400),
+      allowCounterpartyHedge: booleanValue(residualHedge, 'allow_counterparty_hedge', false),
     },
     inventory: {
       enabled: booleanValue(inventory, 'enabled', false),
