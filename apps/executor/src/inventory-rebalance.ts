@@ -47,6 +47,7 @@ export interface InventoryRebalanceTrigger {
   otherVenueId: string;
   edgeBps: Decimal;
   expectedProfitUsd?: Decimal;
+  signalNotional?: Decimal;
   sampledAt: number;
   opportunityId?: number;
   fundingOnly?: boolean;
@@ -77,6 +78,7 @@ export interface AutomaticInventoryRebalancePlan {
   costCeilingUsd: Decimal;
   ownBid: Decimal;
   otherBid: Decimal;
+  buybackAsk: Decimal;
   bookFetchedAt: number;
   venueBalance: InventoryRebalanceBalanceView;
   otherBalance: InventoryRebalanceBalanceView;
@@ -142,6 +144,10 @@ function bestBid(venue: InventoryRebalanceVenueSnapshot): Decimal | undefined {
   return normalizeBookForMarket(venue.book, venue.market).bids[0]?.price;
 }
 
+function bestAsk(venue: InventoryRebalanceVenueSnapshot): Decimal | undefined {
+  return normalizeBookForMarket(venue.book, venue.market).asks[0]?.price;
+}
+
 function baseValueUsd(venue: InventoryRebalanceVenueSnapshot, bid: Decimal): Decimal {
   return venue.balance.baseFree.mul(bid);
 }
@@ -188,7 +194,15 @@ export function planAutomaticInventoryRebalance(input: {
   }
   const targetBid = bestBid(target);
   const otherBid = bestBid(other);
-  if (!targetBid || !otherBid || targetBid.lte(0) || otherBid.lte(0)) {
+  const targetAsk = bestAsk(target);
+  if (
+    !targetBid ||
+    !otherBid ||
+    !targetAsk ||
+    targetBid.lte(0) ||
+    otherBid.lte(0) ||
+    targetAsk.lte(0)
+  ) {
     return { action: 'WAIT', reasons: ['inventory_rebalance_book_incomplete'] };
   }
   const targetBaseUsd = baseValueUsd(target, targetBid);
@@ -196,10 +210,25 @@ export function planAutomaticInventoryRebalance(input: {
   if (!trigger.fundingOnly && otherBaseUsd.lt(config.minUsefulNotionalUsd)) {
     return { action: 'WAIT', reasons: ['inventory_rebalance_sell_leg_unfunded'] };
   }
-  // The executor preflight adds 1% price movement and 1% fee headroom on top of
-  // the buy notional. Rebalance to the same executable target, otherwise a
-  // just-rebalanced venue is still rejected as underfunded.
-  let targetQuoteUsd = config.minQuoteReserveUsd.plus(config.minExecutableBuyUsd.mul('1.0201'));
+  const signalBaseUsd = trigger.signalNotional?.gt(0) ? trigger.signalNotional : undefined;
+  const feeBps = target.market.feeTakerBps ?? ZERO;
+  const feeFactor = new Decimal(1).minus(feeBps.div(10_000));
+  if (!feeFactor.gt(0)) {
+    return { action: 'BLOCKED', reasons: ['inventory_rebalance_fee_invalid'] };
+  }
+  // Size the quote top-up to what the opposite sell leg can actually absorb.
+  // A zero pair cap means "no fixed cap", not "liquidate everything": selling
+  // base the other venue cannot sell only burns fees and spread.
+  const pairCap = pair.maxNotional.gt(0) ? pair.maxNotional : undefined;
+  const desiredBuyNotional = trigger.fundingOnly
+    ? (pairCap ?? config.minExecutableBuyUsd)
+    : Decimal.min(otherBaseUsd, ...(pairCap ? [pairCap] : []));
+  if (desiredBuyNotional.lt(config.minExecutableBuyUsd)) {
+    return { action: 'WAIT', reasons: ['inventory_rebalance_sell_leg_unfunded'] };
+  }
+  // The executor preflight adds 1% price movement and 1% fee headroom on top
+  // of the buy notional, so the quote target has to include both.
+  let targetQuoteUsd = config.minQuoteReserveUsd.plus(desiredBuyNotional.mul('1.0201'));
   const minimumTradeNotional = target.market.minNotional ?? ZERO;
   const rawQuoteDeficit = Decimal.max(0, targetQuoteUsd.minus(target.balance.quoteFree));
   if (
@@ -215,7 +244,7 @@ export function planAutomaticInventoryRebalance(input: {
   if (!quoteDeficit.gt(0)) {
     return { action: 'NOOP', reasons: ['inventory_quote_sufficient'] };
   }
-  const baseSurplusUsd = targetBaseUsd.minus(config.minUsefulNotionalUsd);
+  const baseSurplusUsd = targetBaseUsd;
   if (!baseSurplusUsd.gt(0)) {
     return { action: 'WAIT', reasons: ['inventory_rebalance_no_base_surplus'] };
   }
@@ -225,33 +254,28 @@ export function planAutomaticInventoryRebalance(input: {
   if (!amountStep || !priceStep) {
     return { action: 'BLOCKED', reasons: ['inventory_rebalance_market_precision_missing'] };
   }
-  const feeBps = target.market.feeTakerBps ?? ZERO;
-  const feeFactor = new Decimal(1).minus(feeBps.div(10_000));
-  if (!feeFactor.gt(0)) {
-    return { action: 'BLOCKED', reasons: ['inventory_rebalance_fee_invalid'] };
-  }
   const maxSellableQuote = trigger.fundingOnly
     ? target.balance.baseFree.mul(targetBid).mul(feeFactor)
     : Decimal.min(
         baseSurplusUsd.mul(feeFactor),
         target.balance.baseFree.mul(targetBid).mul(feeFactor),
       );
-  if (maxSellableQuote.lt(quoteDeficit)) {
+  if (maxSellableQuote.lt(quoteDeficit) && pairCap !== undefined) {
     return { action: 'WAIT', reasons: ['inventory_rebalance_base_surplus_insufficient'] };
   }
   // Include a small amount-step buffer so fee rounding and lot alignment do
   // not leave the venue a few micro-USDT below the configured reserve.
-  const requestedQuote = quoteDeficit.div(feeFactor).mul('1.001');
+  const proceedsNeeded = Decimal.min(quoteDeficit, maxSellableQuote);
+  const requestedQuote = proceedsNeeded.div(feeFactor).mul('1.001');
   if (!requestedQuote.gt(0)) {
     return { action: 'WAIT', reasons: ['inventory_rebalance_amount_below_minimum'] };
   }
   const normalizedBook = normalizeBookForMarket(target.book, target.market);
   const depth = calculateSellDepthByQuote(normalizedBook, requestedQuote);
-  if (
-    !depth.executableBaseAmount.gt(0) ||
-    !depth.executableQuoteAmount.gt(0) ||
-    depth.insufficientDepth
-  ) {
+  if (!depth.executableBaseAmount.gt(0) || !depth.executableQuoteAmount.gt(0)) {
+    return { action: 'WAIT', reasons: ['inventory_rebalance_bid_liquidity_missing'] };
+  }
+  if (depth.insufficientDepth) {
     return { action: 'WAIT', reasons: ['inventory_rebalance_bid_liquidity_missing'] };
   }
   const multiplier = marketBaseMultiplier(target.market);
@@ -291,24 +315,43 @@ export function planAutomaticInventoryRebalance(input: {
   if (remainingBaseUsd.lt(0)) {
     return { action: 'WAIT', reasons: ['inventory_rebalance_base_balance_insufficient'] };
   }
-  if (!trigger.fundingOnly && remainingBaseUsd.lt(config.minUsefulNotionalUsd)) {
-    return { action: 'WAIT', reasons: ['inventory_rebalance_would_break_sell_leg'] };
-  }
   const expectedQuoteProceeds = canonicalAmount.mul(canonicalWorst).mul(feeFactor);
   if (target.balance.quoteFree.plus(expectedQuoteProceeds).lt(targetQuoteUsd)) {
-    return { action: 'WAIT', reasons: ['inventory_rebalance_quote_restore_insufficient'] };
+    const affordableBuy = target.balance.quoteFree
+      .plus(expectedQuoteProceeds)
+      .minus(config.minQuoteReserveUsd)
+      .div('1.0201');
+    if (affordableBuy.lt(config.minExecutableBuyUsd)) {
+      return { action: 'WAIT', reasons: ['inventory_rebalance_quote_restore_insufficient'] };
+    }
   }
   const ownQuote = canonicalAmount.mul(canonicalWorst);
-  const alternativeQuote = canonicalAmount.mul(otherBid);
-  const expectedCostUsd = Decimal.max(0, alternativeQuote.minus(ownQuote)).plus(
-    ownQuote.mul(feeBps.div(10_000)),
-  );
-  const costCeilingUsd = trigger.expectedProfitUsd
-    ? Decimal.min(
-        config.maxRebalanceLossUsd,
-        trigger.expectedProfitUsd.mul(config.maxRebalanceCostFraction),
-      )
-    : config.maxRebalanceLossUsd;
+  const buybackQuote = canonicalAmount.mul(targetAsk);
+  const feeRate = feeBps.div(10_000);
+  const expectedCostUsd = Decimal.max(0, buybackQuote.minus(ownQuote))
+    .plus(ownQuote.mul(feeRate))
+    .plus(buybackQuote.mul(feeRate));
+  // Scale the signal profit to the amount this rebalance actually enables.
+  // A balance-blocked signal is tiny, while the funded S1 can be much larger.
+  const scaledProfit =
+    trigger.expectedProfitUsd && trigger.signalNotional?.gt(0)
+      ? trigger.expectedProfitUsd.mul(desiredBuyNotional).div(trigger.signalNotional)
+      : trigger.expectedProfitUsd;
+  const fractionCap = scaledProfit ? scaledProfit.mul(config.maxRebalanceCostFraction) : undefined;
+  const absoluteCap = config.maxRebalanceLossUsd.gt(0) ? config.maxRebalanceLossUsd : undefined;
+  const costCeilingUsd =
+    fractionCap && absoluteCap
+      ? Decimal.min(absoluteCap, fractionCap)
+      : (fractionCap ?? absoluteCap ?? expectedCostUsd);
+  // Do not spend conversion cost preparing far more inventory than the current
+  // signal can absorb. This is economic sizing, not a fixed dollar cap.
+  if (
+    !trigger.fundingOnly &&
+    signalBaseUsd !== undefined &&
+    desiredBuyNotional.lt(signalBaseUsd.mul('0.95'))
+  ) {
+    return { action: 'WAIT', reasons: ['inventory_rebalance_signal_notional_exceeded'] };
+  }
   if (expectedCostUsd.gt(costCeilingUsd)) {
     return { action: 'WAIT', reasons: ['inventory_rebalance_cost_above_limit'] };
   }
@@ -348,6 +391,7 @@ export function planAutomaticInventoryRebalance(input: {
       costCeilingUsd,
       ownBid: targetBid,
       otherBid,
+      buybackAsk: targetAsk,
       bookFetchedAt: target.book.fetchedAt,
       venueBalance: target.balance,
       otherBalance: other.balance,
@@ -382,6 +426,7 @@ function metadata(plan: AutomaticInventoryRebalancePlan, extra: Record<string, u
     costCeilingUsd: plan.costCeilingUsd.toFixed(),
     ownBid: plan.ownBid.toFixed(),
     otherBid: plan.otherBid.toFixed(),
+    buybackAsk: plan.buybackAsk.toFixed(),
     bookFetchedAt: plan.bookFetchedAt,
     quoteBalanceBefore: plan.venueBalance.quoteFree.toFixed(),
     baseBalanceBefore: plan.venueBalance.baseFree.toFixed(),

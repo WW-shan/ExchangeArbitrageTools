@@ -115,6 +115,23 @@ describe('automatic two-sided rotation decision', () => {
     expect(decideAutoRotation(input({ openExecutions: 1 })).reasons).toContain('open_execution');
   });
 
+  it('treats a zero pair and global cap as balance-sized rather than a rejection', () => {
+    const decision = decideAutoRotation(
+      input({
+        loaded: loaded('gateio->hotcoin', '500'),
+        pair: {
+          base: 'KAT',
+          quote: 'USDT',
+          maxNotional: d('0'),
+          venues: ['gateio', 'hotcoin'] as const,
+        },
+        maxOrderNotional: d('0'),
+      }),
+    );
+    expect(decision.reasons).not.toContain('notional_above_pair_limit');
+    expect(decision.reasons).not.toContain('notional_above_global_limit');
+  });
+
   it('supports the reverse route and derives a conservative base requirement', () => {
     expect(rotationDirection(loaded('hotcoin->gateio'))).toBe('hotcoin->gate');
     expect(scannerDirectionForRotation('gate->hotcoin')).toBe('gateio->hotcoin');

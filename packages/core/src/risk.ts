@@ -43,7 +43,7 @@ export interface PreflightDecision {
 function limitsAreValid(limits: RiskLimits): boolean {
   return (
     limits.maxOrderNotional.isFinite() &&
-    limits.maxOrderNotional.gt(0) &&
+    limits.maxOrderNotional.gte(0) &&
     limits.dailyMaxLoss.isFinite() &&
     limits.dailyMaxLoss.gte(0) &&
     Number.isInteger(limits.maxOpenBatches) &&
@@ -81,10 +81,11 @@ export class ExecutionGate {
     const reasons: string[] = [];
     if (this.#killSwitch) reasons.push('kill_switch_on');
     if (!limitsAreValid(this.#limits)) reasons.push('risk_limits_invalid');
+    const globalNotionalCap = this.#limits.maxOrderNotional;
     if (
       !check.requestedNotional.isFinite() ||
       check.requestedNotional.lte(0) ||
-      check.requestedNotional.gt(this.#limits.maxOrderNotional)
+      (globalNotionalCap.gt(0) && check.requestedNotional.gt(globalNotionalCap))
     ) {
       reasons.push('notional_outside_limits');
     }

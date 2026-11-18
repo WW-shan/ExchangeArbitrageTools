@@ -23,7 +23,8 @@ scan_interval_hot_ms = 30000
 scan_interval_top100_ms = 120000
 scan_interval_top500_ms = 600000
 signal_cooldown_ms = 60000
-max_order_notional = "5"
+# 0 = no fixed cap: size from the limiting live balance and visible depth.
+max_order_notional = "0"
 # Low-liquidity books can legitimately go 2-15 seconds without a new exchange
 # update. Keep received-at/WebSocket freshness separate from this window; the
 # executor re-fetches both books and uses FOK before submitting.
@@ -159,12 +160,14 @@ max_baseline_age_ms = 60000
 # executor.
 [auto_rotation.inventory]
 enabled = true
-seed_notional_usd = '5'
+# 0 means prepare the missing side with all spendable quote after the reserve.
+seed_notional_usd = '0'
 # Minimum USDT that must remain available after the buy leg on each venue. This
 # is also passed to the scanner and executor as a hard post-trade reserve.
 min_quote_reserve_usd = '0.5'
-# The rebalancer restores reserve + this amount so the venue can immediately
-# submit a minimum-size S1 buy instead of stopping at an unusable reserve.
+# The rebalancer restores reserve + this amount when pair.max_notional is a
+# positive cap. With max_notional = 0 the amount is ignored and the full base
+# surplus is converted to quote.
 min_executable_buy_usd = '3'
 min_useful_notional_usd = '3'
 min_stable_ms = 3000
@@ -183,7 +186,7 @@ max_rebalance_loss_usd = '0.25'
 # large gross spread from consuming its entire edge in inventory conversion.
 max_rebalance_cost_fraction = '0.5'
 min_rebalance_edge_bps = '50'
-rebalance_signal_max_age_ms = 15000
+rebalance_signal_max_age_ms = 5000
 # Do not build inventory for a pair unless there is a fresh directional S1
 # signal. Without this, the supervisor seeds every pair in rotation and can
 # spread the tiny shared USDT balance across unrelated base assets.
@@ -193,7 +196,7 @@ require_signal_for_seed = true
 base = 'WARD'
 quote = 'USDT'
 venues = ['gateio', 'bitget']
-max_notional = '5'
+max_notional = '0'
 
 # 2026-10-29 live check: Gate/Bitget WARD withdraw=false; Bitget KAT
 # withdraw=false. WARD/KAT have no two-way transfer route. See

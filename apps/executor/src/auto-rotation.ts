@@ -439,12 +439,18 @@ export function decideAutoRotation(input: AutoRotationDecisionInput): AutoRotati
   if (input.alreadyExecuted) reasons.push('opportunity_already_executed');
   if (!input.pair) reasons.push('pair_not_whitelisted');
   if (input.ageMs > input.maxSignalAgeMs) reasons.push('stale_signal');
+  const pairCap = input.pair?.maxNotional;
   if (
-    input.loaded.opportunity.requestedNotional.gt(input.pair?.maxNotional ?? input.maxOrderNotional)
+    pairCap !== undefined &&
+    pairCap.gt(0) &&
+    input.loaded.opportunity.requestedNotional.gt(pairCap)
   ) {
     reasons.push('notional_above_pair_limit');
   }
-  if (input.loaded.opportunity.requestedNotional.gt(input.maxOrderNotional)) {
+  if (
+    input.maxOrderNotional.gt(0) &&
+    input.loaded.opportunity.requestedNotional.gt(input.maxOrderNotional)
+  ) {
     reasons.push('notional_above_global_limit');
   }
   if (input.dailyRealizedLoss.gte(input.dailyMaxLoss)) reasons.push('daily_loss_limit');

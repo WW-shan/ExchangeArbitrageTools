@@ -381,8 +381,8 @@ function rotationPairs(value: unknown): RotationPairConfig[] {
     const maxNotional = decimalValue(row, 'max_notional', '20');
     const key = `${base}/${quote}`;
     const venues = rotationPairVenues(row.venues, key);
-    if (maxNotional.lte(0)) {
-      throw new Error('auto_rotation pair max_notional must be positive');
+    if (maxNotional.lt(0)) {
+      throw new Error('auto_rotation pair max_notional must be zero or positive');
     }
     if (seen.has(key)) throw new Error(`duplicate auto_rotation pair: ${key}`);
     seen.add(key);
@@ -578,8 +578,11 @@ function validateSafetyBounds(config: ExecutorConfig): void {
   if (!config.manualConfirmation) {
     throw new Error('MVP requires manual_confirmation = true until live rollout gates pass');
   }
-  if (config.riskLimits.maxOrderNotional.gt(30)) {
-    throw new Error('max_order_notional cannot exceed the 30 USDT MVP limit');
+  if (
+    config.riskLimits.maxOrderNotional.lt(0) ||
+    (config.riskLimits.maxOrderNotional.gt(0) && config.riskLimits.maxOrderNotional.gt(30))
+  ) {
+    throw new Error('max_order_notional must be zero or at most the 30 USDT MVP limit');
   }
   if (config.riskLimits.dailyMaxLoss.gt(20)) {
     throw new Error('daily_max_loss_usd cannot exceed the 20 USDT MVP limit');
@@ -599,7 +602,11 @@ function validateSafetyBounds(config: ExecutorConfig): void {
       throw new Error('auto_rotation.max_preflight_ms must be between 500 and 10000');
     }
     for (const pair of config.autoRotation.pairs) {
-      if (pair.maxNotional.gt(config.riskLimits.maxOrderNotional)) {
+      if (
+        pair.maxNotional.gt(0) &&
+        config.riskLimits.maxOrderNotional.gt(0) &&
+        pair.maxNotional.gt(config.riskLimits.maxOrderNotional)
+      ) {
         throw new Error(
           `auto_rotation pair ${pair.base}/${pair.quote} max_notional exceeds max_order_notional`,
         );
@@ -626,8 +633,10 @@ function validateSafetyBounds(config: ExecutorConfig): void {
     }
     if (
       !inventory.seedNotionalUsd.isFinite() ||
-      inventory.seedNotionalUsd.lte(0) ||
-      inventory.seedNotionalUsd.gt(config.riskLimits.maxOrderNotional)
+      inventory.seedNotionalUsd.lt(0) ||
+      (inventory.seedNotionalUsd.gt(0) &&
+        config.riskLimits.maxOrderNotional.gt(0) &&
+        inventory.seedNotionalUsd.gt(config.riskLimits.maxOrderNotional))
     ) {
       throw new Error('auto_rotation.inventory.seed_notional_usd is outside the order limit');
     }
@@ -637,7 +646,8 @@ function validateSafetyBounds(config: ExecutorConfig): void {
     if (
       !inventory.minExecutableBuyUsd.isFinite() ||
       inventory.minExecutableBuyUsd.lte(0) ||
-      inventory.minExecutableBuyUsd.gt(inventory.seedNotionalUsd)
+      (inventory.seedNotionalUsd.gt(0) &&
+        inventory.minExecutableBuyUsd.gt(inventory.seedNotionalUsd))
     ) {
       throw new Error(
         'auto_rotation.inventory.min_executable_buy_usd must be within the seed notional',
@@ -680,7 +690,8 @@ function validateSafetyBounds(config: ExecutorConfig): void {
     if (
       !inventory.minUsefulNotionalUsd.isFinite() ||
       inventory.minUsefulNotionalUsd.lte(0) ||
-      inventory.minUsefulNotionalUsd.gt(inventory.seedNotionalUsd)
+      (inventory.seedNotionalUsd.gt(0) &&
+        inventory.minUsefulNotionalUsd.gt(inventory.seedNotionalUsd))
     ) {
       throw new Error(
         'auto_rotation.inventory.min_useful_notional_usd must be within the seed notional',

@@ -181,6 +181,23 @@ describe('execution risk gate', () => {
     expect(negativeDecision.allowed).toBe(false);
     expect(negativeDecision.reasons).toContain('risk_limits_invalid');
   });
+
+  it('treats a zero max order notional as balance-sized instead of invalid', () => {
+    const gate = new ExecutionGate({
+      maxOrderNotional: new Decimal(0),
+      dailyMaxLoss: new Decimal(20),
+      maxOpenBatches: 1,
+      minNetProfitBps: new Decimal(20),
+      maxStaleOrderbookMs: 3000,
+      maxSlippageBps: new Decimal(50),
+      killSwitchDefault: false,
+    });
+    const decision = gate.preflight({
+      ...validCheck,
+      requestedNotional: new Decimal(500),
+    });
+    expect(decision.allowed).toBe(true);
+  });
 });
 
 describe('token bucket rate limiter', () => {

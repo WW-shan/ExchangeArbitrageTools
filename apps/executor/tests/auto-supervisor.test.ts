@@ -276,6 +276,43 @@ describe('inventory funding pair selection', () => {
     repository.close();
   });
 
+  it('does not rebalance from a signal older than the execution window', () => {
+    const repository = repositoryWithVenues();
+    repository.upsertVenue({ id: 'bitget', type: 'cex', name: 'Bitget', tier: 'S', now });
+    repository.recordOpportunity(rebalanceOpportunity('WARD', now - 5_000, '100'));
+    const pairs = [
+      {
+        base: 'WARD',
+        quote: 'USDT',
+        maxNotional: new Decimal(10),
+        venues: ['gateio', 'bitget'] as const,
+      },
+    ];
+    const target = selectInventoryRebalanceTarget({
+      repository,
+      pairs,
+      now,
+      maxSignalAgeMs: 3_000,
+      config: {
+        rebalanceSignalMaxAgeMs: 15_000,
+        minRebalanceEdgeBps: new Decimal(50),
+      } as ExecutorConfig['autoRotation']['inventory'],
+    });
+    expect(target).toBeUndefined();
+    const stillFresh = selectInventoryRebalanceTarget({
+      repository,
+      pairs,
+      now,
+      maxSignalAgeMs: 6_000,
+      config: {
+        rebalanceSignalMaxAgeMs: 15_000,
+        minRebalanceEdgeBps: new Decimal(50),
+      } as ExecutorConfig['autoRotation']['inventory'],
+    });
+    expect(stillFresh?.pair.base).toBe('WARD');
+    repository.close();
+  });
+
   it('accepts balance-limited signals with derived notional and depth rejections', () => {
     const repository = repositoryWithVenues();
     repository.upsertVenue({ id: 'bitget', type: 'cex', name: 'Bitget', tier: 'S', now });

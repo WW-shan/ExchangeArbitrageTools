@@ -845,11 +845,19 @@ export class ScannerService {
           const monitorOnlyRoute =
             this.#monitorOnlyVenues.has(input.buyMarket.venueId) ||
             this.#monitorOnlyVenues.has(input.sellMarket.venueId);
+          // max_order_notional=0 means size from the live balance cap.
+          const dynamicNotional = this.#requestedNotional.lte(0);
           const cappedNotional = monitorOnlyRoute
-            ? this.#requestedNotional
+            ? dynamicNotional
+              ? this.#minSizingNotional
+              : this.#requestedNotional
             : cap.maxNotional
-              ? Decimal.min(this.#requestedNotional, cap.maxNotional)
-              : this.#requestedNotional;
+              ? dynamicNotional
+                ? cap.maxNotional
+                : Decimal.min(this.#requestedNotional, cap.maxNotional)
+              : dynamicNotional
+                ? this.#minSizingNotional
+                : this.#requestedNotional;
           const insufficientBalance =
             !monitorOnlyRoute &&
             ((cap.missing && this.#requireBalancesForS1) ||
@@ -925,6 +933,7 @@ export class ScannerService {
               ...(opportunity.metadata ?? {}),
               balanceLimited: String(cap.limited),
               maxExecutableNotional: cap.maxNotional.toFixed(),
+              sizingMode: dynamicNotional ? 'balance_ratio' : 'fixed_notional',
             };
           }
           if (insufficientBalance) {

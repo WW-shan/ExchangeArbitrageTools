@@ -483,11 +483,13 @@ export function planAutomaticInventorySeed(input: {
     reason = seedAsk.lte(otherAsk) ? 'missing_side_cheaper' : 'missing_side_near_parity';
   } else if (!firstUseful && !secondUseful) {
     const firstCheaper = firstAsk.lte(secondAsk);
-    const requiredSpend = Decimal.min(
-      config.seedNotionalUsd,
-      config.minUsefulNotionalUsd,
-      pair.maxNotional,
-    );
+    const requiredSpend = config.seedNotionalUsd.gt(0)
+      ? Decimal.min(
+          config.seedNotionalUsd,
+          config.minUsefulNotionalUsd,
+          ...(pair.maxNotional.gt(0) ? [pair.maxNotional] : []),
+        )
+      : config.minUsefulNotionalUsd;
     const firstFunded = first.balance.quoteFree.minus(config.minQuoteReserveUsd).gte(requiredSpend);
     const secondFunded = second.balance.quoteFree
       .minus(config.minQuoteReserveUsd)
@@ -547,11 +549,15 @@ export function planAutomaticInventorySeed(input: {
   if (availableQuote.lte(0)) {
     return { action: 'WAIT', reasons: ['inventory_quote_reserve_exhausted'], observation };
   }
-  const targetSpend = Decimal.max(0, config.seedNotionalUsd.minus(seedBaseUsd));
+  const feeFactor = new Decimal(1).plus(feeBps.div(10_000));
+  const spendableQuote = availableQuote.div(feeFactor);
+  const targetSpend = config.seedNotionalUsd.gt(0)
+    ? Decimal.max(0, config.seedNotionalUsd.minus(seedBaseUsd))
+    : spendableQuote;
   const maxSpend = Decimal.min(
     targetSpend,
-    pair.maxNotional,
-    availableQuote.div(new Decimal(1).plus(feeBps.div(10_000))),
+    spendableQuote,
+    ...(pair.maxNotional.gt(0) ? [pair.maxNotional] : []),
   );
   if (maxSpend.lte(0)) {
     return { action: 'WAIT', reasons: ['inventory_quote_insufficient'], observation };
@@ -577,7 +583,7 @@ export function planAutomaticInventorySeed(input: {
   if (seed.market.minNotional && plannedNotional.lt(seed.market.minNotional)) {
     return { action: 'WAIT', reasons: ['inventory_notional_below_minimum'], observation };
   }
-  if (plannedNotional.gt(pair.maxNotional)) {
+  if (pair.maxNotional.gt(0) && plannedNotional.gt(pair.maxNotional)) {
     return { action: 'WAIT', reasons: ['inventory_pair_notional_exceeded'], observation };
   }
   const seedBestBid = bestLevel(seed.book, 'bids');

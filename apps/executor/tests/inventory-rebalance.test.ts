@@ -172,9 +172,9 @@ describe('automatic inventory rebalance planning', () => {
     expect(decision.plan.venueId).toBe('bitget');
     expect(decision.plan.currentQuoteUsd.toFixed()).toBe('0.09');
     expect(decision.plan.expectedRemainingBaseUsd.gte(3)).toBe(true);
-    expect(decision.plan.expectedQuoteProceeds.gte('4.9')).toBe(true);
-    expect(decision.plan.expectedQuoteProceeds.lte('5.1')).toBe(true);
-    expect(decision.plan.amount.lt(1100)).toBe(true);
+    expect(decision.plan.expectedQuoteProceeds.gte('6.9')).toBe(true);
+    expect(decision.plan.expectedQuoteProceeds.lte('7.2')).toBe(true);
+    expect(decision.plan.amount.lt(2500)).toBe(true);
   });
 
   it('does not sell when the buy-side quote reserve is already funded', () => {
@@ -183,7 +183,7 @@ describe('automatic inventory rebalance planning', () => {
       pair: config().autoRotation.pairs[0]!,
       venues: [
         venue('gateio', '1000', '20', '0.005', '0.00501', now),
-        venue('bitget', '4000', '5.1', '0.005', '0.00501', now),
+        venue('bitget', '4000', '12.3', '0.005', '0.00501', now),
       ],
       config: config().autoRotation.inventory,
       trigger: trigger(now),
@@ -254,7 +254,7 @@ describe('automatic inventory rebalance planning', () => {
       minNotional: new Decimal('3'),
     };
     const decision = planAutomaticInventoryRebalance({
-      pair: config().autoRotation.pairs[0]!,
+      pair: { ...config().autoRotation.pairs[0]!, maxNotional: new Decimal(3) },
       venues: [
         {
           venueId: 'gateio',
@@ -294,7 +294,7 @@ describe('automatic inventory rebalance planning', () => {
         venue('bitget', '4000', '0.09', '0.005', '0.00501', now),
       ],
       config: config({ maxRebalanceLossUsd: new Decimal('0.1') }).autoRotation.inventory,
-      trigger: trigger(now),
+      trigger: trigger(now, new Decimal('0.04')),
       now,
     });
     expect(decision).toMatchObject({
@@ -336,6 +336,83 @@ describe('automatic inventory rebalance planning', () => {
     expect(decision).toMatchObject({
       action: 'WAIT',
       reasons: ['inventory_rebalance_signal_stale_or_weak'],
+    });
+  });
+
+  it('counts the target-venue buyback ask in the rebalance cost', () => {
+    const now = Date.now();
+    const decision = planAutomaticInventoryRebalance({
+      pair: config().autoRotation.pairs[0]!,
+      venues: [
+        venue('gateio', '1000', '20', '0.0049', '0.005', now),
+        venue('bitget', '4000', '0.09', '0.005', '0.0051', now),
+      ],
+      config: config().autoRotation.inventory,
+      trigger: trigger(now, new Decimal('0.2')),
+      now,
+    });
+    expect(decision).toMatchObject({
+      action: 'WAIT',
+      reasons: ['inventory_rebalance_cost_above_limit'],
+    });
+  });
+
+  it('converts only the capacity the opposite sell leg can absorb when the pair cap is zero', () => {
+    const now = Date.now();
+    const decision = planAutomaticInventoryRebalance({
+      pair: { ...config().autoRotation.pairs[0]!, maxNotional: new Decimal(0) },
+      venues: [
+        venue('gateio', '1000', '20', '0.005', '0.00501', now),
+        venue('bitget', '4000', '0.09', '0.005', '0.00501', now),
+      ],
+      config: config().autoRotation.inventory,
+      trigger: trigger(now, new Decimal('0.2')),
+      now,
+    });
+    expect(decision, JSON.stringify(decision)).toMatchObject({ action: 'SELL' });
+    if (decision.action !== 'SELL') return;
+    expect(decision.plan.venueId).toBe('bitget');
+    expect(decision.plan.expectedRemainingBaseUsd.gte('12.8')).toBe(true);
+    expect(decision.plan.expectedQuoteProceeds.gte('6.9')).toBe(true);
+    expect(decision.plan.expectedQuoteProceeds.lte('7.2')).toBe(true);
+  });
+
+  it('scales the signal profit to the larger funded trade before applying the cost cap', () => {
+    const now = Date.now();
+    const decision = planAutomaticInventoryRebalance({
+      pair: { ...config().autoRotation.pairs[0]!, maxNotional: new Decimal(0) },
+      venues: [
+        venue('gateio', '1000', '20', '0.005', '0.00501', now),
+        venue('bitget', '4000', '0.09', '0.005', '0.00501', now),
+      ],
+      config: config().autoRotation.inventory,
+      trigger: {
+        ...trigger(now, new Decimal('0.1')),
+        signalNotional: new Decimal(3),
+      },
+      now,
+    });
+    expect(decision, JSON.stringify(decision)).toMatchObject({ action: 'SELL' });
+  });
+
+  it('waits instead of preparing far more inventory than the fresh signal can absorb', () => {
+    const now = Date.now();
+    const decision = planAutomaticInventoryRebalance({
+      pair: { ...config().autoRotation.pairs[0]!, maxNotional: new Decimal(0) },
+      venues: [
+        venue('gateio', '1000', '20', '0.005', '0.00501', now),
+        venue('bitget', '4000', '0.09', '0.005', '0.00501', now),
+      ],
+      config: config().autoRotation.inventory,
+      trigger: {
+        ...trigger(now, new Decimal('0.1')),
+        signalNotional: new Decimal(100),
+      },
+      now,
+    });
+    expect(decision).toMatchObject({
+      action: 'WAIT',
+      reasons: ['inventory_rebalance_signal_notional_exceeded'],
     });
   });
 });

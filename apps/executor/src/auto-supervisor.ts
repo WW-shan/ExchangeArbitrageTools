@@ -205,11 +205,13 @@ function inventoryRebalanceTrigger(
   pair: RotationPairConfig,
   now: number,
   config: ExecutorConfig['autoRotation']['inventory'],
+  maxSignalAgeMs = config.rebalanceSignalMaxAgeMs,
 ): InventoryRebalanceTrigger | undefined {
   const instrument = `${pair.base}/${pair.quote}`.toUpperCase();
+  const effectiveMaxAgeMs = Math.min(config.rebalanceSignalMaxAgeMs, maxSignalAgeMs);
   const rows = repository.recentS1Opportunities({
     now,
-    maxAgeMs: config.rebalanceSignalMaxAgeMs,
+    maxAgeMs: effectiveMaxAgeMs,
     instruments: [instrument],
     maxCandidates: 200,
     validOnly: false,
@@ -217,6 +219,7 @@ function inventoryRebalanceTrigger(
   let best: { trigger: InventoryRebalanceTrigger; edgeBps: Decimal; sampledAt: number } | undefined;
   for (const loaded of rows) {
     const opportunity = loaded.opportunity;
+    if (now - opportunity.sampledAt > effectiveMaxAgeMs) continue;
     const balanceBlocked =
       !opportunity.valid &&
       opportunity.rejectionReasons.includes('insufficient_balance') &&
@@ -246,6 +249,7 @@ function inventoryRebalanceTrigger(
         otherVenueId: opportunity.venueSell,
         edgeBps: opportunity.netProfitBps,
         expectedProfitUsd: opportunity.conservativeNetProfit,
+        signalNotional: opportunity.requestedNotional,
         sampledAt: opportunity.sampledAt,
         opportunityId: loaded.id,
       },
@@ -264,11 +268,12 @@ export function selectInventoryRebalanceTarget(input: {
   pairs: readonly RotationPairConfig[];
   now: number;
   config: ExecutorConfig['autoRotation']['inventory'];
+  maxSignalAgeMs?: number;
 }): InventoryRebalanceTarget | undefined {
-  const { repository, pairs, now, config } = input;
+  const { repository, pairs, now, config, maxSignalAgeMs } = input;
   let best: InventoryRebalanceTarget | undefined;
   for (const pair of pairs) {
-    const trigger = inventoryRebalanceTrigger(repository, pair, now, config);
+    const trigger = inventoryRebalanceTrigger(repository, pair, now, config, maxSignalAgeMs);
     if (!trigger) continue;
     if (
       best &&
@@ -641,7 +646,7 @@ function preparationCandidate(input: {
       const requestedNotional = Decimal.min(
         loaded.opportunity.requestedNotional,
         preparation.maxNotional,
-        pair.maxNotional,
+        ...(pair.maxNotional.gt(0) ? [pair.maxNotional] : []),
       );
       if (requestedNotional.lt(config.minSizingNotional)) continue;
       const costBps = depthNetBps.lt(0) ? depthNetBps.abs() : new Decimal(0);
@@ -1324,6 +1329,7 @@ export async function runAutoRotationSupervisor(
             pairs: config.autoRotation.pairs,
             now,
             config: config.autoRotation.inventory,
+            maxSignalAgeMs: config.autoRotation.maxSignalAgeMs,
           });
           const inventoryPair = rebalanceTarget?.pair ?? roundRobinInventoryPair;
           const rebalanceTrigger = rebalanceTarget?.trigger;

@@ -68,6 +68,7 @@ function buildScanner(
   monitorOnlyVenues: string[] = [],
   balanceSafetyBufferBps = new Decimal('100'),
   minBuyQuoteReserveUsd = new Decimal('0'),
+  requestedNotional = new Decimal(30),
 ): ScannerService {
   const venues: ScannerVenue[] = [
     { adapter: adapter('gateio', '2.500', '2.490'), health: new VenueHealthTracker(), markets: [] },
@@ -87,7 +88,7 @@ function buildScanner(
     },
     quoteCurrency: 'USDT',
     baseAssets: ['CAKE'],
-    requestedNotional: new Decimal(30),
+    requestedNotional,
     orderBookDepth: 50,
     maxTriangularPaths: 10,
     persistSnapshots: false,
@@ -130,6 +131,35 @@ describe('scanner balance-aware S1 sizing', () => {
       .get() as { requested_notional: string; metadata_json: string };
     expect(new Decimal(row.requested_notional).lte(20)).toBe(true);
     expect(JSON.parse(row.metadata_json).balanceLimited).toBe('true');
+    repo.close();
+  });
+
+  it('sizes from the whole balance when max_order_notional is zero', async () => {
+    const db = openDatabase(':memory:');
+    const repo = new ArbitrageRepository(db);
+    const scanner = buildScanner(
+      repo,
+      false,
+      [],
+      new Decimal('100'),
+      new Decimal('1'),
+      new Decimal(0),
+    );
+    await scanner.initialize();
+    recordBalance(repo, 'gateio', 'USDT', '20');
+    recordBalance(repo, 'mexc', 'CAKE', '100');
+    const summary = await scanner.scanOnce();
+    expect(summary.validOpportunities).toBeGreaterThanOrEqual(1);
+    const row = db
+      .prepare(
+        `SELECT requested_notional, metadata_json FROM opportunities WHERE strategy = 'S1' AND valid = 1`,
+      )
+      .get() as { requested_notional: string; metadata_json: string };
+    const requested = new Decimal(row.requested_notional);
+    expect(requested.gte('18.5')).toBe(true);
+    expect(requested.lte('20')).toBe(true);
+    const metadata = JSON.parse(row.metadata_json) as Record<string, string>;
+    expect(metadata.sizingMode).toBe('balance_ratio');
     repo.close();
   });
 

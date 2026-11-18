@@ -393,6 +393,23 @@ describe('automatic inventory planning', () => {
     expect(decision.plan.plannedNotional.gt('2.4')).toBe(true);
   });
 
+  it('spends all available quote after the reserve when the seed notional is zero', () => {
+    const decision = planAutomaticInventorySeed({
+      pair: { ...config().autoRotation.pairs[0]!, maxNotional: new Decimal(0) },
+      venues: [
+        inventoryVenue('gateio', '0.0050', '0.00499', '0', '20'),
+        inventoryVenue('bitget', '0.0051', '0.00509', '0', '20'),
+      ],
+      config: config({ seedNotionalUsd: new Decimal(0) }).autoRotation.inventory,
+      now: Date.now(),
+    });
+    expect(decision.action).toBe('SEED');
+    if (decision.action !== 'SEED') return;
+    expect(decision.plan.venueId).toBe('gateio');
+    expect(decision.plan.spendQuote.gte('14.9')).toBe(true);
+    expect(decision.plan.spendQuote.lte('15')).toBe(true);
+  });
+
   it('does not buy the funded side when it is outside the pair band', () => {
     const decision = planAutomaticInventorySeed({
       pair: config().autoRotation.pairs[0]!,
