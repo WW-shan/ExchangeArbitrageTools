@@ -948,3 +948,53 @@ describe('opportunity lifetime and decay', () => {
     repo.close();
   });
 });
+
+describe('strategy-scoped opportunity queries', () => {
+  it('includes DISLOCATION only when asked, so S1 callers keep their behaviour', () => {
+    const db = openDatabase(':memory:');
+    const repo = new ArbitrageRepository(db);
+    repo.upsertVenue({ id: 'gateio', type: 'cex', name: 'Gate.io', tier: 'S', now });
+    repo.upsertVenue({ id: 'mexc', type: 'cex', name: 'MEXC', tier: 'S', now });
+
+    const s1 = opportunity(now);
+    const dislocation = {
+      ...opportunity(now + 1000),
+      strategy: 'DISLOCATION' as const,
+      opportunityKey: 'DISLOCATION|CAKE/USDT|gateio|mexc',
+    };
+    repo.recordOpportunity(s1);
+    repo.recordOpportunity(dislocation);
+
+    const s1Only = repo.recentValidS1Opportunities({ now: now + 5000, maxAgeMs: 60_000 });
+    expect(s1Only).toHaveLength(1);
+    expect(s1Only[0]?.opportunity.strategy).toBe('S1');
+
+    const both = repo.recentValidS1Opportunities({
+      now: now + 5000,
+      maxAgeMs: 60_000,
+      strategies: ['S1', 'DISLOCATION'],
+    });
+    expect(both).toHaveLength(2);
+    expect(both.map((row) => row.opportunity.strategy).sort()).toEqual(['DISLOCATION', 'S1']);
+    repo.close();
+  });
+
+  it('persists DISLOCATION as a valid strategy instead of rejecting the row', () => {
+    const db = openDatabase(':memory:');
+    const repo = new ArbitrageRepository(db);
+    const stored = repo.recordOpportunity({
+      ...opportunity(now),
+      strategy: 'DISLOCATION',
+      opportunityKey: 'DISLOCATION|CAKE/USDT|gateio|mexc',
+    });
+    const reloaded = repo.recentS1Opportunities({
+      now: now + 1000,
+      maxAgeMs: 60_000,
+      strategies: ['DISLOCATION'],
+    });
+    expect(reloaded).toHaveLength(1);
+    expect(reloaded[0]?.opportunity.strategy).toBe('DISLOCATION');
+    expect(stored.id).toBeGreaterThan(0);
+    repo.close();
+  });
+});

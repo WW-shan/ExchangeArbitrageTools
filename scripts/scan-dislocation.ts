@@ -1,4 +1,4 @@
-﻿/**
+/**
  * Read-only dislocation scanner.
  *
  * Every round it:
@@ -108,6 +108,7 @@ const liveness = new BookLivenessTracker({
 // 24h quote volume moves between snapshots has had a trade.
 const activity = new MarketActivityTracker({
   minQuoteVolumeDelta: config.liveness.minQuoteVolumeDelta,
+  minTurnoverFraction: config.liveness.minTurnoverFraction,
   minSpanMs: config.liveness.activityWarmupMs,
 });
 

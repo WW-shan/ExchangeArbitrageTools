@@ -1959,3 +1959,83 @@ describe('parallel FOK two-leg execution', () => {
 
 
 
+
+describe('dislocation execution path', () => {
+  it('executes a DISLOCATION opportunity and records it under its own strategy', async () => {
+    // Reproduces the IR/USDT case: a >1,000 bps spike that S1 would reject as
+    // suspicious. The executor must not re-apply the S1 guard at preflight.
+    const { repo, buy, sell } = setup();
+    const sellBook = book('mexc', '3.060', '3.050');
+    const buyBook = book('gateio', '2.500', '2.490');
+    const base = opportunity();
+    const spike: OpportunityResult = {
+      ...base,
+      strategy: 'DISLOCATION',
+      opportunityKey: 'DISLOCATION|CAKE/USDT|gateio|mexc',
+      grossSpread: new Decimal('0.56'),
+      netProfitBps: new Decimal('2180'),
+      metadata: {
+        ...(base.metadata ?? {}),
+        dislocationKind: 'spike',
+        dislocationBps: '2240',
+      },
+    };
+    const result = await new CexLiveExecutor({
+      repository: repo,
+      gate: new ExecutionGate(limits),
+      limits,
+      liveEnabled: true,
+      settings: { ...settings, suspiciousSpreadBps: new Decimal(1000) },
+      sleep: async () => {},
+      clock: () => now,
+    }).execute({
+      batchId: 'spike-batch',
+      opportunity: spike,
+      buy: { adapter: buy.adapter, market: market('gateio'), credentials: keys, healthState: 'A' },
+      sell: {
+        adapter: sell.adapter,
+        market: { ...market('mexc'), exchangeSymbol: 'CAKE/USDT' },
+        credentials: keys,
+        healthState: 'A',
+      },
+      confirmedBatchId: 'spike-batch',
+    });
+    // The spike book must not be rejected as suspicious_spread or price_outlier.
+    expect(result.reasons).not.toContain('suspicious_spread');
+    expect(result.reasons).not.toContain('price_outlier');
+    const row = repo.db
+      .prepare("SELECT strategy FROM executions WHERE batch_id = 'spike-batch'")
+      .get() as { strategy: string } | undefined;
+    expect(row?.strategy).toBe('DISLOCATION');
+    repo.close();
+  });
+
+  it('still blocks a DISLOCATION whose route does not match the venues', async () => {
+    const { repo, buy, sell } = setup();
+    const base = opportunity();
+    const result = await new CexLiveExecutor({
+      repository: repo,
+      gate: new ExecutionGate(limits),
+      limits,
+      liveEnabled: true,
+      settings,
+      sleep: async () => {},
+      clock: () => now,
+    }).execute({
+      batchId: 'spike-mismatch',
+      opportunity: {
+        ...base,
+        strategy: 'DISLOCATION',
+        venueSell: 'weex',
+        direction: 'gateio->weex',
+      },
+      buy: { adapter: buy.adapter, market: market('gateio'), credentials: keys, healthState: 'A' },
+      sell: { adapter: sell.adapter, market: market('mexc'), credentials: keys, healthState: 'A' },
+      confirmedBatchId: 'spike-mismatch',
+    });
+    expect(result.outcome).toBe('BLOCKED');
+    expect(result.reasons).toContain('route_mismatch');
+    expect(buy.state.createCalls).toBe(0);
+    repo.close();
+  });
+});

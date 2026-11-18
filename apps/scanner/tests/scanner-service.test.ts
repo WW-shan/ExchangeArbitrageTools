@@ -768,3 +768,135 @@ describe('scanner optimal sizing', () => {
     repo.close();
   });
 });
+
+describe('dislocation channel', () => {
+  it('records a DISLOCATION signal when one venue spikes off its own baseline', async () => {
+    const db = openDatabase(':memory:');
+    const repo = new ArbitrageRepository(db);
+    // The sell venue stays on its baseline; the buy venue collapses. A clock
+    // that advances per read lets the baseline build before the spike.
+    let clockNow = now;
+    let phase: 'calm' | 'spike' = 'calm';
+    const gate = adapter('gateio', '2.500', '2.490');
+    const mexc = adapter('mexc', '2.560', '2.550');
+    mexc.fetchOrderBook = async () => {
+      if (phase === 'spike') {
+        // Ask collapses far below its own trailing median: buy here.
+        return book('mexc', '1.200', '1.190', clockNow);
+      }
+      return book('mexc', '2.560', '2.550', clockNow);
+    };
+    gate.fetchOrderBook = async () => book('gateio', '2.500', '2.490', clockNow);
+
+    const venues: ScannerVenue[] = [
+      { adapter: gate, health: new VenueHealthTracker(), markets: [] },
+      { adapter: mexc, health: new VenueHealthTracker(), markets: [] },
+    ];
+    const scanner = new ScannerService({
+      venues,
+      repository: repo,
+      settings: {
+        minProfitUsd: new Decimal('0.01'),
+        safetyBufferBps: new Decimal(2),
+        minNetProfitBps: new Decimal(5),
+        maxOrderbookAgeMs: 20_000,
+        maxSlippageBps: new Decimal(50),
+        maxGasCostUsd: new Decimal('0.50'),
+        maxTransferTaxBps: new Decimal(0),
+        suspiciousSpreadBps: new Decimal(1000),
+        maxPriceDeviationBps: new Decimal(1000),
+      },
+      quoteCurrency: 'USDT',
+      baseAssets: ['CAKE'],
+      requestedNotional: new Decimal(10),
+      orderBookDepth: 50,
+      maxTriangularPaths: 0,
+      persistSnapshots: false,
+      paperSimulation: false,
+      dislocationEnabled: true,
+      dislocationSettings: {
+        minDislocationBps: new Decimal(500),
+        minVenueDeviationBps: new Decimal(300),
+        maxCounterDeviationBps: new Decimal(150),
+        maxQuoteAgeMs: 20_000,
+        maxBaselineAgeMs: 300_000,
+        minBaselineSamples: 3,
+        maxRepeatCount: 8,
+      },
+      dislocationMinNotional: new Decimal(3),
+      clock: () => clockNow,
+    });
+    await scanner.initialize();
+    // Build a baseline from calm prints. Each scanOnce advances the clock.
+    for (let i = 0; i < 5; i += 1) {
+      clockNow += 5_000;
+      await scanner.scanOnce();
+    }
+    const before = repo.listOpportunities({ limit: 500 }).filter((row) => row.strategy === 'DISLOCATION');
+    expect(before.length).toBe(0);
+
+    phase = 'spike';
+    clockNow += 5_000;
+    await scanner.scanOnce();
+
+    const rows = repo
+      .listOpportunities({ limit: 500 })
+      .filter((row) => row.strategy === 'DISLOCATION');
+    expect(rows.length).toBeGreaterThan(0);
+    const best = rows.sort(
+      (a, b) => Number(b.net_profit_bps) - Number(a.net_profit_bps),
+    )[0]!;
+    expect(best.venue_buy).toBe('mexc');
+    expect(best.venue_sell).toBe('gateio');
+    expect(Number(best.net_profit_bps)).toBeGreaterThan(500);
+    expect(Number(best.valid)).toBe(1);
+  });
+
+  it('does not emit DISLOCATION when the channel is disabled', async () => {
+    const db = openDatabase(':memory:');
+    const repo = new ArbitrageRepository(db);
+    let clockNow = now;
+    let phase: 'calm' | 'spike' = 'calm';
+    const gate = adapter('gateio', '2.500', '2.490');
+    const mexc = adapter('mexc', '2.560', '2.550');
+    mexc.fetchOrderBook = async () =>
+      phase === 'spike' ? book('mexc', '1.200', '1.190', clockNow) : book('mexc', '2.560', '2.550', clockNow);
+    gate.fetchOrderBook = async () => book('gateio', '2.500', '2.490', clockNow);
+    const scanner = new ScannerService({
+      venues: [
+        { adapter: gate, health: new VenueHealthTracker(), markets: [] },
+        { adapter: mexc, health: new VenueHealthTracker(), markets: [] },
+      ],
+      repository: repo,
+      settings: {
+        minProfitUsd: new Decimal('0.01'),
+        safetyBufferBps: new Decimal(2),
+        minNetProfitBps: new Decimal(5),
+        maxOrderbookAgeMs: 20_000,
+        maxSlippageBps: new Decimal(50),
+        maxGasCostUsd: new Decimal('0.50'),
+        maxTransferTaxBps: new Decimal(0),
+      },
+      quoteCurrency: 'USDT',
+      baseAssets: ['CAKE'],
+      requestedNotional: new Decimal(10),
+      orderBookDepth: 50,
+      maxTriangularPaths: 0,
+      persistSnapshots: false,
+      paperSimulation: false,
+      clock: () => clockNow,
+    });
+    await scanner.initialize();
+    for (let i = 0; i < 5; i += 1) {
+      clockNow += 5_000;
+      await scanner.scanOnce();
+    }
+    phase = 'spike';
+    clockNow += 5_000;
+    await scanner.scanOnce();
+    const rows = repo
+      .listOpportunities({ limit: 500 })
+      .filter((row) => row.strategy === 'DISLOCATION');
+    expect(rows.length).toBe(0);
+  });
+});

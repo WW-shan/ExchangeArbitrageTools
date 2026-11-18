@@ -65,6 +65,15 @@ export interface ScannerConfig {
   makerFillProbability: Decimal;
   maxPriceDeviationBps: Decimal;
   suspiciousSpreadBps: Decimal;
+  /** Emit DISLOCATION signals for one-venue spikes. */
+  dislocationEnabled: boolean;
+  dislocationMinBps: Decimal;
+  dislocationMinVenueDeviationBps: Decimal;
+  dislocationMaxCounterDeviationBps: Decimal;
+  dislocationBaselineWindowMs: number;
+  dislocationBaselineCapacity: number;
+  dislocationMinBaselineSamples: number;
+  dislocationMinNotionalUsd: Decimal;
   maxPairSkewMs: number;
   minReliabilityScore: Decimal;
   scanIntervalMs: number;
@@ -343,6 +352,22 @@ export function loadConfig(path = 'config/default.toml'): AppConfig {
       makerFillProbability: decimalValue(scanner, 'maker_fill_probability', '0.5'),
       maxPriceDeviationBps: decimalValue(scanner, 'max_price_deviation_bps', '0'),
       suspiciousSpreadBps: decimalValue(scanner, 'suspicious_spread_bps', '0'),
+      dislocationEnabled: booleanValue(scanner, 'dislocation_enabled', false),
+      dislocationMinBps: decimalValue(scanner, 'dislocation_min_bps', '500'),
+      dislocationMinVenueDeviationBps: decimalValue(
+        scanner,
+        'dislocation_min_venue_deviation_bps',
+        '300',
+      ),
+      dislocationMaxCounterDeviationBps: decimalValue(
+        scanner,
+        'dislocation_max_counter_deviation_bps',
+        '150',
+      ),
+      dislocationBaselineWindowMs: numberValue(scanner, 'dislocation_baseline_window_ms', 300_000),
+      dislocationBaselineCapacity: numberValue(scanner, 'dislocation_baseline_capacity', 61),
+      dislocationMinBaselineSamples: numberValue(scanner, 'dislocation_min_baseline_samples', 5),
+      dislocationMinNotionalUsd: decimalValue(scanner, 'dislocation_min_notional_usd', '3'),
       maxPairSkewMs: numberValue(scanner, 'max_pair_skew_ms', 0),
       minReliabilityScore: decimalValue(scanner, 'min_reliability_score', '0'),
       scanIntervalMs: numberValue(scanner, 'scan_interval_ms', 5000),

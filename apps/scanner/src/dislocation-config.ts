@@ -1,4 +1,4 @@
-﻿import { readFileSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import { Decimal } from '@arb/core';
 import { parse } from 'smol-toml';
 
@@ -23,6 +23,12 @@ export interface DislocationConfig {
     staleMs: number;
     /** Quote volume that must accumulate before a market counts as live. */
     minQuoteVolumeDelta: Decimal;
+    /**
+     * Fraction of the venue's own 24h turnover rate that must be observed.
+     * This is what keeps thin-but-live books eligible; an absolute floor
+     * alone permanently excludes them.
+     */
+    minTurnoverFraction: Decimal;
     /** How long to observe before the volume verdict is trusted. */
     activityWarmupMs: number;
   };
@@ -122,7 +128,8 @@ export function loadDislocationConfig(path: string): DislocationConfig {
     liveness: {
       maxRepeatCount: Math.max(0, numberValue(liveness, 'max_repeat_count', 8)),
       staleMs: Math.max(1000, numberValue(liveness, 'stale_ms', 300_000)),
-      minQuoteVolumeDelta: decimalValue(liveness, 'min_quote_volume_delta_usd', '10'),
+      minQuoteVolumeDelta: decimalValue(liveness, 'min_quote_volume_delta_usd', '0'),
+      minTurnoverFraction: decimalValue(liveness, 'min_turnover_fraction', '0.3'),
       activityWarmupMs: Math.max(0, numberValue(liveness, 'activity_warmup_ms', 60_000)),
     },
     sampling: {

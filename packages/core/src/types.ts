@@ -1,6 +1,6 @@
 import type { Decimal } from 'decimal.js';
 
-export type StrategyId = 'S1' | 'S2' | 'S3' | 'S4';
+export type StrategyId = 'S1' | 'S2' | 'S3' | 'S4' | 'DISLOCATION';
 export type VenueTier = 'S' | 'A' | 'B' | 'C';
 export type HealthState = 'A' | 'B' | 'C' | 'D';
 export type OrderSide = 'buy' | 'sell';

@@ -238,6 +238,17 @@ async function main(): Promise<void> {
     maxSizingCandidatesPerCycle: config.scanner.maxSizingCandidatesPerCycle,
     sizingSamples: config.scanner.sizingSamples,
     persistSnapshots: config.scanner.persistSnapshots,
+    dislocationEnabled: config.scanner.dislocationEnabled,
+    dislocationSettings: {
+      minDislocationBps: config.scanner.dislocationMinBps,
+      minVenueDeviationBps: config.scanner.dislocationMinVenueDeviationBps,
+      maxCounterDeviationBps: config.scanner.dislocationMaxCounterDeviationBps,
+      maxQuoteAgeMs: config.scanner.maxOrderbookAgeMs,
+      maxBaselineAgeMs: config.scanner.dislocationBaselineWindowMs,
+      minBaselineSamples: config.scanner.dislocationMinBaselineSamples,
+      maxRepeatCount: 8,
+    },
+    dislocationMinNotional: config.scanner.dislocationMinNotionalUsd,
   });
   const discovered = await scanner.initialize();
   console.log('market discovery', discovered);

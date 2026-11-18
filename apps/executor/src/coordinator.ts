@@ -327,7 +327,7 @@ function routeIsConsistent(request: LiveExecutionRequest): boolean {
   const storedBuySymbol = opportunity.metadata?.buySymbol;
   const storedSellSymbol = opportunity.metadata?.sellSymbol;
   return (
-    opportunity.strategy === 'S1' &&
+    (opportunity.strategy === 'S1' || opportunity.strategy === 'DISLOCATION') &&
     request.buy.adapter.venueId === opportunity.venueBuy &&
     request.sell.adapter.venueId === opportunity.venueSell &&
     request.buy.market.venueId === request.buy.adapter.venueId &&
@@ -341,6 +341,13 @@ function routeIsConsistent(request: LiveExecutionRequest): boolean {
     storedMultiplierMatches(request.buy.market, opportunity.metadata?.buyBaseMultiplier) &&
     storedMultiplierMatches(request.sell.market, opportunity.metadata?.sellBaseMultiplier)
   );
+}
+
+function executionStrategy(request: LiveExecutionRequest): string {
+  if (request.intent === 'inventory_preparation') return 'PREP';
+  // A dislocation is its own execution record so spike-trade P&L can be
+  // measured separately from normal S1 rotation.
+  return request.opportunity.strategy === 'DISLOCATION' ? 'DISLOCATION' : 'S1';
 }
 
 export class CexLiveExecutor {
@@ -572,14 +579,24 @@ export class CexLiveExecutor {
       transition('PREFLIGHT_FAILED');
       return outcome('PREFLIGHT_FAILED');
     }
+    // A dislocation is by definition a price far from the reference mid and a
+    // spread far above the S1 suspicious-spread ceiling. Those two guards exist
+    // to catch broken books during normal S1; the dislocation detector has
+    // already proved one venue moved while the other stayed on its own
+    // baseline. Keeping them here would reject every real spike at preflight,
+    // which is exactly what happened to IR/USDT (1,213 bps, 3.3 minutes).
+    const dislocation = request.opportunity.strategy === 'DISLOCATION';
+    const baseSettings = dislocation
+      ? { ...this.#settings, suspiciousSpreadBps: ZERO, maxPriceDeviationBps: ZERO }
+      : this.#settings;
     const evaluationSettings = preparation
       ? {
-          ...this.#settings,
+          ...baseSettings,
           safetyBufferBps: ZERO,
           minProfitUsd: ZERO,
           minNetProfitBps: ZERO,
         }
-      : this.#settings;
+      : baseSettings;
     const evaluationInput = {
       base: buyEvalMarket.base,
       quote: buyEvalMarket.quote,
@@ -764,7 +781,7 @@ export class CexLiveExecutor {
     }
 
     const preflight = {
-      strategy: intent === 'inventory_preparation' ? 'PREP' : 'S1',
+      strategy: executionStrategy(request),
       intent,
       ...(preparation
         ? {
@@ -869,7 +886,7 @@ export class CexLiveExecutor {
     };
 
     const executionId = this.#repository.createExecution({
-      strategy: intent === 'inventory_preparation' ? 'PREP' : 'S1',
+      strategy: executionStrategy(request),
       batchId: request.batchId,
       status: 'PREFLIGHT_CHECK',
       plannedNotional: refreshed.requestedNotional,
@@ -2021,11 +2038,13 @@ export class CexLiveExecutor {
       (options.purpose === 'post_fill'
         ? POST_FILL_BOOK_MAX_AGE_MS
         : (this.#settings.preflightHotBookMaxAgeMs ?? 750));
-    const hot = options.purpose === 'post_fill' ? undefined : this.#repository.latestHotOrderbook(
-      venue.adapter.venueId,
-      venue.market.exchangeSymbol,
-      { maxAgeMs: hotBookMaxAgeMs, now: observedAt },
-    );
+    const hot =
+      options.purpose === 'post_fill'
+        ? undefined
+        : this.#repository.latestHotOrderbook(venue.adapter.venueId, venue.market.exchangeSymbol, {
+            maxAgeMs: hotBookMaxAgeMs,
+            now: observedAt,
+          });
     if (hot) {
       const hotValidation = validateOrderBook(hot, {
         expectedVenueId: venue.adapter.venueId,
@@ -2043,11 +2062,13 @@ export class CexLiveExecutor {
         };
       }
     }
-    const cached = options.purpose === 'post_fill' ? undefined : this.#repository.latestOrderbook(
-      venue.adapter.venueId,
-      venue.market.exchangeSymbol,
-      { maxAgeMs: hotBookMaxAgeMs, now: observedAt },
-    );
+    const cached =
+      options.purpose === 'post_fill'
+        ? undefined
+        : this.#repository.latestOrderbook(venue.adapter.venueId, venue.market.exchangeSymbol, {
+            maxAgeMs: hotBookMaxAgeMs,
+            now: observedAt,
+          });
     if (cached) {
       const cachedValidation = validateOrderBook(cached, {
         expectedVenueId: venue.adapter.venueId,
@@ -2100,11 +2121,10 @@ export class CexLiveExecutor {
         );
         const candidates = [
           fallback,
-          this.#repository.latestOrderbook(
-            venue.adapter.venueId,
-            venue.market.exchangeSymbol,
-            { maxAgeMs: POST_FILL_BOOK_MAX_AGE_MS, now: this.#clock() },
-          ),
+          this.#repository.latestOrderbook(venue.adapter.venueId, venue.market.exchangeSymbol, {
+            maxAgeMs: POST_FILL_BOOK_MAX_AGE_MS,
+            now: this.#clock(),
+          }),
         ].filter((book): book is NonNullable<typeof book> => book !== undefined);
         for (const candidateBook of candidates) {
           const fallbackValidation = validateOrderBook(candidateBook, {
@@ -2729,6 +2749,3 @@ export class CexLiveExecutor {
     return prices.reduce((highest, price) => (price.gt(highest) ? price : highest));
   }
 }
-
-
-

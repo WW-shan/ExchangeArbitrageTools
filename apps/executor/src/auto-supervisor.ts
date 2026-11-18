@@ -1167,12 +1167,17 @@ export async function runAutoRotationSupervisor(
     for (const [opportunityId, until] of failedOpportunityUntil) {
       if (until <= now) failedOpportunityUntil.delete(opportunityId);
     }
+    // A confirmed dislocation is executable through the same two-leg state
+    // machine: buy the venue whose ask spiked, sell into the venue still on
+    // its baseline. Ask for both strategies so a spike is not silently
+    // filtered out by the S1-only query.
     const candidates = repository
       .recentValidS1Opportunities({
         now,
         maxAgeMs: config.autoRotation.maxSignalAgeMs,
         instruments,
         maxCandidates: 200,
+        strategies: ['S1', 'DISLOCATION'],
       })
       .filter((candidate) => (failedOpportunityUntil.get(candidate.id) ?? 0) <= now);
     // Rank by profit, but treat signals inside a small bps band as tied and

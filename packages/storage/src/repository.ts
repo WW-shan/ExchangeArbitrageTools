@@ -389,7 +389,13 @@ function stringColumn(row: Record<string, unknown>, key: string): string {
 
 function opportunityFromRow(row: Record<string, unknown>): OpportunityResult {
   const strategy = stringColumn(row, 'strategy');
-  if (strategy !== 'S1' && strategy !== 'S2' && strategy !== 'S3' && strategy !== 'S4') {
+  if (
+    strategy !== 'S1' &&
+    strategy !== 'S2' &&
+    strategy !== 'S3' &&
+    strategy !== 'S4' &&
+    strategy !== 'DISLOCATION'
+  ) {
     throw new Error('stored opportunity strategy is invalid');
   }
   const instrumentBuy = stringColumn(row, 'instrument_buy');
@@ -1642,6 +1648,7 @@ export class ArbitrageRepository {
     maxAgeMs: number;
     instruments?: readonly string[];
     maxCandidates?: number;
+    strategies?: readonly string[];
   }): LoadedOpportunity[] {
     return this.recentS1Opportunities({ ...options, validOnly: true });
   }
@@ -1652,6 +1659,12 @@ export class ArbitrageRepository {
     instruments?: readonly string[];
     maxCandidates?: number;
     validOnly?: boolean;
+    /**
+     * Which strategies to include. Defaults to S1 so existing callers keep
+     * their behaviour. The supervisor also asks for DISLOCATION because a
+     * confirmed spike executes through the same state machine.
+     */
+    strategies?: readonly string[];
   }): LoadedOpportunity[] {
     const { now, maxAgeMs } = options;
     if (!Number.isFinite(now) || now <= 0 || !Number.isFinite(maxAgeMs) || maxAgeMs < 0) {
@@ -1661,7 +1674,10 @@ export class ArbitrageRepository {
     const instruments = (options.instruments ?? [])
       .map((instrument) => instrument.trim().toUpperCase())
       .filter((instrument) => instrument.length > 0);
-    const params: Array<string | number> = [now - maxAgeMs, now];
+    const strategies = (options.strategies ?? ['S1'])
+      .map((strategy) => strategy.trim().toUpperCase())
+      .filter((strategy) => strategy.length > 0);
+    const params: Array<string | number> = [...strategies, now - maxAgeMs, now];
     let filter = '';
     if (instruments.length > 0) {
       filter = ` AND UPPER(instrument_buy) IN (${instruments.map(() => '?').join(',')})`;
@@ -1671,7 +1687,7 @@ export class ArbitrageRepository {
     const rows = this.db
       .prepare(
         `SELECT * FROM opportunities
-         WHERE strategy = 'S1' AND sampled_at >= ? AND sampled_at <= ?${options.validOnly ? ' AND valid = 1' : ''}${filter}
+         WHERE strategy IN (${strategies.map(() => '?').join(',')}) AND sampled_at >= ? AND sampled_at <= ?${options.validOnly ? ' AND valid = 1' : ''}${filter}
          ORDER BY sampled_at DESC, id DESC LIMIT ?`,
       )
       .all(...params) as Record<string, unknown>[];

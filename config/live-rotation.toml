@@ -49,6 +49,34 @@ max_pair_skew_ms = 5000
 min_reliability_score = '0.3'
 max_price_deviation_bps = 1000
 suspicious_spread_bps = 1000
+# Spike ("dislocation") channel.
+#
+# S1 compares two venues against each other and rejects anything above
+# suspicious_spread_bps as a broken book. A spike is a different event: one
+# venue moves away from its own trailing median while the other stays on
+# baseline. Measured 2026-11-19, IR/USDT printed 1,213 bps for 3.3 minutes and
+# produced zero S1 signals.
+#
+# DISLOCATION signals are written to the same opportunities table and go
+# through the same two-leg state machine, so every execution safeguard still
+# applies. They are only executable for bases that are also whitelisted in
+# [[auto_rotation.pairs]]; everything else is recorded and ignored by the
+# executor.
+#
+# WARD itself has never produced a spike in 25h of recorded books: of 672
+# strict cross-venue joins, 0 samples reached 300 bps. Enabling this channel
+# on WARD alone adds detection, not trades. Add a pair to run the channel for
+# real.
+dislocation_enabled = true
+dislocation_min_bps = 500
+dislocation_min_venue_deviation_bps = 300
+dislocation_max_counter_deviation_bps = 150
+dislocation_baseline_window_ms = 300000
+dislocation_baseline_capacity = 61
+dislocation_min_baseline_samples = 5
+# Gate's minimum executable notional is 3 USDT; below it the signal cannot be
+# filled even when the spread is enormous.
+dislocation_min_notional_usd = "3"
 # WARD/KAT preparation calibration is not generated yet, so keep the normal S1
 # floor until a fresh calibration exists.
 prefilter_floor_bps = -2

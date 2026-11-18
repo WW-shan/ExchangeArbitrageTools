@@ -24,6 +24,11 @@ import {
   marketExchangeBase,
   marketsShareUnderlying,
   normalizeBookForMarket,
+  BookLivenessTracker,
+  RollingMedian,
+  detectDislocation,
+  evaluateDislocationOpportunity,
+  type DislocationSettings,
   type CostSettings,
   type CurrencyMetadata,
   type HealthState,
@@ -192,6 +197,11 @@ export interface ScannerServiceOptions {
   sizingStep?: Decimal;
   maxSizingCandidatesPerCycle?: number;
   sizingSamples?: number;
+  /** Detect one-venue spikes and emit DISLOCATION signals. */
+  dislocationEnabled?: boolean;
+  dislocationSettings?: DislocationSettings;
+  /** Minimum notional a dislocation must be able to fill. */
+  dislocationMinNotional?: Decimal;
   persistSnapshots: boolean;
   paperSimulation?: boolean;
   episodeGapMs?: number;
@@ -261,6 +271,11 @@ export class ScannerService {
   readonly #sizingStep: Decimal;
   readonly #maxSizingCandidatesPerCycle: number;
   readonly #sizingSamples: number;
+  readonly #dislocationEnabled: boolean;
+  readonly #dislocationSettings: DislocationSettings;
+  readonly #dislocationMinNotional: Decimal;
+  readonly #dislocationBaselines = new Map<string, RollingMedian>();
+  readonly #liveness: BookLivenessTracker;
   readonly #persistSnapshots: boolean;
   readonly #paperSimulation: boolean;
   readonly #episodeGapMs: number;
@@ -394,6 +409,21 @@ export class ScannerService {
     this.#sizingStep = options.sizingStep ?? new Decimal('0.01');
     this.#maxSizingCandidatesPerCycle = Math.max(0, options.maxSizingCandidatesPerCycle ?? 40);
     this.#sizingSamples = Math.max(4, options.sizingSamples ?? 16);
+    this.#dislocationEnabled = options.dislocationEnabled ?? false;
+    this.#dislocationSettings = options.dislocationSettings ?? {
+      minDislocationBps: new Decimal(500),
+      minVenueDeviationBps: new Decimal(300),
+      maxCounterDeviationBps: new Decimal(150),
+      maxQuoteAgeMs: 30_000,
+      maxBaselineAgeMs: 300_000,
+      minBaselineSamples: 5,
+      maxRepeatCount: 8,
+    };
+    this.#dislocationMinNotional = options.dislocationMinNotional ?? new Decimal(3);
+    this.#liveness = new BookLivenessTracker({
+      maxRepeatCount: this.#dislocationSettings.maxRepeatCount,
+      staleMs: Math.max(60_000, this.#dislocationSettings.maxBaselineAgeMs),
+    });
     this.#persistSnapshots = options.persistSnapshots;
     this.#paperSimulation = options.paperSimulation ?? true;
     this.#episodeGapMs = options.episodeGapMs ?? 15_000;
@@ -706,6 +736,146 @@ export class ScannerService {
     return summary;
   }
 
+  /**
+   * Spike ("dislocation") detection on the books this cycle already fetched.
+   *
+   * S1 compares two venues against each other. A spike is different: one venue
+   * moves away from its own trailing median while the other stays put. Running
+   * this on books we already have costs no extra requests.
+   *
+   * Measured 2026-11-19 on Gate x Bitget: IR/USDT printed 1,213 bps for 3.3
+   * minutes and produced zero S1 signals, because S1 rejects anything above
+   * suspicious_spread_bps (1000) as a broken book. That is exactly the
+   * population this pass exists to capture.
+   */
+  private evaluateDislocationGroup(input: {
+    quote: string;
+    base: string;
+    prepared: Array<{
+      venue: ScannerVenue;
+      market: MarketMetadata;
+      fetched: FetchedBook;
+      evalMarket: MarketMetadata;
+      evalBook: OrderBookSnapshot;
+    }>;
+    balances: ReturnType<ArbitrageRepository['latestBalances']>;
+    summary: ScanSummary;
+    now: number;
+  }): void {
+    if (!this.#dislocationEnabled) return;
+    const settings = this.#dislocationSettings;
+    const observed: Array<{
+      venueId: string;
+      symbol: string;
+      bid: Decimal;
+      ask: Decimal;
+      at: number;
+      repeatCount: number;
+      entry: (typeof input.prepared)[number];
+    }> = [];
+    for (const entry of input.prepared) {
+      const bid = entry.fetched.book.bids[0]?.price;
+      const ask = entry.fetched.book.asks[0]?.price;
+      if (!bid || !ask || !bid.gt(0) || !ask.gt(0)) continue;
+      const venueId = entry.venue.adapter.venueId;
+      const symbol = entry.market.exchangeSymbol;
+      const key = venueId + '|' + symbol;
+      const mid = bid.plus(ask).div(2);
+      const tracker = this.#dislocationBaselines.get(key) ?? new RollingMedian(61);
+      tracker.push(mid, input.now);
+      this.#dislocationBaselines.set(key, tracker);
+      const live = this.#liveness.observe(venueId, symbol, bid.toFixed(), ask.toFixed(), input.now);
+      observed.push({
+        venueId,
+        symbol,
+        bid,
+        ask,
+        at: entry.fetched.book.fetchedAt,
+        repeatCount: live.repeatCount,
+        entry,
+      });
+    }
+    if (observed.length < 2) return;
+
+    for (let i = 0; i < observed.length; i += 1) {
+      for (let j = i + 1; j < observed.length; j += 1) {
+        const left = observed[i]!;
+        const right = observed[j]!;
+        const leftBaseline = this.#dislocationBaselines
+          .get(left.venueId + '|' + left.symbol)
+          ?.baseline(input.now, settings.maxBaselineAgeMs);
+        const rightBaseline = this.#dislocationBaselines
+          .get(right.venueId + '|' + right.symbol)
+          ?.baseline(input.now, settings.maxBaselineAgeMs);
+        const signal = detectDislocation({
+          left: {
+            venueId: left.venueId,
+            bid: left.bid,
+            ask: left.ask,
+            timestamp: left.at,
+            repeatCount: left.repeatCount,
+          },
+          right: {
+            venueId: right.venueId,
+            bid: right.bid,
+            ask: right.ask,
+            timestamp: right.at,
+            repeatCount: right.repeatCount,
+          },
+          ...(leftBaseline ? { leftBaseline } : {}),
+          ...(rightBaseline ? { rightBaseline } : {}),
+          now: input.now,
+          settings,
+        });
+        if (!signal.isDislocation) continue;
+
+        const buyEntry = signal.venueBuy === left.venueId ? left : right;
+        const sellEntry = signal.venueSell === left.venueId ? left : right;
+        const cap = this.balanceCap(
+          input.balances,
+          buyEntry.venueId,
+          sellEntry.venueId,
+          sellEntry.entry.market,
+          buyEntry.entry.market,
+          input.quote,
+          buyEntry.ask,
+        );
+        // Sized from live balances, exactly like S1. Without base inventory on
+        // the sell venue the trade is not executable: the asset cannot be moved
+        // between venues to cover the sale.
+        const notional = cap.maxNotional ?? this.#dislocationMinNotional;
+        if (notional.lt(this.#dislocationMinNotional)) continue;
+
+        const opportunity = evaluateDislocationOpportunity({
+          base: input.base,
+          quote: input.quote,
+          buyMarket: buyEntry.entry.evalMarket,
+          sellMarket: sellEntry.entry.evalMarket,
+          buyBook: buyEntry.entry.evalBook,
+          sellBook: sellEntry.entry.evalBook,
+          signal,
+          requestedNotional: notional,
+          settings: this.#settings,
+          now: input.now,
+        });
+        opportunity.metadata = {
+          ...(opportunity.metadata ?? {}),
+          buySymbol: buyEntry.entry.market.exchangeSymbol,
+          sellSymbol: sellEntry.entry.market.exchangeSymbol,
+          buyExchangeBase: marketExchangeBase(buyEntry.entry.market),
+          sellExchangeBase: marketExchangeBase(sellEntry.entry.market),
+          buyBaseMultiplier: marketBaseMultiplier(buyEntry.entry.market).toFixed(),
+          sellBaseMultiplier: marketBaseMultiplier(sellEntry.entry.market).toFixed(),
+        };
+        this.record(opportunity, input.summary);
+        if (opportunity.valid) {
+          this.promoteHot(buyEntry.entry.venue, buyEntry.entry.market, input.now);
+          this.promoteHot(sellEntry.entry.venue, sellEntry.entry.market, input.now);
+        }
+      }
+    }
+  }
+
   private async evaluateS1Group(input: {
     quote: string;
     base: string;
@@ -735,6 +905,14 @@ export class ScannerService {
       evalMarket: canonicalMarketForEvaluation(entry.market),
       evalBook: normalizeBookForMarket(entry.fetched.book, entry.market),
     }));
+    this.evaluateDislocationGroup({
+      quote,
+      base,
+      prepared,
+      balances,
+      summary,
+      now: this.#clock(),
+    });
     const baseKey = `${quote}|${base}`;
     const bookFingerprint = entries
       .map(
