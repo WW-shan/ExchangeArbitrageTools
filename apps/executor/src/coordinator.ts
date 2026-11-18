@@ -280,6 +280,15 @@ export interface CexLiveExecutorOptions {
   clock?: () => number;
 }
 
+/**
+ * How stale a sell-side book may be when we are about to close an open position.
+ *
+ * The strategy's whole window is ~2.6 s (median profitable episode) and our
+ * round trip is also ~2.6 s. Reusing a 3 s cached book at the moment of the
+ * hedge means trading on a market we know has moved.
+ */
+const POST_FILL_BOOK_MAX_AGE_MS = 400;
+
 function normalizedInstrument(market: MarketMetadata): string {
   return `${market.base}/${market.quote}`.trim().toUpperCase();
 }
@@ -1045,7 +1054,10 @@ export class CexLiveExecutor {
     const buyCanonicalAverage = first.averagePrice
       ? canonicalPriceFromExchange(first.averagePrice, buyMultiplier)
       : refreshed.expectedBuyPrice;
-    const secondBookResult = await this.fetchFreshBook(request.sell);
+    const secondBookResult = await this.fetchFreshBook(request.sell, {
+      purpose: 'post_fill',
+      maxAgeMs: POST_FILL_BOOK_MAX_AGE_MS,
+    });
     if (!secondBookResult.ok) {
       this.recordUnhedgedInventory(
         request,
@@ -1991,10 +2003,25 @@ export class CexLiveExecutor {
       : { ok: false, reasons };
   }
 
-  private async fetchFreshBook(venue: ExecutionVenue): Promise<FreshBookResult> {
+  private async fetchFreshBook(
+    venue: ExecutionVenue,
+    options: { maxAgeMs?: number; purpose?: 'preflight' | 'post_fill' } = {},
+  ): Promise<FreshBookResult> {
     const observedAt = this.#clock();
-    const hotBookMaxAgeMs = this.#settings.preflightHotBookMaxAgeMs ?? 750;
-    const hot = this.#repository.latestHotOrderbook(
+    // Preflight may reuse a cached book to stay fast. Re-fetching after leg 1
+    // has filled is different: the position is already open, and a cached book
+    // describes a market that has moved on.
+    //
+    // Measured 2026-11-18: the post-fill sell used a book 1030-1581 ms old,
+    // then FOK'd 4138 WARD into it and filled zero while that cached bid still
+    // showed 12391 WARD. A 1 USDT FOK probe against a live book filled 5/5 in
+    // ~750 ms, so the order type was never the problem - the book was.
+    const hotBookMaxAgeMs =
+      options.maxAgeMs ??
+      (options.purpose === 'post_fill'
+        ? POST_FILL_BOOK_MAX_AGE_MS
+        : (this.#settings.preflightHotBookMaxAgeMs ?? 750));
+    const hot = options.purpose === 'post_fill' ? undefined : this.#repository.latestHotOrderbook(
       venue.adapter.venueId,
       venue.market.exchangeSymbol,
       { maxAgeMs: hotBookMaxAgeMs, now: observedAt },
@@ -2016,7 +2043,7 @@ export class CexLiveExecutor {
         };
       }
     }
-    const cached = this.#repository.latestOrderbook(
+    const cached = options.purpose === 'post_fill' ? undefined : this.#repository.latestOrderbook(
       venue.adapter.venueId,
       venue.market.exchangeSymbol,
       { maxAgeMs: hotBookMaxAgeMs, now: observedAt },
@@ -2061,6 +2088,42 @@ export class CexLiveExecutor {
           }
         : { ok: false, reasons: validation.reasons };
     } catch (error) {
+      // REST is the only acceptable source for a post-fill decision, but a
+      // failed REST call must not strand a naked position. Fall back to a
+      // *fresh* cached book, and only within the strict window: a 3 s old
+      // snapshot is what caused the original zero-fill.
+      if (options.purpose === 'post_fill') {
+        const fallback = this.#repository.latestHotOrderbook(
+          venue.adapter.venueId,
+          venue.market.exchangeSymbol,
+          { maxAgeMs: POST_FILL_BOOK_MAX_AGE_MS, now: this.#clock() },
+        );
+        const candidates = [
+          fallback,
+          this.#repository.latestOrderbook(
+            venue.adapter.venueId,
+            venue.market.exchangeSymbol,
+            { maxAgeMs: POST_FILL_BOOK_MAX_AGE_MS, now: this.#clock() },
+          ),
+        ].filter((book): book is NonNullable<typeof book> => book !== undefined);
+        for (const candidateBook of candidates) {
+          const fallbackValidation = validateOrderBook(candidateBook, {
+            expectedVenueId: venue.adapter.venueId,
+            expectedSymbol: venue.market.exchangeSymbol,
+            maxAgeMs: POST_FILL_BOOK_MAX_AGE_MS,
+            now: this.#clock(),
+          });
+          if (fallbackValidation.valid) {
+            return {
+              ok: true,
+              book: fallbackValidation.book,
+              source: candidateBook.source === 'rest' ? 'rest' : 'snapshot',
+              ageMs: Math.max(0, this.#clock() - candidateBook.fetchedAt),
+              fetchMs: 0,
+            };
+          }
+        }
+      }
       return { ok: false, reasons: [`orderbook_fetch_failed: ${String(error)}`] };
     }
   }

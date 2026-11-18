@@ -623,7 +623,7 @@ describe('live executor safety gates', () => {
     );
     expect(result.outcome).toBe('CLOSED');
     expect(buy.state.fetchBookCalls).toBe(0);
-    expect(sell.state.fetchBookCalls).toBe(0);
+    expect(sell.state.fetchBookCalls).toBe(1);
     repo.close();
   });
 
@@ -659,12 +659,54 @@ describe('live executor safety gates', () => {
 
     expect(result.outcome).toBe('CLOSED');
     expect(buy.state.fetchBookCalls).toBe(0);
-    expect(sell.state.fetchBookCalls).toBe(0);
+    // Post-fill sell deliberately re-reads the live book.
+    expect(sell.state.fetchBookCalls).toBe(1);
     expect(result.timing).toMatchObject({
       balanceSource: 'cache',
       openOrderSource: 'cache',
       bookSources: { buy: 'hot', sell: 'hot' },
     });
+    repo.close();
+  });
+
+  it('re-fetches the sell book instead of reusing a cached one after the buy fills', async () => {
+    // Measured 2026-11-18: the post-fill sell used a book 1030-1581 ms old,
+    // FOK'd 4138 WARD into it and filled zero while that cached bid still
+    // showed 12391 WARD. A live 1 USDT FOK probe filled 5/5 in ~750 ms, so the
+    // book, not the order type, was the problem.
+    const { repo, buy, sell } = setup();
+    // Seed a "hot" book that is well inside the preflight window but far
+    // outside what a post-fill decision should accept. If the executor reuses
+    // it, the sell will be priced off a stale market.
+    repo.recordHotOrderbook({
+      venueId: 'mexc',
+      exchangeSymbol: 'CAKE/USDT',
+      fetchedAt: now,
+      asks: [{ price: new Decimal('9.000'), amount: new Decimal('100') }],
+      bids: [{ price: new Decimal('8.900'), amount: new Decimal('100') }],
+      source: 'websocket',
+    });
+    const result = await new CexLiveExecutor({
+      repository: repo,
+      gate: new ExecutionGate(limits),
+      limits,
+      liveEnabled: true,
+      settings,
+      sleep: async () => {},
+      clock: () => now,
+    }).execute(
+      request(
+        { adapter: buy.adapter, market: market('gateio'), credentials: keys, healthState: 'A' },
+        { adapter: sell.adapter, market: market('mexc'), credentials: keys, healthState: 'A' },
+      ),
+    );
+    // The sell must have read the live book (one post-fill fetch), never the
+    // cached 8.900 bid that would have produced a nonsense profit.
+    expect(sell.state.fetchBookCalls).toBeGreaterThanOrEqual(1);
+    const sellOrder = repo.db
+      .prepare("SELECT price FROM orders WHERE side = 'sell' ORDER BY id DESC LIMIT 1")
+      .get() as { price: string } | undefined;
+    expect(Number(sellOrder?.price)).toBeLessThan(3);
     repo.close();
   });
 
