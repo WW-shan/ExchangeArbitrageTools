@@ -21,6 +21,10 @@ export interface DislocationConfig {
   liveness: {
     maxRepeatCount: number;
     staleMs: number;
+    /** Quote volume that must accumulate before a market counts as live. */
+    minQuoteVolumeDelta: Decimal;
+    /** How long to observe before the volume verdict is trusted. */
+    activityWarmupMs: number;
   };
   sampling: {
     tickerIntervalMs: number;
@@ -118,6 +122,8 @@ export function loadDislocationConfig(path: string): DislocationConfig {
     liveness: {
       maxRepeatCount: Math.max(0, numberValue(liveness, 'max_repeat_count', 8)),
       staleMs: Math.max(1000, numberValue(liveness, 'stale_ms', 300_000)),
+      minQuoteVolumeDelta: decimalValue(liveness, 'min_quote_volume_delta_usd', '10'),
+      activityWarmupMs: Math.max(0, numberValue(liveness, 'activity_warmup_ms', 60_000)),
     },
     sampling: {
       tickerIntervalMs: Math.max(500, numberValue(sampling, 'ticker_interval_ms', 5000)),
@@ -135,3 +141,4 @@ export function loadDislocationConfig(path: string): DislocationConfig {
   if (proxyUrl) config.proxyUrl = proxyUrl;
   return config;
 }
+

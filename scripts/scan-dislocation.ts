@@ -18,6 +18,7 @@ import { resolve } from 'node:path';
 import {
   BookLivenessTracker,
   Decimal,
+  MarketActivityTracker,
   RollingMedian,
   assessTransferability,
   detectDislocation,
@@ -102,6 +103,12 @@ const states = new Map<string, VenueState>();
 const liveness = new BookLivenessTracker({
   maxRepeatCount: config.liveness.maxRepeatCount,
   staleMs: config.liveness.staleMs,
+});
+// Price alone cannot separate "quiet" from "dead". Volume can: a market whose
+// 24h quote volume moves between snapshots has had a trade.
+const activity = new MarketActivityTracker({
+  minQuoteVolumeDelta: config.liveness.minQuoteVolumeDelta,
+  minSpanMs: config.liveness.activityWarmupMs,
 });
 
 interface Episode {
@@ -265,6 +272,7 @@ async function scanRound(round: number, bases: readonly string[]): Promise<void>
       });
       observations.set(key, rows);
       liveness.observe(venueId, ticker.exchangeSymbol, ticker.bid.toString(), ticker.ask.toString(), now);
+      activity.observe(venueId, ticker.exchangeSymbol, ticker.quoteVolume, now);
       const baselines = state.baselines.get(ticker.exchangeSymbol) ?? new RollingMedian(config.detection.baselineCapacity);
       baselines.push(ticker.bid.plus(ticker.ask).div(2), now);
       state.baselines.set(ticker.exchangeSymbol, baselines);
@@ -302,6 +310,14 @@ async function scanRound(round: number, bases: readonly string[]): Promise<void>
         }
         if (liveness.isFrozen(right.venueId, right.symbol)) {
           bump('rejected_frozen');
+          continue;
+        }
+        // Volume is the tiebreaker: a frozen book with no volume is dead, not
+        // merely quiet. Skip the pair only once the tracker has a verdict.
+        const leftActivity = activity.verdict(left.venueId, left.symbol);
+        const rightActivity = activity.verdict(right.venueId, right.symbol);
+        if (leftActivity === 'quiet' || rightActivity === 'quiet') {
+          bump('rejected_no_volume');
           continue;
         }
         const signal = detectDislocation({
@@ -405,8 +421,14 @@ async function scanRound(round: number, bases: readonly string[]): Promise<void>
       const frozen = [...states.get(venueId)?.markets.values() ?? []].filter((market) =>
         liveness.isFrozen(venueId, market.symbol),
       ).length;
+      let quiet = 0;
+      for (const market of states.get(venueId)?.markets.values() ?? []) {
+        if (activity.verdict(venueId, market.symbol) === 'quiet') quiet += 1;
+      }
+      activity.prune(now, 30 * 60_000);
       console.log(
-        `feed ${venueId.padEnd(7)} lagP50=${median}ms lagMax=${delay.lastLagMs}ms frozenBooks=${frozen}/${states.get(venueId)?.markets.size ?? 0}`,
+        `feed ${venueId.padEnd(7)} lagP50=${median}ms lagMax=${delay.lastLagMs}ms ` +
+          `frozenBooks=${frozen}/${states.get(venueId)?.markets.size ?? 0} noVolume=${quiet}`,
       );
     }
     const top = [...episodes.values()]
@@ -471,6 +493,7 @@ try {
 } finally {
   await Promise.all([...adapters.values()].map((adapter) => adapter.close?.().catch(() => undefined)));
 }
+
 
 
 

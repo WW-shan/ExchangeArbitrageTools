@@ -49,6 +49,13 @@ max_quote_age_ms = 30000
 max_repeat_count = 8
 # Forget venues that stopped reporting.
 stale_ms = 300000
+# Price alone cannot tell a quiet book from a dead one. A market whose 24h
+# quote volume has not moved by this much is treated as not trading. Measured
+# on Gate/Bitget REST polling: a real market moves well over 10 USDT per
+# minute even on a thin pair.
+min_quote_volume_delta_usd = "10"
+# How long to observe before the volume verdict is trusted.
+activity_warmup_ms = 60000
 
 [sampling]
 # Coarse pass over every pair using one ticker request per venue.
@@ -67,3 +74,4 @@ min_executable_notional_usd = "3"
 dir = "data/dislocation"
 # Write a snapshot every round and a summary every N rounds.
 summary_every_rounds = 12
+
