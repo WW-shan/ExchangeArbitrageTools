@@ -1,4 +1,4 @@
-﻿export const MIGRATIONS = [
+export const MIGRATIONS = [
   {
     version: 1,
     name: 'initial_schema',

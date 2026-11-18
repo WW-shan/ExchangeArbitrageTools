@@ -1,4 +1,4 @@
-﻿import { getAddress } from 'ethers';
+import { getAddress } from 'ethers';
 
 export interface BscTokenInfo {
   contractAddress: string;

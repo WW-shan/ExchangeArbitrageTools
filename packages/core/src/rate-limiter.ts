@@ -1,4 +1,4 @@
-﻿export interface RateLimitConfig {
+export interface RateLimitConfig {
   requestsPerSecond: number;
   burst: number;
   costPublic: number;

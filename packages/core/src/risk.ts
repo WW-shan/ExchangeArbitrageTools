@@ -1,4 +1,4 @@
-﻿import { Decimal, ZERO } from './money.js';
+import { Decimal, ZERO } from './money.js';
 
 export interface RiskLimits {
   maxOrderNotional: Decimal;

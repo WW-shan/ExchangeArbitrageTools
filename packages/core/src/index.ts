@@ -1,4 +1,4 @@
-﻿export * from './types.js';
+export * from './types.js';
 export * from './money.js';
 export * from './optimal.js';
 export * from './precision.js';
@@ -19,3 +19,4 @@ export * from './recovery.js';
 export * from './rebalance.js';
 export * from './inventory-netting.js';
 export * from './rotation.js';
+export * from './asset-identity.js';

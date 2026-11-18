@@ -1,4 +1,4 @@
-﻿export interface StartupRecoveryInput {
+export interface StartupRecoveryInput {
   openExecutions: number;
   unresolvedLegs: number;
   persistedKillSwitch: boolean;

@@ -946,6 +946,7 @@ export class CcxtCexAdapter implements CexAdapter {
           withdraw?: boolean;
           deposit?: boolean;
           fee?: unknown;
+          address?: unknown;
           limits?: {
             withdraw?: { min?: unknown };
             deposit?: { min?: unknown };
@@ -958,6 +959,9 @@ export class CcxtCexAdapter implements CexAdapter {
         return {
           network: normalizedNetwork,
           nativeName: network,
+          ...(typeof networkData.address === 'string' && networkData.address.trim().length > 0
+            ? { address: networkData.address.trim() }
+            : {}),
           withdrawEnabled: Boolean(networkData.withdraw),
           depositEnabled: Boolean(networkData.deposit),
           ...(withdrawFee ? { withdrawFee } : {}),

@@ -1,4 +1,4 @@
-﻿import { buildServer } from './server.js';
+import { buildServer } from './server.js';
 
 async function main(): Promise<void> {
   const host = process.env.ARB_API_HOST ?? '127.0.0.1';

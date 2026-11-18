@@ -1,4 +1,4 @@
-﻿# Arbitrage runtime configuration
+# Arbitrage runtime configuration
 # All monetary values are decimal strings. Never place credentials in this file.
 
 [scanner]

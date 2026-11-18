@@ -1,0 +1,7 @@
+﻿node_modules
+target
+dist
+*.exe
+cases.jsonl
+.rust-anything
+*.bak

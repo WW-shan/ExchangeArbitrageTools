@@ -1,4 +1,4 @@
-﻿import type { HealthState } from './types.js';
+import type { HealthState } from './types.js';
 
 export interface HealthSample {
   at: number;

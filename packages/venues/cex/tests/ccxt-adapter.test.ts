@@ -1,4 +1,4 @@
-﻿import { describe, expect, it } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import ccxt from 'ccxt';
 import { Decimal } from 'decimal.js';
 import {

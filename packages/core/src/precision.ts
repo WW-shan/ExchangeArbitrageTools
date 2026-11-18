@@ -1,4 +1,4 @@
-﻿import { Decimal } from './money.js';
+import { Decimal } from './money.js';
 
 export interface PrecisionRules {
   amountStep?: Decimal;

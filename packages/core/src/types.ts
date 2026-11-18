@@ -121,6 +121,7 @@ export interface OhlcvCandle {
 export interface CurrencyNetwork {
   network: string;
   nativeName: string;
+  address?: string;
   withdrawEnabled: boolean;
   depositEnabled: boolean;
   withdrawFee?: Decimal;

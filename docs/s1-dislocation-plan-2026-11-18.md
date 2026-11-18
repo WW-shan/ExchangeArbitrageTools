@@ -1,4 +1,4 @@
-﻿# 插针套利改造计划（Dislocation Strategy）
+# 插针套利改造计划（Dislocation Strategy）
 
 > 依据：@zx_hey 2026-11-18 三条搬砖推文 + 本仓库 24h 实盘数据 + Gate/Bitget 全市场快照实测。
 > 本文是可执行计划，每个阶段都有验收标准（Definition of Done）。

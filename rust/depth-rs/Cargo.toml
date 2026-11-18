@@ -1,0 +1,22 @@
+﻿[package]
+name = "depth-rs"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Rust port of packages/core/src/depth.ts with a JSON-line worker protocol"
+
+[lib]
+crate-type = ["rlib"]
+
+[[bin]]
+name = "depth-worker"
+path = "src/main.rs"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+bigdecimal = "0.4"
+
+[profile.release]
+lto = true
+codegen-units = 1

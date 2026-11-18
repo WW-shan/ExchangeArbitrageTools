@@ -1,4 +1,4 @@
-﻿export type BatchState =
+export type BatchState =
   | 'IDLE'
   | 'OPPORTUNITY_FOUND'
   | 'PREFLIGHT_CHECK'

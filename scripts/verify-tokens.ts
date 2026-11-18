@@ -1,4 +1,4 @@
-﻿import { JsonRpcProvider } from 'ethers';
+import { JsonRpcProvider } from 'ethers';
 import { BscTokenRegistry, STANDARD_BSC_TOKENS } from '@arb/venues-bsc';
 
 async function main(): Promise<void> {
