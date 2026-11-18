@@ -355,6 +355,13 @@ export class CexLiveExecutor {
     this.#clock = options.clock ?? Date.now;
   }
 
+  // Called by the supervisor once a SAFE_STOP has been fully resolved (for
+  // example by a confirmed residual hedge). Without this the persisted latch
+  // stays on and every later signal is refused.
+  releaseKillSwitch(): void {
+    this.#gate.setKillSwitch(false);
+  }
+
   async execute(request: LiveExecutionRequest): Promise<LiveExecutionResult> {
     const executeStartedAt = this.#clock();
     const timing: LiveExecutionTiming = { executeStartedAt };
@@ -1824,8 +1831,16 @@ export class CexLiveExecutor {
     const sellVenueId = request.sell.adapter.venueId;
     const buyCurrencyBase = marketExchangeBase(request.buy.market);
     const sellCurrencyBase = marketExchangeBase(request.sell.market);
-    const cachedBuy = this.#preflightCache?.balancesForVenue(buyVenueId, { maxAgeMs, now });
-    const cachedSell = this.#preflightCache?.balancesForVenue(sellVenueId, { maxAgeMs, now });
+    const cachedBuy = this.#preflightCache?.balancesForVenue(buyVenueId, {
+      maxAgeMs,
+      now,
+      currencies: [buyCurrencyBase, request.buy.market.quote],
+    });
+    const cachedSell = this.#preflightCache?.balancesForVenue(sellVenueId, {
+      maxAgeMs,
+      now,
+      currencies: [sellCurrencyBase, request.sell.market.quote],
+    });
     if (
       maxAgeMs > 0 &&
       cachedBuy &&

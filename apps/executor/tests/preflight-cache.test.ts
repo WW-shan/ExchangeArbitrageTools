@@ -43,6 +43,35 @@ describe('preflight cache', () => {
     expect(cache.balancesForVenue('bitget', { maxAgeMs: 1000, now })).toBeUndefined();
   });
 
+  it('judges freshness per required currency instead of the whole venue', () => {
+    const cache = new PreflightCache();
+    // A long-tail asset whose balance has not changed for hours must not
+    // invalidate the snapshot the execution actually needs.
+    cache.recordBalances([
+      balance('gateio', 'USDT'),
+      balance('gateio', 'WARD'),
+      balance('gateio', 'DUST', now - 3_600_000),
+    ]);
+
+    const rows = cache.balancesForVenue('gateio', {
+      maxAgeMs: 1000,
+      now,
+      currencies: ['USDT', 'WARD'],
+    });
+    expect(rows).toHaveLength(3);
+    expect(
+      cache.balancesForVenue('gateio', { maxAgeMs: 1000, now, currencies: ['DUST'] }),
+    ).toBeUndefined();
+  });
+
+  it('refuses a snapshot when a required currency is missing', () => {
+    const cache = new PreflightCache();
+    cache.recordBalances([balance('gateio', 'USDT')]);
+    expect(
+      cache.balancesForVenue('gateio', { maxAgeMs: 1000, now, currencies: ['WARD'] }),
+    ).toBeUndefined();
+  });
+
   it('deduplicates cached open orders and expires stale checks', () => {
     const cache = new PreflightCache();
     const keys = ['gateio|WARD/USDT', 'bitget|WARD/USDT'];

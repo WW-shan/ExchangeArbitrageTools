@@ -466,7 +466,12 @@ export async function planResidualHedge(input: {
   const validation = validateOrderBook(book, {
     expectedVenueId: residualVenue,
     expectedSymbol: residualVenueData.market.exchangeSymbol,
-    maxAgeMs: config.settings.maxOrderbookAgeMs,
+    // Flattening a naked leg is a recovery action, not a scan. Judge it by the
+    // fetch that just happened, not by the scanner's low-liquidity window, and
+    // let the exchange's own last-update time be older than that: an illiquid
+    // book that has not printed recently is still tradable against.
+    maxAgeMs: config.autoRotation.residualHedge.bookMaxAgeMs,
+    maxExchangeAgeMs: config.autoRotation.residualHedge.bookMaxExchangeAgeMs,
     now: Date.now(),
   });
   if (!validation.valid) {

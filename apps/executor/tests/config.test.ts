@@ -64,6 +64,9 @@ describe('executor configuration', () => {
     expect(config.autoRotation.residualHedge.enabled).toBe(false);
     expect(config.autoRotation.residualHedge.maxLossUsd.toFixed()).toBe('0');
     expect(config.autoRotation.residualHedge.maxBaselineAgeMs).toBe(60_000);
+    expect(config.autoRotation.residualHedge.bookMaxAgeMs).toBe(3_000);
+    expect(config.autoRotation.residualHedge.bookMaxExchangeAgeMs).toBe(300_000);
+    expect(config.autoRotation.residualHedge.maxAttempts).toBe(3);
     expect(config.autoRotation.inventory.enabled).toBe(false);
     expect(config.autoRotation.inventory.seedNotionalUsd.toFixed()).toBe('5');
     expect(config.autoRotation.inventory.minQuoteReserveUsd.toFixed()).toBe('5');

@@ -59,6 +59,14 @@ export interface AutoResidualHedgeConfig {
   enabled: boolean;
   maxLossUsd: Decimal;
   maxBaselineAgeMs: number;
+  // The recovery path pulls its own fresh REST book. Its freshness check must
+  // describe that fetch, not the scanner's low-liquidity window: a book that has
+  // not printed for 20s is still the right book to flatten against, and waiting
+  // for a newer print leaves the position naked.
+  bookMaxAgeMs: number;
+  bookMaxExchangeAgeMs: number;
+  maxAttempts: number;
+  retryDelayMs: number;
 }
 
 export interface AutoInventoryConfig {
@@ -541,6 +549,10 @@ function autoRotationConfig(value: unknown, handoffMaxAgeMs: number): AutoRotati
       enabled: booleanValue(residualHedge, 'enabled', false),
       maxLossUsd: decimalValue(residualHedge, 'max_loss_usd', '0'),
       maxBaselineAgeMs: numberValue(residualHedge, 'max_baseline_age_ms', 60_000),
+      bookMaxAgeMs: numberValue(residualHedge, 'book_max_age_ms', 3_000),
+      bookMaxExchangeAgeMs: numberValue(residualHedge, 'book_max_exchange_age_ms', 300_000),
+      maxAttempts: numberValue(residualHedge, 'max_attempts', 3),
+      retryDelayMs: numberValue(residualHedge, 'retry_delay_ms', 400),
     },
     inventory: {
       enabled: booleanValue(inventory, 'enabled', false),
@@ -630,6 +642,36 @@ function validateSafetyBounds(config: ExecutorConfig): void {
       throw new Error(
         'auto_rotation.residual_hedge.max_baseline_age_ms must be between 1000 and 300000',
       );
+    }
+    if (
+      !Number.isInteger(residualHedge.bookMaxAgeMs) ||
+      residualHedge.bookMaxAgeMs < 500 ||
+      residualHedge.bookMaxAgeMs > 60_000
+    ) {
+      throw new Error('auto_rotation.residual_hedge.book_max_age_ms must be between 500 and 60000');
+    }
+    if (
+      !Number.isInteger(residualHedge.bookMaxExchangeAgeMs) ||
+      residualHedge.bookMaxExchangeAgeMs < residualHedge.bookMaxAgeMs ||
+      residualHedge.bookMaxExchangeAgeMs > 900_000
+    ) {
+      throw new Error(
+        'auto_rotation.residual_hedge.book_max_exchange_age_ms must be >= book_max_age_ms and <= 900000',
+      );
+    }
+    if (
+      !Number.isInteger(residualHedge.maxAttempts) ||
+      residualHedge.maxAttempts < 1 ||
+      residualHedge.maxAttempts > 10
+    ) {
+      throw new Error('auto_rotation.residual_hedge.max_attempts must be between 1 and 10');
+    }
+    if (
+      !Number.isInteger(residualHedge.retryDelayMs) ||
+      residualHedge.retryDelayMs < 0 ||
+      residualHedge.retryDelayMs > 10_000
+    ) {
+      throw new Error('auto_rotation.residual_hedge.retry_delay_ms must be between 0 and 10000');
     }
     if (
       !inventory.seedNotionalUsd.isFinite() ||

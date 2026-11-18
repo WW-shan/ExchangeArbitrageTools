@@ -11,6 +11,16 @@ export interface AutomaticResidualHedgeResult extends ResidualHedgeResult {
   attempted: boolean;
 }
 
+// A blocked recovery plan is usually a momentarily unusable book (fetch hiccup,
+// crossed snapshot, exchange timestamp lagging). Retrying within the same
+// SAFE_STOP window is what keeps a recoverable position from waiting for a human.
+const RETRYABLE_PLAN_REASONS = new Set([
+  'residual_book_unavailable',
+  'residual_book_stale_or_invalid',
+  'residual_venue_not_fok_eligible',
+  'insufficient_leg2_depth',
+]);
+
 export async function attemptAutomaticResidualHedge(input: {
   repository: ArbitrageRepository;
   config: ExecutorConfig;
@@ -30,7 +40,7 @@ export async function attemptAutomaticResidualHedge(input: {
       attempted: false,
     };
   }
-  const planned = await planResidualHedge({
+  let planned = await planResidualHedge({
     repository,
     config,
     adapters,
@@ -38,6 +48,19 @@ export async function attemptAutomaticResidualHedge(input: {
     minProfitUsd: settings.maxLossUsd.negated(),
     maxBaselineAgeMs: settings.maxBaselineAgeMs,
   });
+  for (let attempt = 1; attempt < settings.maxAttempts; attempt += 1) {
+    if (planned.status === 'PLANNED' && planned.plan) break;
+    if (!planned.reasons.some((reason) => RETRYABLE_PLAN_REASONS.has(reason))) break;
+    await new Promise((resolve) => setTimeout(resolve, settings.retryDelayMs));
+    planned = await planResidualHedge({
+      repository,
+      config,
+      adapters,
+      batchId,
+      minProfitUsd: settings.maxLossUsd.negated(),
+      maxBaselineAgeMs: settings.maxBaselineAgeMs,
+    });
+  }
   if (planned.status !== 'PLANNED' || !planned.plan) {
     return { ...planned, attempted: false };
   }

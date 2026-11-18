@@ -86,10 +86,13 @@ liquidity_top_levels = 5
 live_enabled = true
 kill_switch = false
 manual_confirmation = true
-# parallel_fok = submit both FOK legs concurrently. It is still NOT atomic
-# across venues. Gate and Bitget private FOK no-fill paths were verified with
-# WARD on 2026-10-29 (zero fill, no resting order, unchanged balances).
-leg_mode = 'parallel_fok'
+# serial = buy first, then re-fetch the sell book and hedge only the filled
+# quantity. Measured on real WARD fills (2026-11-18): parallel FOK left one
+# side exposed on 41% of signals, and the follow-up hedge lost 0.039 USDT per
+# failure against 0.040 USDT of median profit. Serial buy-first turns a failed
+# buy into a harmless retry instead of a forced hedge.
+# Do not switch back to parallel without A/B data showing a higher fill rate.
+leg_mode = 'serial'
 # Gate/Bitget allow well above ten requests per second. The hot path issues the
 # balance and open-order checks in parallel, so 10 RPS avoids serializing them
 # behind a conservative limiter while staying below the venue soft limits.
@@ -150,6 +153,15 @@ max_hold_ms = 3600000
 enabled = true
 max_loss_usd = '1'
 max_baseline_age_ms = 60000
+# The flatten path always pulls its own fresh REST book, so judge it by that
+# fetch (book_max_age_ms) rather than the scanner's 20s low-liquidity window.
+# book_max_exchange_age_ms bounds the venue's own last-update stamp separately:
+# an illiquid book with an old print is still tradable against, and refusing it
+# leaves the position naked until a human notices.
+book_max_age_ms = 3000
+book_max_exchange_age_ms = 300000
+max_attempts = 3
+retry_delay_ms = 400
 
 # Seed only the missing side and only after a fresh directional S1 signal.
 # When both sides lack useful inventory, buy the cheaper ask. When one side

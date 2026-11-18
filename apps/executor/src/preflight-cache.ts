@@ -42,12 +42,27 @@ export class PreflightCache {
 
   balancesForVenue(
     venueId: string,
-    options: { maxAgeMs: number; now?: number },
+    options: { maxAgeMs: number; now?: number; currencies?: readonly string[] },
   ): BalanceSnapshot[] | undefined {
     const rows = this.#balances.get(venueId);
     if (!rows || rows.length === 0 || options.maxAgeMs < 0) return undefined;
     const now = options.now ?? Date.now();
-    return rows.every((row) => row.fetchedAt >= now - options.maxAgeMs) ? rows : undefined;
+    const cutoff = now - options.maxAgeMs;
+    const required = (options.currencies ?? [])
+      .map((currency) => currency.trim().toUpperCase())
+      .filter((currency) => currency.length > 0);
+    if (required.length === 0) {
+      return rows.every((row) => row.fetchedAt >= cutoff) ? rows : undefined;
+    }
+    // Only the currencies this execution actually spends need to be fresh.
+    // A long-tail balance that no longer moves must not invalidate the whole
+    // venue snapshot, because that forces the hot path back onto a blocking
+    // private REST call and burns the spread while it waits.
+    const byCurrency = new Map<string, BalanceSnapshot>();
+    for (const row of rows) byCurrency.set(row.currency.trim().toUpperCase(), row);
+    const requiredRows = required.map((currency) => byCurrency.get(currency));
+    if (requiredRows.some((row) => row === undefined)) return undefined;
+    return requiredRows.every((row) => row!.fetchedAt >= cutoff) ? rows : undefined;
   }
 
   recordOpenOrders(

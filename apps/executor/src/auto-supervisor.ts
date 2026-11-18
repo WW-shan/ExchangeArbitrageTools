@@ -1714,6 +1714,23 @@ export async function runAutoRotationSupervisor(
             };
             repository.recordAudit('executor', 'auto_residual_hedge_result', hedgeResult, hedgedAt);
             logEvent({ status: 'residual_hedge_result', ...hedgeResult });
+            // The SAFE_STOP latch exists to stop new risk until the naked leg is
+            // closed. Once the hedge actually filled there is nothing left to
+            // guard, so re-arm the rotation instead of waiting for a human; the
+            // watchdog would otherwise exit and the process would stay idle all
+            // night. Anything other than a confirmed fill stays latched.
+            if (hedged.status === 'HEDGED') {
+              repository.setSetting('kill_switch', 'false', clock());
+              engine.releaseKillSwitch();
+              repository.recordAudit(
+                'executor',
+                'auto_residual_hedge_recovered',
+                { batchId, hedgeBatchId: hedged.hedgeBatchId ?? null },
+                clock(),
+              );
+              logEvent({ status: 'residual_hedge_recovered', batchId });
+              invalidateBalanceCache();
+            }
           } catch (error) {
             const failedAt = clock();
             repository.recordAudit(
@@ -1739,7 +1756,11 @@ export async function runAutoRotationSupervisor(
             });
           }
         }
-        break;
+        // The naked leg is either flattened or still latched. A flattened batch
+        // must fall through to the normal cooldown so the next signal can trade;
+        // a still-latched one is caught by the kill-switch check at loop top.
+        await sleep(config.autoRotation.cooldownMs);
+        continue;
       } else if (result.ordersSubmitted > 0) {
         consecutiveFailures += 1;
         if (consecutiveFailures >= config.autoRotation.maxConsecutiveFailures) {

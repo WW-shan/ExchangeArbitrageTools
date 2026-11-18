@@ -268,6 +268,10 @@ function setup(
         enabled: true,
         maxLossUsd: new Decimal('0.05'),
         maxBaselineAgeMs: 60_000,
+        bookMaxAgeMs: 3_000,
+        bookMaxExchangeAgeMs: 300_000,
+        maxAttempts: 3,
+        retryDelayMs: 0,
       },
     },
   } as unknown as ExecutorConfig;
