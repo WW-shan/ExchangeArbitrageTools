@@ -132,13 +132,29 @@ liquidity_top_levels = 5
 live_enabled = true
 kill_switch = false
 manual_confirmation = true
-# serial = buy first, then re-fetch the sell book and hedge only the filled
-# quantity. Measured on real WARD fills (2026-11-18): parallel FOK left one
-# side exposed on 41% of signals, and the follow-up hedge lost 0.039 USDT per
-# failure against 0.040 USDT of median profit. Serial buy-first turns a failed
-# buy into a harmless retry instead of a forced hedge.
-# Do not switch back to parallel without A/B data showing a higher fill rate.
-leg_mode = 'serial'
+# parallel_fok = submit both FOK legs at the same time.
+#
+# Measured on 24 real closed S1 batches (2026-10-29 -> 2026-11-19):
+#
+#   mode          n   sum      avg     median
+#   parallel_fok  18  +2271bps +126bps +67bps
+#   serial         6  +247bps  +41bps  +1bps
+#
+# The serial path's median is 1 bps: buy first, then re-read the sell book and
+# take whatever is left. On 2026-11-19 execution 144 the buy filled at
+# 1795053693170 and the sell was submitted at 1795053693870 - 700 ms later the
+# Bitget bid had fallen from 0.001646 to 0.001640, and a +0.0276 expected trade
+# closed at +0.0010. parallel_fok's worst three batches were still +18/+24/+24.
+#
+# The earlier reason for serial ("parallel left one side exposed on 41%") was
+# measured before the frozen-book guard existed. Of the 23 recorded parallel
+# batches: 18 closed with both legs filled at exactly equal size, 3 were
+# rejected with neither leg filled (harmless), and 1 left a 0.8-token residual.
+# The 41% figure came from the frozen-bid population that no longer passes.
+#
+# This is NOT atomic across venues. Both legs are still IOC/FOK, so a no-fill
+# leaves no resting order, and the state machine reconciles any asymmetry.
+leg_mode = 'parallel_fok'
 # Leg 1 is already filled once we get here, so the base asset is sitting on the
 # venue. Not selling it is not "avoiding a loss" - it is keeping an open
 # position the strategy never sized. Measured 2026-11-18: 27 buys filled, only
@@ -170,7 +186,12 @@ poll_interval_ms = 50
 balance_refresh_ms = 1000
 preflight_balance_max_age_ms = 3000
 preflight_open_order_max_age_ms = 3000
-preflight_hot_book_max_age_ms = 3000
+# Must stay BELOW the executor's submit ceiling (SUBMIT_BOOK_MAX_AGE_MS = 1500).
+# A preflight window of 3000 accepted books that the submit check then rejected:
+# measured 2026-11-19, executions 142 (1934 ms) and 143 (2838 ms) both passed
+# preflight and failed at submit, burning a full preflight cycle each time.
+# 1200 leaves 300 ms for the private REST calls that follow the book read.
+preflight_hot_book_max_age_ms = 1200
 # Keep the signal window wider than the measured private-API preflight while
 # still bounding total decay. Timing on the live account showed several signals
 # whose refreshed books were still profitable at 2.5-3.2 seconds, but were

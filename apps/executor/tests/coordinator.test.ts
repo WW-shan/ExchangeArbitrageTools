@@ -784,6 +784,55 @@ describe('live executor safety gates', () => {
     repo.close();
   });
 
+  it('applies the submit age ceiling to parallel FOK as well', async () => {
+    // The submit ceiling must run before the parallel branch. Otherwise
+    // parallel FOK - the mode with the best measured capture - would be the one
+    // path with no staleness guard at all.
+    const preflightCache = new PreflightCache();
+    const hotSettings: CexLiveExecutorOptions['settings'] = {
+      ...settings,
+      preflightBalanceMaxAgeMs: 3000,
+      preflightOpenOrderMaxAgeMs: 3000,
+      preflightHotBookMaxAgeMs: 3000,
+    };
+    const { repo, executor, buy, sell } = setup(
+      { bookError: new Error('REST book should not be called') },
+      'parallel_fok',
+      { preflightCache, settings: hotSettings },
+    );
+    const staleFetchedAt = now - 2000;
+    repo.recordHotOrderbook({
+      ...book('gateio', '2.500', '2.490'),
+      fetchedAt: staleFetchedAt,
+      source: 'websocket' as const,
+    });
+    repo.recordHotOrderbook({
+      ...book('mexc', '2.560', '2.550'),
+      fetchedAt: staleFetchedAt,
+      source: 'websocket' as const,
+    });
+    preflightCache.recordBalances([...balances('gateio'), ...balances('mexc')]);
+    preflightCache.recordOpenOrders(
+      ['gateio|CAKE/USDT', 'mexc|CAKE/USDT'],
+      { ok: true, orders: [], errors: [] },
+      now,
+    );
+
+    const result = await executor.execute(
+      request(
+        { adapter: buy.adapter, market: fokMarket('gateio'), credentials: keys, healthState: 'A' },
+        { adapter: sell.adapter, market: fokMarket('mexc'), credentials: keys, healthState: 'A' },
+      ),
+    );
+
+    expect(result.outcome).toBe('PREFLIGHT_FAILED');
+    expect(result.reasons).toContain('sell_book_too_old_at_submit');
+    expect(buy.state.createCalls).toBe(0);
+    expect(sell.state.createCalls).toBe(0);
+    expect(repo.countOpenExecutions()).toBe(0);
+    repo.close();
+  });
+
   it('re-fetches the sell book instead of reusing a cached one after the buy fills', async () => {
     // Measured 2026-11-18: the post-fill sell used a book 1030-1581 ms old,
     // FOK'd 4138 WARD into it and filled zero while that cached bid still

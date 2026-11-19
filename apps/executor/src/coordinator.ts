@@ -951,27 +951,6 @@ export class CexLiveExecutor {
     });
     this.#repository.updateExecutionStatus(executionId, 'PREFLIGHT_CHECK');
 
-    if (parallelFok) {
-      ordersSubmitted += 2;
-      return this.executeParallelFok({
-        request,
-        executionId,
-        preflightAt,
-        buyPrice: leg1Price,
-        sellPrice: plannedSellPrice,
-        buyAmount: plannedLeg1Amount,
-        sellAmount: plannedLeg2Amount,
-        buyMultiplier,
-        sellMultiplier,
-        buyBalanceBaseline: balanceBaselines.buy,
-        sellBalanceBaseline: balanceBaselines.sell,
-        transition,
-        safeStop,
-        outcome,
-        states: () => states,
-      });
-    }
-
     // Final age check immediately before the order leaves.
     //
     // Preflight read both books, then spent up to ~2 s on private REST. The
@@ -993,6 +972,27 @@ export class CexLiveExecutor {
       );
       transition('PREFLIGHT_FAILED');
       return outcome('PREFLIGHT_FAILED');
+    }
+
+    if (parallelFok) {
+      ordersSubmitted += 2;
+      return this.executeParallelFok({
+        request,
+        executionId,
+        preflightAt,
+        buyPrice: leg1Price,
+        sellPrice: plannedSellPrice,
+        buyAmount: plannedLeg1Amount,
+        sellAmount: plannedLeg2Amount,
+        buyMultiplier,
+        sellMultiplier,
+        buyBalanceBaseline: balanceBaselines.buy,
+        sellBalanceBaseline: balanceBaselines.sell,
+        transition,
+        safeStop,
+        outcome,
+        states: () => states,
+      });
     }
 
     transition('LEG1_SUBMITTING');
