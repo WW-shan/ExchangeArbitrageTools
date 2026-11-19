@@ -669,6 +669,60 @@ describe('live executor safety gates', () => {
     repo.close();
   });
 
+  it('refuses to submit when the sell book aged past the submit ceiling', async () => {
+    // Execution 139 (2026-11-19 21:38 UTC): preflight read the sell book, then
+    // spent 1826 ms on private REST. The sell order was submitted into a 4.9 s
+    // old book, filled zero, and left 5289 WARD unhedged.
+    //
+    // Across 48 real executions the sell fill rate was 8/9 below 500 ms of book
+    // age, 9/24 at 1-2 s, and 0/3 at 2-3 s. A book that is already 2 s old at
+    // submission is not a price, it is history.
+    const preflightCache = new PreflightCache();
+    const hotSettings: CexLiveExecutorOptions['settings'] = {
+      ...settings,
+      preflightBalanceMaxAgeMs: 3000,
+      preflightOpenOrderMaxAgeMs: 3000,
+      preflightHotBookMaxAgeMs: 3000,
+    };
+    const { repo, executor, buy, sell } = setup(
+      { bookError: new Error('REST book should not be called') },
+      'serial',
+      { preflightCache, settings: hotSettings },
+    );
+    // Inside the 3000 ms preflight window, outside the 1500 ms submit ceiling.
+    const staleFetchedAt = now - 2000;
+    repo.recordHotOrderbook({
+      ...book('gateio', '2.500', '2.490'),
+      fetchedAt: staleFetchedAt,
+      source: 'websocket' as const,
+    });
+    repo.recordHotOrderbook({
+      ...book('mexc', '2.560', '2.550'),
+      fetchedAt: staleFetchedAt,
+      source: 'websocket' as const,
+    });
+    preflightCache.recordBalances([...balances('gateio'), ...balances('mexc')]);
+    preflightCache.recordOpenOrders(
+      ['gateio|CAKE/USDT', 'mexc|CAKE/USDT'],
+      { ok: true, orders: [], errors: [] },
+      now,
+    );
+
+    const result = await executor.execute(
+      request(
+        { adapter: buy.adapter, market: market('gateio'), credentials: keys, healthState: 'A' },
+        { adapter: sell.adapter, market: market('mexc'), credentials: keys, healthState: 'A' },
+      ),
+    );
+
+    expect(result.outcome).toBe('PREFLIGHT_FAILED');
+    expect(result.reasons).toContain('sell_book_too_old_at_submit');
+    // Nothing may be sent: no buy, no sell, no orphaned position.
+    expect(buy.state.createCalls).toBe(0);
+    expect(sell.state.createCalls).toBe(0);
+    repo.close();
+  });
+
   it('re-fetches the sell book instead of reusing a cached one after the buy fills', async () => {
     // Measured 2026-11-18: the post-fill sell used a book 1030-1581 ms old,
     // FOK'd 4138 WARD into it and filled zero while that cached bid still

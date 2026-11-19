@@ -289,6 +289,23 @@ export interface CexLiveExecutorOptions {
  */
 const POST_FILL_BOOK_MAX_AGE_MS = 400;
 
+/**
+ * How old a preflight book may be when the order is actually submitted.
+ *
+ * Preflight reads the book, then spends 1.5-2 s on private REST calls
+ * (balance + open orders) before the first order leaves. The book age at
+ * decision time is therefore not the age at submission time.
+ *
+ * Measured on 48 real S1 executions: sell-leg fill rate by book age at
+ * submission was 8/9 below 500 ms, 6/7 at 500-1000 ms, 9/24 at 1-2 s, 0/3 at
+ * 2-3 s and 1/5 above. Execution 139 submitted its sell into a 4.9 s old book,
+ * filled zero, and left 5289 WARD unhedged.
+ *
+ * 1500 ms keeps almost every measured fill and rejects the population that
+ * never fills.
+ */
+const SUBMIT_BOOK_MAX_AGE_MS = 1_500;
+
 function normalizedInstrument(market: MarketMetadata): string {
   return `${market.base}/${market.quote}`.trim().toUpperCase();
 }
@@ -944,6 +961,29 @@ export class CexLiveExecutor {
         outcome,
         states: () => states,
       });
+    }
+
+    // Final age check immediately before the order leaves.
+    //
+    // Preflight read both books, then spent up to ~2 s on private REST. The
+    // book that justified the trade is that much older by the time we submit.
+    // Re-checking here is the last cheap place to refuse: once leg 1 fills we
+    // own the position whether or not the sell side still exists.
+    const submitBookAgeMs = Math.max(0, this.#clock() - sellBookResult.book.fetchedAt);
+    if (submitBookAgeMs > SUBMIT_BOOK_MAX_AGE_MS) {
+      reasons.push('sell_book_too_old_at_submit');
+      this.#repository.recordRiskEvent(
+        'warning',
+        'sell_book_too_old_at_submit',
+        'sell-side book aged past the submit ceiling between preflight and submission',
+        {
+          batchId: request.batchId,
+          sellBookAgeMs: submitBookAgeMs,
+          ceilingMs: SUBMIT_BOOK_MAX_AGE_MS,
+        },
+      );
+      transition('PREFLIGHT_FAILED');
+      return outcome('PREFLIGHT_FAILED');
     }
 
     transition('LEG1_SUBMITTING');

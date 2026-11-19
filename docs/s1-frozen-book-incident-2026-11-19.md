@@ -42,33 +42,110 @@ S1 通道完全没有。Bitget 的 WARD 买一价在一段时间里是一个不�
 那 20 笔 100–200 bps 的信号，**全部**是拿 Bitget 冻结的 0.001676 bid 当卖出价。
 这不是「利润越大越难成交」，而是**价格是假的**。
 
-## 5. 修复
+## 5. 第一次修复不够（重要）
 
-在 `apps/scanner/src/scanner-service.ts` 中：
+第一版修复用 `BookLivenessTracker` 的 `repeatCount`（连续多少次扫描 top-of-book 完全不变）
+判定。上线后生产数据是 `staleRejects=0`，看起来"没有假信号"，
+**实际上是这个检查永远不会触发**：
 
-- 新增独立的 `#s1Liveness = new BookLivenessTracker(...)`，与插针检测器分开，
-  避免两个通道互相污染状态。
-- `evaluateS1Group` 每次扫描都 `observe` 所有盘口（包括之后会被拒的快照），
-  否则中途冻结的盘口永远攒不够重复计数。
-- **卖出侧冻结检查**：卖腿交易所的 `repeatCount >= s1_max_repeat_count` 时，
-  直接 `stale_orderbook` 拒绝，并在 metadata 记录 `sellBookRepeatCount`。
+| 问题 | 实测 |
+| --- | --- |
+| 计数单位是"扫描次数"，不是时间 | 热路径 100 ms 一次，8 次 = **1.1 秒**，不是注释写的 40 秒 |
+| 判据是 bid+ask 一起比 | Bitget 的 ask 每分钟变 2–8 次，**每次变动都把计数清零** |
 
-配置（`config/live-rotation.toml`）：
+用 26 小时真实数据量化：按"8 次"判定会误杀 **8.1%** 的正价差信号；
+按 40 秒判定只误杀 **0.9%**。差 9 倍，而且前者根本抓不到真正的冻结。
+
+### 5.1 真正的指纹是「买一挂单」
+
+把 26 笔失败执行的 preflight 盘口拉出来逐笔对比：
+
+| 执行 | 卖腿交易所 | 买一价 | **买一数量** |
+| --- | --- | --- | --- |
+| #87 | bitget | 0.001676 | **12391.31** |
+| #89 | bitget | 0.001676 | **12391.31** |
+| … | … | … | **12391.31** |
+| #137 | bitget | 0.001676 | **12391.31** |
+
+**26 笔，数量一模一样。** 这是**同一张挂单**，从 2026-11-18 15:53 一直挂到
+2026-11-19 05:38，超过 **13 小时没有任何成交、没有加量、没有撤单**。
+
+同时期它的 ask 变了 2–8 次。所以：
+
+- 价格没变 → 价格类检查认为"还有这个价"
+- ask 在变 → 整簿类检查认为"盘口在动"
+- **数量没变 → 这才是"没人真的买"的铁证**
+
+唯一成功的 #85，买一数量是 26669.63，且买一价变了 3 次。
+
+### 5.2 为什么 0.001676 能一直挂着
+
+FOK 要求**一次性全部成交**。那 12391.31 WARD 的挂单不动，
+说明市场里没有卖方愿意在 0.001676 卖给他；而我们的 FOK 卖单要求
+一次性成交 4000–5000 WARD，同样没人接。双方都在等，谁都不成交。
+系统看到"买一价 0.001676 > 我们买入成本"，就认为有 145 bps 利润——
+**利润是账面的，流动性是不存在的。**
+
+## 6. 修复（最终版）
+
+### 6.1 扫描端：按「买一挂单身份」判定
+
+`packages/core/src/book-liveness.ts`：
+
+- `BookLivenessState` 增加 `lastBidSize` / `bidSince` / `bidStillMs`。
+- `observe()` 新增可选的 `bidSize` 参数，用 **价格 + 数量** 作为买一挂单的身份。
+  价格或数量任一变化，`bidSince` 重置为当前时间。
+- 新增 `bidStillMs(venue, symbol)` 与 `isBidStale(venue, symbol)`。
+- 新增 `maxBidStillMs` 选项，**按毫秒计时，不按扫描次数**。
+  热路径 100 ms 一轮，按次数会随扫描频率悄悄改变含义。
+
+`apps/scanner/src/scanner-service.ts`：
+
+- 独立的 `#s1Liveness` tracker，与插针检测器分开，避免状态互相污染。
+- `evaluateS1Group` 每轮 `observe` 所有盘口（含之后会被拒的快照），
+  否则中途冻结的盘口攒不够时间。
+- 卖出侧检查：`bidStillMs >= s1_max_bid_still_ms` 时以 `stale_orderbook` 拒绝，
+  metadata 记录 `sellBidStillMs`。
+
+配置：
 
 ```toml
-s1_max_repeat_count = 8
+s1_max_bid_still_ms = 20000
 ```
 
-8 次 × 5 秒热扫描 = **40 秒盘口完全不动**。真实交易所不会这样。
-0 表示关闭检查。代码默认值也是 8。
+为什么是 20 秒：26 小时真实数据里，正价差信号的卖腿静置时间
+p50 = 76 ms、p90 = 1.2 s、p95 = 2.7 s、p99 = 10.4 s。
+20 秒只误杀 0.2%，而真正亏钱的那张挂单静置了 **13 小时**。
 
-## 6. 为什么只检查卖腿
+### 6.2 执行端：下单前再查一次盘口年龄
 
-买腿用的是 ask，我们要主动去吃它；只要下单，成交与否由我们自己的限价决定。
-卖腿用的是 bid，我们**必须有一个真实买家**才能成交。冻结的 bid 正是「看起来有人买、
-其实没有」的典型形态，而它是唯一会让系统「买到了却卖不掉」的环节。
+`apps/executor/src/coordinator.ts` 新增 `SUBMIT_BOOK_MAX_AGE_MS = 1500`。
 
-## 7. 事故恢复
+preflight 读完盘口后还要花 1.5–2 秒做私有 REST（余额 + 挂单），
+**下单那一刻盘口已经比决策时老得多**。execution 139 就是决策时 3.66 秒、
+提交时 4.87 秒。
+
+48 笔真实执行的卖腿成交率：
+
+| 提交时盘口年龄 | 成交率 |
+| --- | --- |
+| < 500 ms | **8/9 (89%)** |
+| 500–1000 ms | 6/7 (86%) |
+| 1000–2000 ms | **9/24 (37%)** |
+| 2000–3000 ms | **0/3 (0%)** |
+| > 3000 ms | 1/5 |
+
+超过 1500 ms 直接 `PREFLIGHT_FAILED` + `sell_book_too_old_at_submit`，
+**买单和卖单都不发**，不会留下裸仓位。
+
+## 7. 为什么只查卖腿
+
+买腿吃的是 ask，只要我们出价，成交由我们自己决定。
+卖腿吃的是 bid，**必须有一个真实买家**才能成交。
+冻结的 bid 正是「看起来有人买、其实没有」的唯一形态，
+也是唯一会让系统「买到了却卖不掉」的环节。
+
+## 8. 事故恢复
 
 1. Dry-run 对冲方案 -> 预计亏损 0.0688 USDT
 2. 真实执行：Gate 卖出 5289 WARD @ 0.001637，成交，**实现亏损 -0.0278 USDT**
@@ -76,19 +153,33 @@ s1_max_repeat_count = 8
 4. 余额：bitget 5.076 USDT / 6890.863 WARD；gateio 9.228 USDT / 58.721 WARD
 5. `release-cli.ts --confirm RELEASE-KILL-SWITCH` 解除
 6. `scripts/start-rotation.ps1` 重启 -> RUNNING，executor WAIT，scanner SCANNING
-7. 生产验证：重启后 6312 次 S1 评估，`staleRejects=0`（当前盘口在动，没有假信号）
 
-## 8. 测试
+## 9. 测试
 
-`apps/scanner/tests/scanner-service.test.ts` 新增两个用例：
+`packages/core/tests/book-liveness.test.ts` 新增 4 个：
 
-- `rejects an S1 sell leg priced against a bid that never moves` —— 复现那 20 笔失败场景。
-- `keeps trading when the sell venue keeps moving` —— 确认不会误伤正常盘口。
+- 买一挂单静置时长按毫秒累计
+- 数量变化必须重置计时（真实买家会成交或加量）
+- **ask 在动不能重置买一计时**（复现 2026-11-18 的形态）
+- `maxBidStillMs = 0` 时关闭检查
 
-全量：**614 passed**。
+`apps/scanner/tests/scanner-service.test.ts` 3 个：
 
-## 9. 教训
+- 买一完全不动 -> `stale_orderbook`
+- 买一真的在成交 -> 正常放行
+- ask 在动但买一不动 -> 仍然拒绝，且 metadata 有 `sellBidStillMs`
 
-风控参数再多，也不能替代「这个价格是不是真的」。
-冻结盘口检查是**零成本**的：拒掉一个假信号不损失任何东西，
-接受一个假信号损失一整笔仓位。
+`apps/executor/tests/coordinator.test.ts` 1 个：
+
+- 盘口年龄超过 1500 ms -> `PREFLIGHT_FAILED`，买卖两腿都不发
+
+全量：**620 passed**。
+
+## 10. 教训
+
+1. 风控参数再多，也替代不了「这个价格是不是真的」。
+2. **计数的单位必须是时间，不是扫描次数**。扫描频率一变，阈值含义就变了。
+3. **只比价格抓不到不成交的挂单**。价格不动 + 数量不动，才是「没人真的买」。
+4. 决策时的盘口年龄不是下单时的盘口年龄。中间那 2 秒的私有 REST 是免费的陷阱。
+5. 冻结盘口检查是零成本的：拒掉一个假信号不损失任何东西，
+   接受一个假信号损失一整笔仓位。

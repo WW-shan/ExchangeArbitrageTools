@@ -61,6 +61,51 @@ describe('BookLivenessTracker', () => {
     ]);
   });
 
+  it('tracks how long the resting bid has kept the same price and size', () => {
+    const tracker = new BookLivenessTracker({ maxRepeatCount: 0, maxBidStillMs: 10_000 });
+    tracker.observe('bitget', 'WARD/USDT', '0.001676', '0.001677', now, '12391.31');
+    tracker.observe('bitget', 'WARD/USDT', '0.001676', '0.001680', now + 5_000, '12391.31');
+    expect(tracker.isBidStale('bitget', 'WARD/USDT')).toBe(false);
+    tracker.observe('bitget', 'WARD/USDT', '0.001676', '0.001682', now + 10_000, '12391.31');
+    expect(tracker.isBidStale('bitget', 'WARD/USDT')).toBe(true);
+    expect(tracker.bidStillMs('bitget', 'WARD/USDT')).toBe(10_000);
+  });
+
+  it('resets the resting-bid clock when the bid size changes', () => {
+    // A real buyer either trades or re-adds; both change the visible size.
+    const tracker = new BookLivenessTracker({ maxRepeatCount: 0, maxBidStillMs: 10_000 });
+    tracker.observe('bitget', 'WARD/USDT', '0.001676', '0.001677', now, '12391.31');
+    tracker.observe('bitget', 'WARD/USDT', '0.001676', '0.001680', now + 20_000, '11000');
+    expect(tracker.isBidStale('bitget', 'WARD/USDT')).toBe(false);
+    expect(tracker.bidStillMs('bitget', 'WARD/USDT')).toBe(0);
+  });
+
+  it('does not let a moving ask reset the resting-bid clock', () => {
+    // The exact 2026-11-18 shape: the ask moved constantly while the bid never
+    // traded. Price-only repeat counts reset on the ask and never fire.
+    const tracker = new BookLivenessTracker({ maxRepeatCount: 3, maxBidStillMs: 10_000 });
+    for (let i = 0; i <= 10; i += 1) {
+      tracker.observe(
+        'bitget',
+        'WARD/USDT',
+        '0.001676',
+        (0.001677 + i * 0.000001).toFixed(6),
+        now + i * 1_000,
+        '12391.31',
+      );
+    }
+    expect(tracker.repeatCount('bitget', 'WARD/USDT')).toBe(1);
+    expect(tracker.isFrozen('bitget', 'WARD/USDT')).toBe(false);
+    expect(tracker.isBidStale('bitget', 'WARD/USDT')).toBe(true);
+  });
+
+  it('disables the resting-bid check when maxBidStillMs is zero', () => {
+    const tracker = new BookLivenessTracker({ maxRepeatCount: 0, maxBidStillMs: 0 });
+    tracker.observe('bitget', 'WARD/USDT', '1', '1.1', now, '10');
+    tracker.observe('bitget', 'WARD/USDT', '1', '1.1', now + 600_000, '10');
+    expect(tracker.isBidStale('bitget', 'WARD/USDT')).toBe(false);
+  });
+
   it('prunes venues that stopped reporting', () => {
     const tracker = new BookLivenessTracker({ maxRepeatCount: 5, staleMs: 60_000 });
     tracker.observe('weex', 'BREV/USDT', '1', '1.1', now);

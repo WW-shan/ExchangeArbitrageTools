@@ -81,20 +81,23 @@ dislocation_min_notional_usd = "3"
 # floor until a fresh calibration exists.
 prefilter_floor_bps = -2
 
-# Reject an S1 sell leg whose venue top of book has not changed for this many
-# consecutive scans.
+# Reject an S1 sell leg whose resting bid has kept the same price AND size for
+# this many milliseconds. 0 disables the check.
 #
-# This is the guard that was missing. Measured 2026-11-19: Bitget's WARD best
-# bid printed 0.001676 for 146 seconds (one unique value in 30 samples) while
-# Gate's bid moved 14 times. Every signal priced against that bid looked
-# profitable and filled nothing: 20 signals in the 100-200 bps bucket, 20
-# failures, 0 fills. On 2026-11-19 21:38 UTC that pattern bought 5289 WARD on
-# Bitget and could not sell any of it on Gate, leaving an unhedged position and
-# tripping the kill switch.
+# This is the guard that was missing, and it is measured in TIME, not scans:
+# the hot path re-evaluates roughly every 100 ms, so an 8-scan threshold is
+# about one second, not the forty seconds its name implies.
 #
-# 8 scans at the 5 s hot interval is 40 s of an unmoving book, which a live
-# venue never does. 0 disables the check.
-s1_max_repeat_count = 8
+# What it catches: 2026-11-18 15:53 -> 2026-11-19 05:38, Bitget WARD showed
+# the same 12391.31 WARD bid at 0.001676 for over 13 hours while the ask kept
+# moving. 26 S1 executions priced against that bid, 26 filled zero, one
+# unhedged position, kill switch. Price-only checks cannot see it; the resting
+# order fingerprint (price + size) can.
+#
+# 20 s is far above the p95 of profitable signals (2.7 s) and far below the
+# 13-hour staleness that actually lost money. Rejecting a stale bid costs
+# nothing; accepting it costs a full position.
+s1_max_bid_still_ms = 20000
 rebalance_cost_bps = 0
 execution_mode = 'taker_taker'
 maker_fill_probability = '0.5'

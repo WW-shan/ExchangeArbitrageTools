@@ -166,14 +166,20 @@ export interface ScannerServiceOptions {
   bookSanitySampleSize?: number;
   liquidityMultiple?: Decimal;
   /**
-   * Reject an S1 sell leg whose venue top of book has not changed for this
-   * many consecutive scans. Zero disables the check.
+   * Reject an S1 sell leg whose resting bid has kept the same price AND size
+   * for this many milliseconds. Zero disables the check.
    *
    * A frozen bid is the single most expensive failure mode we have measured:
    * it looks like a real spread, passes every price check, and then fills
    * nothing because nobody is actually bidding.
+   *
+   * Time, not scan count: the hot path re-evaluates every ~100 ms, so a count
+   * of 8 means one second, not forty. Measured 2026-11-18/19: Bitget showed a
+   * single 12391.31 WARD bid at 0.001676 for over 13 hours while its ask moved
+   * constantly. Every signal priced against it read +120 to +145 bps and
+   * filled zero, which is what tripped the kill switch on execution 139.
    */
-  s1MaxRepeatCount?: number;
+  s1MaxBidStillMs?: number;
   prefilterEnabled?: boolean;
   prefilterFloorBps?: number;
   incrementalEvaluation?: boolean;
@@ -295,7 +301,7 @@ export class ScannerService {
    * not a price we can sell into.
    */
   readonly #s1Liveness = new BookLivenessTracker({ maxRepeatCount: 0, staleMs: 300_000 });
-  #s1MaxRepeatCount = 0;
+  #s1MaxBidStillMs = 0;
   readonly #persistSnapshots: boolean;
   readonly #paperSimulation: boolean;
   readonly #episodeGapMs: number;
@@ -382,7 +388,7 @@ export class ScannerService {
       options.liquidityMultiple && options.liquidityMultiple.gte(1)
         ? options.liquidityMultiple
         : new Decimal(1);
-    this.#s1MaxRepeatCount = Math.max(0, options.s1MaxRepeatCount ?? 0);
+    this.#s1MaxBidStillMs = Math.max(0, options.s1MaxBidStillMs ?? 0);
     this.#prefilterEnabled = options.prefilterEnabled ?? false;
     this.#prefilterFloorBps = options.prefilterFloorBps ?? 0;
     this.#incrementalEvaluation = options.incrementalEvaluation ?? false;
@@ -989,6 +995,7 @@ export class ScannerService {
         b.toFixed(),
         a.toFixed(),
         evaluatedAt,
+        (entry.evalBook.bids[0]?.amount ?? ZERO).toFixed(),
       );
     }
     const health = this.healthMap(evaluatedAt);
@@ -1193,26 +1200,31 @@ export class ScannerService {
               entryGateSamples: String(gateDecision.sampleCount),
             };
           }
-          // Freeze check on the SELL venue.
+          // Resting-bid check on the SELL venue.
           //
-          // The sell leg is the one that has to find a real buyer. Measured
-          // 2026-11-19: Bitget WARD bid stayed at 0.001676 for 146 s (one
-          // unique value across 30 samples) while Gate moved 14 times. All 20
-          // signals priced against that bid filled zero. Rejecting a stale sell
-          // book costs nothing; accepting it costs a full unhedged position.
-          if (opportunity.valid && this.#s1MaxRepeatCount > 0) {
-            const sellRepeat = this.#s1Liveness.repeatCount(
+          // The sell leg is the one that has to find a real buyer, and the bid
+          // it is priced against must be one that actually trades. Measured
+          // 2026-11-18 15:53 -> 2026-11-19 05:38 on Bitget WARD: the same
+          // 12391.31 WARD bid sat at 0.001676 for 13+ hours. 26 S1 executions
+          // priced against it, 26 zero fills, one unhedged position and a kill
+          // switch. Price alone cannot detect this because the ask kept
+          // moving; price + size is the resting-order fingerprint.
+          //
+          // Rejecting a stale bid costs nothing. Accepting it costs a full
+          // position.
+          if (opportunity.valid && this.#s1MaxBidStillMs > 0) {
+            const sellStillMs = this.#s1Liveness.bidStillMs(
               opportunity.venueSell,
               sourceSellMarket.exchangeSymbol,
             );
-            if (sellRepeat !== undefined && sellRepeat >= this.#s1MaxRepeatCount) {
+            if (sellStillMs !== undefined && sellStillMs >= this.#s1MaxBidStillMs) {
               opportunity.valid = false;
               opportunity.rejectionReasons = [
                 ...new Set([...opportunity.rejectionReasons, 'stale_orderbook' as const]),
               ];
               opportunity.metadata = {
                 ...(opportunity.metadata ?? {}),
-                sellBookRepeatCount: String(sellRepeat),
+                sellBidStillMs: String(sellStillMs),
               };
             }
           }

@@ -37,13 +37,14 @@ function book(
   bid: string,
   fetchedAt = now,
   exchangeSymbol = 'CAKE/USDT',
+  bidAmount = 100,
 ): OrderBookSnapshot {
   return {
     venueId,
     exchangeSymbol,
     fetchedAt,
     asks: [{ price: new Decimal(ask), amount: new Decimal('100') }],
-    bids: [{ price: new Decimal(bid), amount: new Decimal('100') }],
+    bids: [{ price: new Decimal(bid), amount: new Decimal(String(bidAmount)) }],
     source: 'replay',
   };
 }
@@ -982,9 +983,12 @@ describe('dislocation unit handling', () => {
 
 describe('S1 sell-side freeze guard', () => {
   it('rejects an S1 sell leg priced against a bid that never moves', async () => {
-    // Reproduces 2026-11-19: 20 signals at 100-200 bps against Bitget's
-    // 0.001676 bid, which printed one unique value across 30 samples in 146 s.
-    // All 20 filled zero. The bid was a resting order nobody crossed.
+    // Reproduces 2026-11-18/19: the same 12391.31 WARD bid sat at 0.001676 on
+    // Bitget for over 13 hours while the ask kept moving. 26 S1 executions
+    // priced against it and all 26 filled zero.
+    //
+    // The sell venue below keeps a *constant* book, which is the simplest
+    // version of that failure. The ask moving is covered by the next test.
     const db = openDatabase(':memory:');
     const repo = new ArbitrageRepository(db);
     let clockNow = now;
@@ -1022,7 +1026,7 @@ describe('S1 sell-side freeze guard', () => {
       maxTriangularPaths: 0,
       persistSnapshots: false,
       paperSimulation: false,
-      s1MaxRepeatCount: 5,
+      s1MaxBidStillMs: 12_000,
       clock: () => clockNow,
     });
     await scanner.initialize();
@@ -1044,13 +1048,15 @@ describe('S1 sell-side freeze guard', () => {
     expect(rejection).toContain('stale_orderbook');
   });
 
-  it('keeps trading when the sell venue keeps moving', async () => {
+  it('keeps trading while the resting bid actually trades', async () => {
     const db = openDatabase(':memory:');
     const repo = new ArbitrageRepository(db);
     let clockNow = now;
     const gate = adapter('gateio', '2.500', '2.490');
     const mexc = adapter('mexc', '2.560', '2.550');
-    // Both venues move every scan, and the spread stays positive.
+    // Both venues move every scan, and the spread stays positive. The sell
+    // venue's bid size changes too, which is what a real buyer looks like.
+    let sellTick = 0;
     gate.fetchOrderBook = async () => {
       const drift = (clockNow - now) / 1000;
       return book(
@@ -1062,11 +1068,14 @@ describe('S1 sell-side freeze guard', () => {
     };
     mexc.fetchOrderBook = async () => {
       const drift = (clockNow - now) / 1000;
+      sellTick += 1;
       return book(
         'mexc',
         (2.56 + drift * 0.00002).toFixed(3),
         (2.55 + drift * 0.00002).toFixed(3),
         clockNow,
+        'CAKE/USDT',
+        1_000 + sellTick,
       );
     };
     const scanner = new ScannerService({
@@ -1093,7 +1102,7 @@ describe('S1 sell-side freeze guard', () => {
       maxTriangularPaths: 0,
       persistSnapshots: false,
       paperSimulation: false,
-      s1MaxRepeatCount: 3,
+      s1MaxBidStillMs: 9_000,
       clock: () => clockNow,
     });
     await scanner.initialize();
@@ -1105,5 +1114,75 @@ describe('S1 sell-side freeze guard', () => {
       .listOpportunities({ limit: 500 })
       .filter((row) => row.strategy === 'S1' && Number(row.valid) === 1);
     expect(valid.length).toBeGreaterThan(0);
+  });
+
+  it('does not let a moving ask reset the resting-bid clock', async () => {
+    // The exact 2026-11-18 shape: Bitget's ask moved 2-8 times per minute while
+    // the 12391.31 WARD bid at 0.001676 never traded. A tracker that compares
+    // the whole top of book sees "movement" every scan and never fires.
+    const db = openDatabase(':memory:');
+    const repo = new ArbitrageRepository(db);
+    let clockNow = now;
+    const gate = adapter('gateio', '2.500', '2.490');
+    gate.fetchOrderBook = async () => {
+      const drift = (clockNow - now) / 1000;
+      const ask = (2.5 + drift * 0.00001).toFixed(3);
+      return book('gateio', ask, (Number(ask) - 0.01).toFixed(3), clockNow);
+    };
+    const mexc = adapter('mexc', '2.560', '2.550');
+    mexc.fetchOrderBook = async () => {
+      // Bid price and size are pinned; only the ask moves.
+      const drift = (clockNow - now) / 1000;
+      return book(
+        'mexc',
+        (2.56 + drift * 0.00002).toFixed(3),
+        '2.550',
+        clockNow,
+        'CAKE/USDT',
+        12_391.31,
+      );
+    };
+    const scanner = new ScannerService({
+      venues: [
+        { adapter: gate, health: new VenueHealthTracker(), markets: [] },
+        { adapter: mexc, health: new VenueHealthTracker(), markets: [] },
+      ],
+      repository: repo,
+      settings: {
+        minProfitUsd: new Decimal('0.01'),
+        safetyBufferBps: new Decimal(2),
+        minNetProfitBps: new Decimal(5),
+        maxOrderbookAgeMs: 20_000,
+        maxSlippageBps: new Decimal(50),
+        maxGasCostUsd: new Decimal('0.50'),
+        maxTransferTaxBps: new Decimal(0),
+        suspiciousSpreadBps: new Decimal(1000),
+        maxPriceDeviationBps: new Decimal(1000),
+      },
+      quoteCurrency: 'USDT',
+      baseAssets: ['CAKE'],
+      requestedNotional: new Decimal(10),
+      orderBookDepth: 50,
+      maxTriangularPaths: 0,
+      persistSnapshots: false,
+      paperSimulation: false,
+      s1MaxBidStillMs: 12_000,
+      clock: () => clockNow,
+    });
+    await scanner.initialize();
+    for (let i = 0; i < 6; i += 1) {
+      clockNow += 5_000;
+      await scanner.scanOnce();
+    }
+    const sellRows = repo
+      .listOpportunities({ limit: 500 })
+      .filter((row) => row.strategy === 'S1' && String(row.venue_sell) === 'mexc');
+    expect(sellRows.length).toBeGreaterThan(0);
+    const rejected = sellRows.filter((row) => Number(row.valid) === 0);
+    expect(rejected.length).toBeGreaterThan(0);
+    const reasons = JSON.parse(String(rejected[rejected.length - 1]!.rejection_reasons));
+    expect(reasons).toContain('stale_orderbook');
+    const meta = JSON.parse(String(rejected[rejected.length - 1]!.metadata_json ?? '{}'));
+    expect(Number(meta.sellBidStillMs)).toBeGreaterThanOrEqual(12_000);
   });
 });
