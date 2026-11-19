@@ -80,6 +80,21 @@ dislocation_min_notional_usd = "3"
 # WARD/KAT preparation calibration is not generated yet, so keep the normal S1
 # floor until a fresh calibration exists.
 prefilter_floor_bps = -2
+
+# Reject an S1 sell leg whose venue top of book has not changed for this many
+# consecutive scans.
+#
+# This is the guard that was missing. Measured 2026-11-19: Bitget's WARD best
+# bid printed 0.001676 for 146 seconds (one unique value in 30 samples) while
+# Gate's bid moved 14 times. Every signal priced against that bid looked
+# profitable and filled nothing: 20 signals in the 100-200 bps bucket, 20
+# failures, 0 fills. On 2026-11-19 21:38 UTC that pattern bought 5289 WARD on
+# Bitget and could not sell any of it on Gate, leaving an unhedged position and
+# tripping the kill switch.
+#
+# 8 scans at the 5 s hot interval is 40 s of an unmoving book, which a live
+# venue never does. 0 disables the check.
+s1_max_repeat_count = 8
 rebalance_cost_bps = 0
 execution_mode = 'taker_taker'
 maker_fill_probability = '0.5'

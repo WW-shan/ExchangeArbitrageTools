@@ -979,3 +979,131 @@ describe('dislocation unit handling', () => {
     expect(rows.length).toBe(0);
   });
 });
+
+describe('S1 sell-side freeze guard', () => {
+  it('rejects an S1 sell leg priced against a bid that never moves', async () => {
+    // Reproduces 2026-11-19: 20 signals at 100-200 bps against Bitget's
+    // 0.001676 bid, which printed one unique value across 30 samples in 146 s.
+    // All 20 filled zero. The bid was a resting order nobody crossed.
+    const db = openDatabase(':memory:');
+    const repo = new ArbitrageRepository(db);
+    let clockNow = now;
+    // Buy venue moves; sell venue is pinned.
+    const gate = adapter('gateio', '2.500', '2.490');
+    gate.fetchOrderBook = async () => {
+      const drift = (clockNow - now) / 1000;
+      const ask = (2.5 + drift * 0.00001).toFixed(3);
+      return book('gateio', ask, (Number(ask) - 0.01).toFixed(3), clockNow);
+    };
+    const mexc = adapter('mexc', '2.560', '2.550');
+    mexc.fetchOrderBook = async () => book('mexc', '2.560', '2.550', clockNow);
+
+    const scanner = new ScannerService({
+      venues: [
+        { adapter: gate, health: new VenueHealthTracker(), markets: [] },
+        { adapter: mexc, health: new VenueHealthTracker(), markets: [] },
+      ],
+      repository: repo,
+      settings: {
+        minProfitUsd: new Decimal('0.01'),
+        safetyBufferBps: new Decimal(2),
+        minNetProfitBps: new Decimal(5),
+        maxOrderbookAgeMs: 20_000,
+        maxSlippageBps: new Decimal(50),
+        maxGasCostUsd: new Decimal('0.50'),
+        maxTransferTaxBps: new Decimal(0),
+        suspiciousSpreadBps: new Decimal(1000),
+        maxPriceDeviationBps: new Decimal(1000),
+      },
+      quoteCurrency: 'USDT',
+      baseAssets: ['CAKE'],
+      requestedNotional: new Decimal(10),
+      orderBookDepth: 50,
+      maxTriangularPaths: 0,
+      persistSnapshots: false,
+      paperSimulation: false,
+      s1MaxRepeatCount: 5,
+      clock: () => clockNow,
+    });
+    await scanner.initialize();
+
+    // Six scans. The sell venue never changes; the buy venue does. After the
+    // fifth identical sell book the guard must reject the route.
+    for (let i = 0; i < 6; i += 1) {
+      clockNow += 5_000;
+      await scanner.scanOnce();
+    }
+
+    const rows = repo.listOpportunities({ limit: 500 }).filter((row) => row.strategy === 'S1');
+    expect(rows.length).toBeGreaterThan(0);
+    const sellFrozen = rows.filter(
+      (row) => String(row.venue_sell) === 'mexc' && Number(row.valid) === 0,
+    );
+    expect(sellFrozen.length).toBeGreaterThan(0);
+    const rejection = JSON.parse(String(sellFrozen[sellFrozen.length - 1]!.rejection_reasons));
+    expect(rejection).toContain('stale_orderbook');
+  });
+
+  it('keeps trading when the sell venue keeps moving', async () => {
+    const db = openDatabase(':memory:');
+    const repo = new ArbitrageRepository(db);
+    let clockNow = now;
+    const gate = adapter('gateio', '2.500', '2.490');
+    const mexc = adapter('mexc', '2.560', '2.550');
+    // Both venues move every scan, and the spread stays positive.
+    gate.fetchOrderBook = async () => {
+      const drift = (clockNow - now) / 1000;
+      return book(
+        'gateio',
+        (2.5 + drift * 0.00001).toFixed(3),
+        (2.49 + drift * 0.00001).toFixed(3),
+        clockNow,
+      );
+    };
+    mexc.fetchOrderBook = async () => {
+      const drift = (clockNow - now) / 1000;
+      return book(
+        'mexc',
+        (2.56 + drift * 0.00002).toFixed(3),
+        (2.55 + drift * 0.00002).toFixed(3),
+        clockNow,
+      );
+    };
+    const scanner = new ScannerService({
+      venues: [
+        { adapter: gate, health: new VenueHealthTracker(), markets: [] },
+        { adapter: mexc, health: new VenueHealthTracker(), markets: [] },
+      ],
+      repository: repo,
+      settings: {
+        minProfitUsd: new Decimal('0.01'),
+        safetyBufferBps: new Decimal(2),
+        minNetProfitBps: new Decimal(5),
+        maxOrderbookAgeMs: 20_000,
+        maxSlippageBps: new Decimal(50),
+        maxGasCostUsd: new Decimal('0.50'),
+        maxTransferTaxBps: new Decimal(0),
+        suspiciousSpreadBps: new Decimal(1000),
+        maxPriceDeviationBps: new Decimal(1000),
+      },
+      quoteCurrency: 'USDT',
+      baseAssets: ['CAKE'],
+      requestedNotional: new Decimal(10),
+      orderBookDepth: 50,
+      maxTriangularPaths: 0,
+      persistSnapshots: false,
+      paperSimulation: false,
+      s1MaxRepeatCount: 3,
+      clock: () => clockNow,
+    });
+    await scanner.initialize();
+    for (let i = 0; i < 6; i += 1) {
+      clockNow += 5_000;
+      await scanner.scanOnce();
+    }
+    const valid = repo
+      .listOpportunities({ limit: 500 })
+      .filter((row) => row.strategy === 'S1' && Number(row.valid) === 1);
+    expect(valid.length).toBeGreaterThan(0);
+  });
+});

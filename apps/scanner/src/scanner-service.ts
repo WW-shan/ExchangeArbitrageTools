@@ -165,6 +165,15 @@ export interface ScannerServiceOptions {
   bookSanityCooldownMs?: number;
   bookSanitySampleSize?: number;
   liquidityMultiple?: Decimal;
+  /**
+   * Reject an S1 sell leg whose venue top of book has not changed for this
+   * many consecutive scans. Zero disables the check.
+   *
+   * A frozen bid is the single most expensive failure mode we have measured:
+   * it looks like a real spread, passes every price check, and then fills
+   * nothing because nobody is actually bidding.
+   */
+  s1MaxRepeatCount?: number;
   prefilterEnabled?: boolean;
   prefilterFloorBps?: number;
   incrementalEvaluation?: boolean;
@@ -276,6 +285,17 @@ export class ScannerService {
   readonly #dislocationMinNotional: Decimal;
   readonly #dislocationBaselines = new Map<string, RollingMedian>();
   readonly #liveness: BookLivenessTracker;
+  /**
+   * S1 freeze tracking, separate from the dislocation detector.
+   *
+   * S1 had no freeze check at all. Measured 2026-11-19: Bitget's WARD best bid
+   * printed 0.001676 for 146 seconds with one unique value, while Gate's bid
+   * moved 14 times. Every "100-200 bps" signal in that window was that
+   * unmoving bid: 20 signals, 20 failures, 0 fills. A bid nobody crosses is
+   * not a price we can sell into.
+   */
+  readonly #s1Liveness = new BookLivenessTracker({ maxRepeatCount: 0, staleMs: 300_000 });
+  #s1MaxRepeatCount = 0;
   readonly #persistSnapshots: boolean;
   readonly #paperSimulation: boolean;
   readonly #episodeGapMs: number;
@@ -362,6 +382,7 @@ export class ScannerService {
       options.liquidityMultiple && options.liquidityMultiple.gte(1)
         ? options.liquidityMultiple
         : new Decimal(1);
+    this.#s1MaxRepeatCount = Math.max(0, options.s1MaxRepeatCount ?? 0);
     this.#prefilterEnabled = options.prefilterEnabled ?? false;
     this.#prefilterFloorBps = options.prefilterFloorBps ?? 0;
     this.#incrementalEvaluation = options.incrementalEvaluation ?? false;
@@ -955,6 +976,21 @@ export class ScannerService {
     this.#baseFingerprints.set(baseKey, bookFingerprint);
     this.#baseHadValid.set(baseKey, false);
     const evaluatedAt = this.#clock();
+    // Feed the S1 freeze tracker before evaluating. It must see every snapshot,
+    // including ones later rejected, or a book that stops moving mid-window
+    // never accumulates a repeat count.
+    for (const entry of prepared) {
+      const b = entry.evalBook.bids[0]?.price;
+      const a = entry.evalBook.asks[0]?.price;
+      if (!b || !a || !b.gt(0) || !a.gt(0)) continue;
+      this.#s1Liveness.observe(
+        entry.venue.adapter.venueId,
+        entry.market.exchangeSymbol,
+        b.toFixed(),
+        a.toFixed(),
+        evaluatedAt,
+      );
+    }
     const health = this.healthMap(evaluatedAt);
     const reliability = this.reliabilityMap(evaluatedAt);
     const referenceMidPrice = medianDecimal(
@@ -1156,6 +1192,29 @@ export class ScannerService {
               percentileThresholdBps: gateDecision.thresholdBps.toFixed(),
               entryGateSamples: String(gateDecision.sampleCount),
             };
+          }
+          // Freeze check on the SELL venue.
+          //
+          // The sell leg is the one that has to find a real buyer. Measured
+          // 2026-11-19: Bitget WARD bid stayed at 0.001676 for 146 s (one
+          // unique value across 30 samples) while Gate moved 14 times. All 20
+          // signals priced against that bid filled zero. Rejecting a stale sell
+          // book costs nothing; accepting it costs a full unhedged position.
+          if (opportunity.valid && this.#s1MaxRepeatCount > 0) {
+            const sellRepeat = this.#s1Liveness.repeatCount(
+              opportunity.venueSell,
+              sourceSellMarket.exchangeSymbol,
+            );
+            if (sellRepeat !== undefined && sellRepeat >= this.#s1MaxRepeatCount) {
+              opportunity.valid = false;
+              opportunity.rejectionReasons = [
+                ...new Set([...opportunity.rejectionReasons, 'stale_orderbook' as const]),
+              ];
+              opportunity.metadata = {
+                ...(opportunity.metadata ?? {}),
+                sellBookRepeatCount: String(sellRepeat),
+              };
+            }
           }
           let duplicateRoute = false;
           if (opportunity.valid) {

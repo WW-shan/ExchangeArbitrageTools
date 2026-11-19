@@ -39,6 +39,7 @@ export interface ScannerConfig {
   bookSanityRequiredSuccesses: number;
   bookSanityCooldownMs: number;
   bookSanitySampleSize: number;
+  s1MaxRepeatCount: number;
   prefilterEnabled: boolean;
   prefilterFloorBps: number;
   incrementalEvaluation: boolean;
@@ -326,6 +327,7 @@ export function loadConfig(path = 'config/default.toml'): AppConfig {
       bookSanityRequiredSuccesses: numberValue(scanner, 'book_sanity_required_successes', 3),
       bookSanityCooldownMs: numberValue(scanner, 'book_sanity_cooldown_ms', 300_000),
       bookSanitySampleSize: numberValue(scanner, 'book_sanity_sample_size', 4),
+      s1MaxRepeatCount: numberValue(scanner, 's1_max_repeat_count', 8),
       prefilterEnabled: booleanValue(scanner, 'prefilter_enabled', false),
       prefilterFloorBps: numberValue(scanner, 'prefilter_floor_bps', 0),
       incrementalEvaluation: booleanValue(scanner, 'incremental_evaluation', false),

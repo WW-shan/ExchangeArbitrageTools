@@ -205,6 +205,7 @@ async function main(): Promise<void> {
     bookSanityCooldownMs: config.scanner.bookSanityCooldownMs,
     bookSanitySampleSize: config.scanner.bookSanitySampleSize,
     liquidityMultiple: config.scanner.liquidityMultiple,
+    s1MaxRepeatCount: config.scanner.s1MaxRepeatCount,
     prefilterEnabled: config.scanner.prefilterEnabled,
     prefilterFloorBps: config.scanner.prefilterFloorBps,
     incrementalEvaluation: config.scanner.incrementalEvaluation,
