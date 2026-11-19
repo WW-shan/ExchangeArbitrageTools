@@ -26,10 +26,25 @@ const minVolumeUsd = Number(arg('--min-volume-usd', '200'));
 const maxVolumeUsd = Number(arg('--max-volume-usd', '5000000'));
 const maxBases = Number(arg('--max-bases', '40'));
 const proxyUrl = process.env.ARB_PROXY_URL ?? 'socks5://127.0.0.1:10808';
+// Withdrawal is disabled by default: a two-venue rotation recycles inventory
+// between the venues instead of moving coins, so requiring a transfer route
+// excludes exactly the low-liquidity assets that show spreads.
+const requireTransfer = process.argv.includes('--require-transfer');
+const venues = arg('--venues', 'gateio,bitget')
+  .split(',')
+  .map((value) => value.trim().toLowerCase())
+  .filter(Boolean);
 
 // Effective taker fees after confirmed rebates (see config/live-rotation.toml).
-const FEES: Record<string, number> = { gateio: 2.97, bitget: 2.0 };
-const venues = ['gateio', 'bitget'] as const;
+// Override with --fees gateio=2.97,bitget=2,weex=10.
+const FEES: Record<string, number> = { gateio: 2.97, bitget: 2.0, weex: 10, hotcoin: 10 };
+for (const spec of arg('--fees', '').split(',')) {
+  const [venueId, bps] = spec.split('=');
+  if (venueId && bps !== undefined && Number.isFinite(Number(bps))) {
+    FEES[venueId.trim().toLowerCase()] = Number(bps);
+  }
+}
+const feeOf = (venueId: string): number => FEES[venueId] ?? 10;
 
 const runtime = createPublicRuntime(8);
 const adapters = new Map(
@@ -43,11 +58,25 @@ interface MarketRow {
 }
 
 /** Can this asset be withdrawn on one venue and deposited on the other? */
-function transferable(currencyMaps: Map<string, Map<string, unknown>>, base: string): boolean {
-  const left = currencyMaps.get('gateio')?.get(base) as Array<{ network: string; withdraw: boolean; deposit: boolean }> | undefined;
-  const right = currencyMaps.get('bitget')?.get(base) as Array<{ network: string; withdraw: boolean; deposit: boolean }> | undefined;
+type NetworkRow = { network: string; withdraw: boolean; deposit: boolean };
+
+function transferable(
+  currencyMaps: Map<string, Map<string, unknown>>,
+  base: string,
+  fromVenue: string,
+  toVenue: string,
+): boolean {
+  const left = currencyMaps.get(fromVenue)?.get(base) as NetworkRow[] | undefined;
+  const right = currencyMaps.get(toVenue)?.get(base) as NetworkRow[] | undefined;
   if (!left || !right) return false;
-  const ALIAS: Record<string, string> = { BASE: 'base', BASEEVM: 'base', ERC20: 'ethereum', ETH: 'ethereum', BSC: 'bsc', BEP20: 'bsc' };
+  const ALIAS: Record<string, string> = {
+    BASE: 'base',
+    BASEEVM: 'base',
+    ERC20: 'ethereum',
+    ETH: 'ethereum',
+    BSC: 'bsc',
+    BEP20: 'bsc',
+  };
   const norm = (c: string) => ALIAS[c.toUpperCase()] ?? c.toLowerCase();
   for (const l of left) {
     for (const r of right) {
@@ -101,65 +130,98 @@ async function main(): Promise<void> {
     }),
   );
 
-  const shared = [...(markets.get('gateio')?.keys() ?? [])].filter((base) =>
-    markets.get('bitget')?.has(base),
+  // Every base that at least two venues list, with the venues that list it.
+  const listings = new Map<string, string[]>();
+  for (const venueId of venues) {
+    for (const base of markets.get(venueId)?.keys() ?? []) {
+      const rows = listings.get(base) ?? [];
+      rows.push(venueId);
+      listings.set(base, rows);
+    }
+  }
+  const shared = [...listings.entries()].filter(([, listedOn]) => listedOn.length >= 2);
+  const filtered = shared.filter(
+    ([base, listedOn]) =>
+      !requireTransfer ||
+      listedOn.some((from) =>
+        listedOn.some((to) => from !== to && transferable(currencies, base, from, to)),
+      ),
   );
-  const tradeable = shared.filter((base) => transferable(currencies, base)).slice(0, maxBases);
+  // Prefer bases listed on the most venues, then the busiest.
+  filtered.sort((a, b) => {
+    if (b[1].length !== a[1].length) return b[1].length - a[1].length;
+    const vol = (base: string) =>
+      Math.max(...venues.map((v) => markets.get(v)?.get(base)?.volume ?? 0));
+    return vol(b[0]) - vol(a[0]);
+  });
+  const tradeable = filtered.slice(0, maxBases).map(([base]) => base);
   console.log(
-    `shared USDT bases: ${shared.length}, transferable both ways: ${tradeable.length}`,
+    `venues: ${venues.join(',')} | shared USDT bases: ${shared.length}` +
+      `, candidates: ${tradeable.length}${requireTransfer ? ' (transfer required)' : ''}`,
   );
 
   // Track every candidate across the observation window.
-  const hits = new Map<string, { base: string; bestBps: number; direction: string; seen: number; bestSizeUsd: number }>();
+  const hits = new Map<
+    string,
+    { base: string; bestBps: number; direction: string; seen: number; bestSizeUsd: number }
+  >();
 
   for (let round = 1; round <= samples; round += 1) {
     for (const base of tradeable) {
       for (const buyVenue of venues) {
-        const sellVenue = buyVenue === 'gateio' ? 'bitget' : 'gateio';
-        const buyMarket = markets.get(buyVenue)?.get(base);
-        const sellMarket = markets.get(sellVenue)?.get(base);
-        if (!buyMarket || !sellMarket) continue;
-        try {
-          const [buyBook, sellBook] = await Promise.all([
-            adapters.get(buyVenue)!.fetchOrderBook(buyMarket.symbol, 10),
-            adapters.get(sellVenue)!.fetchOrderBook(sellMarket.symbol, 10),
-          ]);
-          const bestAsk = buyBook.asks[0]?.price;
-          const bestBid = sellBook.bids[0]?.price;
-          if (!bestAsk || !bestBid) continue;
-          const gross = bestBid.minus(bestAsk).div(bestAsk).mul(10_000).toNumber();
-          const net = gross - (FEES[buyVenue] ?? 10) - (FEES[sellVenue] ?? 10);
-          if (net < minNetBps) continue;
+        for (const sellVenue of venues) {
+          if (buyVenue === sellVenue) continue;
+          const buyMarket = markets.get(buyVenue)?.get(base);
+          const sellMarket = markets.get(sellVenue)?.get(base);
+          if (!buyMarket || !sellMarket) continue;
+          try {
+            const [buyBook, sellBook] = await Promise.all([
+              adapters.get(buyVenue)!.fetchOrderBook(buyMarket.symbol, 10),
+              adapters.get(sellVenue)!.fetchOrderBook(sellMarket.symbol, 10),
+            ]);
+            const bestAsk = buyBook.asks[0]?.price;
+            const bestBid = sellBook.bids[0]?.price;
+            if (!bestAsk || !bestBid) continue;
+            const gross = bestBid.minus(bestAsk).div(bestAsk).mul(10_000).toNumber();
+            const net = gross - feeOf(buyVenue) - feeOf(sellVenue);
+            if (net < minNetBps) continue;
 
-          // Walk both books at 5 USDT to see what is actually takeable.
-          const requested = new Decimal(5);
-          let spend = requested;
-          let bought = new Decimal(0);
-          for (const level of buyBook.asks) {
-            if (spend.lte(0)) break;
-            const take = Decimal.min(spend, level.price.mul(level.amount));
-            bought = bought.plus(take.div(level.price));
-            spend = spend.minus(take);
-          }
-          let remaining = bought;
-          let proceeds = new Decimal(0);
-          for (const level of sellBook.bids) {
-            if (remaining.lte(0)) break;
-            const take = Decimal.min(remaining, level.amount);
-            proceeds = proceeds.plus(take.mul(level.price));
-            remaining = remaining.minus(take);
-          }
-          if (proceeds.lte(0)) continue;
-          const executable = proceeds.minus(requested);
+            // Walk both books at 5 USDT to see what is actually takeable.
+            const requested = new Decimal(5);
+            let spend = requested;
+            let bought = new Decimal(0);
+            for (const level of buyBook.asks) {
+              if (spend.lte(0)) break;
+              const take = Decimal.min(spend, level.price.mul(level.amount));
+              bought = bought.plus(take.div(level.price));
+              spend = spend.minus(take);
+            }
+            let remaining = bought;
+            let proceeds = new Decimal(0);
+            for (const level of sellBook.bids) {
+              if (remaining.lte(0)) break;
+              const take = Decimal.min(remaining, level.amount);
+              proceeds = proceeds.plus(take.mul(level.price));
+              remaining = remaining.minus(take);
+            }
+            if (proceeds.lte(0)) continue;
+            const executable = proceeds.minus(requested);
 
-          const key = `${base}/${buyVenue}->${sellVenue}`;
-          const row = hits.get(key) ?? { base, bestBps: net, direction: `${buyVenue}->${sellVenue}`, seen: 0, bestSizeUsd: 0 };
-          row.seen += 1;
-          row.bestBps = Math.max(row.bestBps, net);
-          row.bestSizeUsd = Math.max(row.bestSizeUsd, Math.min(5, executable.toNumber() + 5));
-          hits.set(key, row);
-        } catch {
-          // A venue rejecting one symbol must not abort the sweep.
+            const key = `${base}/${buyVenue}->${sellVenue}`;
+            const row = hits.get(key) ?? {
+              base,
+              bestBps: net,
+              direction: `${buyVenue}->${sellVenue}`,
+              seen: 0,
+              bestSizeUsd: 0,
+            };
+            row.seen += 1;
+            row.bestBps = Math.max(row.bestBps, net);
+            row.bestSizeUsd = Math.max(row.bestSizeUsd, Math.min(5, executable.toNumber() + 5));
+            hits.set(key, row);
+          } catch {
+            // A venue rejecting one symbol must not abort the sweep.
+          }
         }
       }
     }
@@ -167,12 +229,10 @@ async function main(): Promise<void> {
     if (round < samples) await new Promise((resolve) => setTimeout(resolve, intervalMs));
   }
 
-  const ranked = [...hits.values()].sort(
-    (a, b) => b.seen - a.seen || b.bestBps - a.bestBps,
-  );
+  const ranked = [...hits.values()].sort((a, b) => b.seen - a.seen || b.bestBps - a.bestBps);
   console.log(`\ncandidates with >= ${minNetBps} bps net, over ${samples} rounds:`);
   if (ranked.length === 0) {
-    console.log('  none. Nothing on Gate x Bitget clears fees right now.');
+    console.log(`  none. Nothing across ${venues.join('/')} clears fees right now.`);
   }
   for (const row of ranked.slice(0, 20)) {
     console.log(
