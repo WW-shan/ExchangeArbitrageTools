@@ -138,6 +138,31 @@ preflight 读完盘口后还要花 1.5–2 秒做私有 REST（余额 + 挂单�
 超过 1500 ms 直接 `PREFLIGHT_FAILED` + `sell_book_too_old_at_submit`，
 **买单和卖单都不发**，不会留下裸仓位。
 
+## 6.3 顺带修掉的第二个 bug：PREFLIGHT_FAILED 永不关闭
+
+新校验上线后立刻在生产中生效，拦下了第一笔：
+
+```
+execution 142: gateio 买 3989 WARD @0.001642 / bitget 卖 @0.001650
+预检通过（netProfitBps 36.1），但卖腿盘口年龄 1934 ms > 1500 ms
+-> PREFLIGHT_FAILED，订单数 0，仓位 0
+```
+
+**这正是这次修复要防的那一类交易。**
+
+但它同时暴露了一个更早的 bug：`countOpenExecutions()` 统计的是
+`closed_at IS NULL`，而状态机把 `PREFLIGHT_FAILED` 当终态时，
+数据库只写了 status，**没有写 closed_at**。
+
+后果：这一笔被拒的预检被永远算作"进行中"，执行器此后每次都返回
+`waitReason=open_execution`，**整个系统停止交易**。
+
+之前所有失败执行最后都走到 RECONCILED（会写 closed_at），
+所以这个路径从来没被踩到过。
+
+修复：`transition()` 在状态机进入终态时同时写 `closedAt`。
+新增测试锁定：预检失败后 `countOpenExecutions()` 必须为 0。
+
 ## 7. 为什么只查卖腿
 
 买腿吃的是 ask，只要我们出价，成交由我们自己决定。

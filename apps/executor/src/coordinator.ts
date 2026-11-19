@@ -416,8 +416,17 @@ export class CexLiveExecutor {
       states.push(to);
       const executionId = this.#executionIds.get(request.batchId);
       if (executionId !== undefined) {
+        // A terminal state must also stamp closed_at.
+        //
+        // countOpenExecutions() counts rows where closed_at IS NULL, so a
+        // PREFLIGHT_FAILED execution that never wrote closed_at counted as
+        // "open" forever. Measured 2026-11-19: one rejected preflight blocked
+        // every later candidate with waitReason=open_execution for as long as
+        // the process lived.
+        const terminal = machine.isTerminal();
         this.#repository.updateExecutionStatus(executionId, to, {
           metadata: { states: [...states] },
+          ...(terminal ? { closedAt: this.#clock() } : {}),
         });
       }
     };

@@ -669,6 +669,67 @@ describe('live executor safety gates', () => {
     repo.close();
   });
 
+  it('closes the execution row when preflight fails so it cannot block later batches', async () => {
+    // Measured 2026-11-19: execution 142 failed preflight (sell book 1934 ms
+    // old), wrote status PREFLIGHT_FAILED but left closed_at NULL. Because
+    // countOpenExecutions() counts rows where closed_at IS NULL, that single
+    // rejection made every later candidate wait with reason "open_execution"
+    // for the life of the process.
+    //
+    // The row is only created once preflight passes its early gates, so this
+    // reproduces the real ordering: hot books inside the preflight window,
+    // rejected later by the submit ceiling.
+    const preflightCache = new PreflightCache();
+    const hotSettings: CexLiveExecutorOptions['settings'] = {
+      ...settings,
+      preflightBalanceMaxAgeMs: 3000,
+      preflightOpenOrderMaxAgeMs: 3000,
+      preflightHotBookMaxAgeMs: 3000,
+    };
+    const { repo, executor, buy, sell } = setup(
+      { bookError: new Error('REST book should not be called') },
+      'serial',
+      { preflightCache, settings: hotSettings },
+    );
+    const staleFetchedAt = now - 2000;
+    repo.recordHotOrderbook({
+      ...book('gateio', '2.500', '2.490'),
+      fetchedAt: staleFetchedAt,
+      source: 'websocket' as const,
+    });
+    repo.recordHotOrderbook({
+      ...book('mexc', '2.560', '2.550'),
+      fetchedAt: staleFetchedAt,
+      source: 'websocket' as const,
+    });
+    preflightCache.recordBalances([...balances('gateio'), ...balances('mexc')]);
+    preflightCache.recordOpenOrders(
+      ['gateio|CAKE/USDT', 'mexc|CAKE/USDT'],
+      { ok: true, orders: [], errors: [] },
+      now,
+    );
+
+    const result = await executor.execute(
+      request(
+        { adapter: buy.adapter, market: market('gateio'), credentials: keys, healthState: 'A' },
+        { adapter: sell.adapter, market: market('mexc'), credentials: keys, healthState: 'A' },
+      ),
+    );
+
+    expect(result.outcome).toBe('PREFLIGHT_FAILED');
+    expect(buy.state.createCalls).toBe(0);
+    expect(sell.state.createCalls).toBe(0);
+    // The decisive assertion: a rejected preflight must not look like an open
+    // batch, or the supervisor stops trading entirely.
+    expect(repo.countOpenExecutions()).toBe(0);
+    const row = repo.db
+      .prepare('SELECT status, closed_at FROM executions ORDER BY id DESC LIMIT 1')
+      .get() as { status: string; closed_at: number | null } | undefined;
+    expect(row?.status).toBe('PREFLIGHT_FAILED');
+    expect(row?.closed_at).not.toBeNull();
+    repo.close();
+  });
+
   it('refuses to submit when the sell book aged past the submit ceiling', async () => {
     // Execution 139 (2026-11-19 21:38 UTC): preflight read the sell book, then
     // spent 1826 ms on private REST. The sell order was submitted into a 4.9 s
