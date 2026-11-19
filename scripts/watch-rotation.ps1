@@ -296,6 +296,26 @@ function Get-ExecutorExitOutcome {
   if ($sameProcess -and $heartbeat.state -eq 'stopped') {
     $reason = [string]($heartbeat.lastWaitReasons -join ',')
     $blockedPattern = 'kill_switch|safe_stop|blocked|failure_limit|unexpected_error|account_status|unsupervised|secret_store|transfer_'
+    # Naked inventory outranks a clean exit code.
+    #
+    # Measured 2026-11-19 04:56 UTC: execution 150 bought 2880 WARD, its sell
+    # leg missed, the automatic hedge also missed, and the supervisor wrote
+    # lastWaitReasons=['ended'] before exiting 0. The watchdog classified that
+    # as "executor_exited_cleanly" and stopped watching entirely, so the naked
+    # 2880 WARD sat untouched until a human noticed hours later.
+    #
+    # The heartbeat already carries account.unhedged, so this needs no extra IO.
+    $naked = 0
+    if ($heartbeat.account -and $heartbeat.account.unhedged) {
+      $naked = @($heartbeat.account.unhedged).Count
+    }
+    if ($naked -gt 0) {
+      return @{
+        kind = 'blocked'
+        reason = ('naked_inventory_' + $naked)
+        exitCode = $exitCode
+      }
+    }
     return @{
       kind = if ($reason -match $blockedPattern) { 'blocked' } else { 'stopped' }
       reason = $reason

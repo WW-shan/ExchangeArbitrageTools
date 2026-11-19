@@ -77,8 +77,10 @@ function fakeVenue(input: {
   before: BalanceSnapshot[];
   after?: BalanceSnapshot[];
   createError?: Error;
+  rejectFirst?: number;
 }) {
   const requests: OrderRequest[] = [];
+  let rejectionsLeft = input.rejectFirst ?? 0;
   let currentBalances = input.before;
   let nextTimestamp = Date.now();
   const orderFor = (request: OrderRequest): OrderState => {
@@ -126,6 +128,14 @@ function fakeVenue(input: {
     fetchOpenOrders: async () => [],
     createOrder: async (request) => {
       requests.push(request);
+      if (rejectionsLeft > 0) {
+        rejectionsLeft -= 1;
+        // Shape matches how the venues report a definitive FOK miss: the
+        // exchange explicitly says the order cannot be filled completely.
+        throw new Error(
+          'ExchangeError: bitget {"label":"FOK_NOT_FILL","message":"Order cannot be filled completely"}',
+        );
+      }
       if (input.createError) throw input.createError;
       currentBalances = input.after ?? currentBalances;
       nextTimestamp = Date.now() + 10_000;
@@ -159,6 +169,7 @@ function setup(
     afterQuote?: string;
     ask?: string;
     bid?: string;
+    rejectFirst?: number;
   } = {},
 ) {
   const now = Date.now();
@@ -249,6 +260,7 @@ function setup(
     ),
     after: balances('bitget', options.afterWard ?? '1000', options.afterQuote ?? '1001.4945'),
     ...(options.createError ? { createError: options.createError } : {}),
+    ...(options.rejectFirst !== undefined ? { rejectFirst: options.rejectFirst } : {}),
   });
   const adapters: Record<string, RecoveryVenue> = {
     gateio: { adapter: gate.adapter, credentials },
@@ -306,6 +318,38 @@ describe('automatic residual hedge', () => {
       )
       .get() as { actor: string };
     expect(audit.actor).toBe('executor');
+  });
+
+  it('retries a definitive FOK miss instead of leaving the position naked', async () => {
+    // Reproduces 2026-11-19 04:56 UTC: execution 150 bought 2880 WARD on Gate,
+    // the Bitget sell leg missed, the hedge FOK missed once, and the supervisor
+    // gave up. 2880 WARD stayed naked until a human flattened it.
+    const { repository, adapters, config, bitget } = setup({ rejectFirst: 1 });
+    const result = await attemptAutomaticResidualHedge({
+      repository,
+      config,
+      adapters,
+      batchId,
+    });
+    expect(result.status).toBe('HEDGED');
+    expect(bitget.requests).toHaveLength(2);
+    expect(bitget.requests.every((request) => request.timeInForce === 'FOK')).toBe(true);
+    expect(repository.openUnhedgedInventory()).toEqual([]);
+  });
+
+  it('stops retrying after the configured attempt budget', async () => {
+    const { repository, adapters, config, bitget } = setup({ rejectFirst: 99 });
+    const result = await attemptAutomaticResidualHedge({
+      repository,
+      config,
+      adapters,
+      batchId,
+    });
+    expect(result.status).toBe('BLOCKED');
+    expect(result.reasons).toContain('hedge_fok_not_filled');
+    // maxAttempts = 3 in the fixture.
+    expect(bitget.requests).toHaveLength(3);
+    expect(repository.openUnhedgedInventory()).toHaveLength(1);
   });
 
   it('does not submit when the projected loss exceeds the configured cap', async () => {
